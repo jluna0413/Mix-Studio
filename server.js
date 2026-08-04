@@ -5343,7 +5343,7 @@ async function setupStatusPayload(forceCompatibility = false) {
     hardware: hardwareProfile,
     capabilities: { video: configuredVideoEngineCapabilities(hardwareProfile, settings) },
     modelRecommendations: { krea2: krea2Recommendation },
-    modelVariants: { krea2: settings.krea2ModelVariant },
+    modelVariants: { krea2: settings.krea2ModelVariant, h3: settings.h3ClipVariant || '' },
     vramProfile: {
       configured: settings.vramProfile,
       recommended: vramRecommendation,
@@ -6326,8 +6326,17 @@ async function handleApi(req, res, url) {
     const requestedKrea2Variant = body.modelVariants && typeof body.modelVariants === 'object'
       ? body.modelVariants.krea2
       : '';
+    const requestedH3Variant = body.modelVariants && typeof body.modelVariants === 'object'
+      ? body.modelVariants.h3
+      : '';
     const krea2Variant = effectiveKrea2Variant(requestedKrea2Variant, settings);
     const modelVariants = { krea2: krea2Variant };
+    if (requestedH3Variant && requestedH3Variant !== 'auto') {
+      settings.h3ClipVariant = requestedH3Variant;
+      modelVariants.h3 = requestedH3Variant;
+    } else if (!requestedH3Variant) {
+      modelVariants.h3 = '';
+    }
     const components = [...new Set(requested.filter((id) => Object.prototype.hasOwnProperty.call(DEPENDENCY_COMPONENTS, id)))];
     if (!components.length) return json(res, 400, { error: 'Choose at least one missing model or node group to install.' });
     const hardwareProfile = setupHardwareProfile(await getSetupHardwareInfo());
