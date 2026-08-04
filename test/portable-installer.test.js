@@ -188,7 +188,7 @@ test('GitHub Pages publishes the canonical installer from a branded download pag
   assert.match(page, /brand\/dell-logo\.png/);
   assert.match(page, /brand\/black-mixture-wordmark\.png/);
   const footerMarkup = page.match(/<footer class="site-footer">([\s\S]*?)<\/footer>/)?.[1] || '';
-  assert.equal((footerMarkup.match(/class="footer-brand(?:\s|")/g) || []).length, 6);
+  assert.equal((footerMarkup.match(/class="footer-brand(?:\s|")/g) || []).length, 7);
   assert.ok(footerMarkup.indexOf('Black Mixture') < footerMarkup.indexOf('ComfyUI'));
   assert.match(footerMarkup, /ComfyUI/);
   assert.match(footerMarkup, /Tailscale/);
@@ -196,7 +196,7 @@ test('GitHub Pages publishes the canonical installer from a branded download pag
   assert.match(footerMarkup, /Dell/);
   assert.match(footerMarkup, /Black Mixture/);
   assert.match(footerMarkup, /Mix Studio/);
-  assert.match(page, /Works with ComfyUI, Tailscale, NVIDIA, Apple Metal, and AMD ROCm/);
+  assert.match(page, /Works with ComfyUI, Tailscale, and Intel Arc GPUs/);
   assert.match(page, /Measured Timing/);
   assert.doesNotMatch(page, />12 min</);
   assert.doesNotMatch(page, />16 rec</);

@@ -25,6 +25,17 @@ function Find-MixStudioNvidiaSmi {
   return ''
 }
 
+function Get-MixStudioIntelArcVram([string]$Name) {
+  $Gb = switch -Regex ($Name) {
+    'Arc.*B70' { 32GB }
+    'Arc (A770|A75|A77)' { 16GB }
+    'Arc Pro (A40|A50|A70|A75|A80|B50|B60)' { 16GB }
+    'Arc Pro A60' { 16GB }
+    default { 0 }
+  }
+  return $Gb
+}
+
 function Get-MixStudioHardwareProfile {
   $Gpus = @()
   $Smi = Find-MixStudioNvidiaSmi
@@ -55,7 +66,7 @@ function Get-MixStudioHardwareProfile {
           Select-Object DriverDesc, 'HardwareInformation.qwMemorySize')
       } catch {}
       $Controllers = @(Get-CimInstance Win32_VideoController |
-        Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Instinct' -and $_.Name -notmatch 'Microsoft Basic|Virtual|VNC|Remote|Parsec' })
+        Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Instinct|Intel|Arc' -and $_.Name -notmatch 'Microsoft Basic|Virtual|VNC|Remote|Parsec' })
       foreach ($Controller in $Controllers) {
         $MemoryBytes = [double]$Controller.AdapterRAM
         foreach ($Adapter in $RegistryAdapters) {
@@ -63,7 +74,10 @@ function Get-MixStudioHardwareProfile {
             $MemoryBytes = [double][int64]$Adapter.'HardwareInformation.qwMemorySize'
           }
         }
-        $Vendor = if ($Controller.Name -match 'AMD|Radeon|Instinct') { 'amd' } else { 'nvidia' }
+        $Vendor = if ($Controller.Name -match 'Intel|Arc') { 'intel' } elseif ($Controller.Name -match 'AMD|Radeon|Instinct') { 'amd' } else { 'nvidia' }
+        if ($Vendor -eq 'intel' -and $MemoryBytes -lt 8GB) {
+          $MemoryBytes = Get-MixStudioIntelArcVram $Controller.Name
+        }
         $Gpus += [pscustomobject]@{
           name = [string]$Controller.Name
           vramGb = ConvertTo-MixStudioGb $MemoryBytes

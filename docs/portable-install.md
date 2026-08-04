@@ -12,7 +12,7 @@ The bootstrap is intentionally small. It gets the Mix Studio web app running fir
 4. Mix Studio creates the **Owner** profile and opens Generation setup automatically when no working ComfyUI connection is configured. Add an Owner PIN before enabling access from another device.
 5. Start a detected ComfyUI installation, launch the official ComfyUI Desktop installer, or enter an endpoint and folders manually. Mix Studio searches live endpoints, including non-default ports, and does not report a connection ready until it verifies the server.
 6. Choose **Quick setup** for the core files required by the recommended image starter, **Install this workflow** for only the current generation, or **Full setup guide** for individual control. Depth, style, regional prompting, masks, and upscaling are opt-in. Existing model files registered by ComfyUI are reused.
-7. Review the detected NVIDIA GPU and VRAM. Each family is labeled recommended, capable with offload, or below the guided tier. A below-tier choice requires explicit confirmation but remains installable.
+7. Review the detected GPU and VRAM. Each family is labeled recommended, capable with offload, or below the guided tier. A below-tier choice requires explicit confirmation but remains installable.
 8. Complete setup to continue into the first-generation tutorial. The tutorial is offered only after the connection and starter workflow are ready.
 
 The reviewed public source for `ComfyUI-Krea2Regional-MultiLoRA` is currently unavailable, so the dependency installer does not guess at a replacement. It reuses a valid existing copy. On a fresh machine, selecting Regional Prompting stops before any other dependency changes and identifies the expected `custom_nodes\ComfyUI-Krea2Regional-MultiLoRA` folder for a trusted manual installation. Deselect that group to install unrelated advanced capabilities separately.
@@ -47,7 +47,7 @@ For a manual installation, install Git for Windows and run `git clone https://gi
 4. In Generation setup, select the ComfyUI folder containing `main.py`. Browse uses the native macOS folder picker, and model paths use POSIX separators.
 5. Start ComfyUI from setup. Mix Studio applies `--fp32-vae`, split cross-attention, and the safe MPS fallback environment automatically.
 
-Apple Metal uses the compatible workflow tier. Setup selects official BF16 LTX 2.3 weights and disables MiniMax H3 plus the curated FP8-only 10Eros, Wan 2.2, and SCAIL 2 engines. H3's curated NVFP4/AWQ and INT8 ConvRot route is currently NVIDIA-only. Large LTX refine requests receive an up-front memory warning with a safer duration instead of failing late during stage two.
+Apple Metal uses the compatible workflow tier. Setup selects official BF16 LTX 2.3 weights and disables MiniMax H3 plus the curated FP8-only 10Eros, Wan 2.2, and SCAIL 2 engines. H3's curated NVFP4/AWQ and INT8 ConvRot route requires CUDA. Large LTX refine requests receive an up-front memory warning with a safer duration instead of failing late during stage two.
 
 ## New Linux machine
 
@@ -56,7 +56,7 @@ Apple Metal uses the compatible workflow tier. Setup selects official BF16 LTX 2
 3. In Generation setup, select the ComfyUI folder containing `main.py` or enter a live loopback endpoint. Set `COMFYUI_PATH` before launching when ComfyUI is not under `$HOME/ComfyUI`.
 4. Optionally set `MIXBOX_COMFY_SERVICE=comfyui.service` when ComfyUI is deliberately managed as that user service. Mix Studio does not assume a unit name or run systemd commands for remote endpoints.
 
-NVIDIA uses the full curated workflow set when its ComfyUI dependencies are present, including MiniMax H3 on ComfyUI 0.30.0 or newer. H3 standard setup covers text and frame generation; its separate Ref2VA model is installed only if Reference mode is selected. AMD ROCm is experimental and must already work in ComfyUI: Mix Studio detects AMD device and memory data, keeps Krea 2 on FP8, and changes NVIDIA-only SeedVR2 attention selections to SDPA. The curated H3 route is unavailable on AMD. Mix Studio does not install ROCm, GPU drivers, or a platform-specific PyTorch build.
+The supported discrete GPU vendor uses the full curated workflow set when its ComfyUI dependencies are present, including MiniMax H3 on ComfyUI 0.30.0 or newer. H3 standard setup covers text and frame generation; its separate Ref2VA model is installed only if Reference mode is selected. AMD ROCm is experimental and must already work in ComfyUI: Mix Studio detects AMD device and memory data, keeps Krea 2 on FP8, and changes CUDA-only SeedVR2 attention selections to SDPA. The curated H3 route is unavailable on AMD. Mix Studio does not install ROCm, GPU drivers, or a platform-specific PyTorch build.
 
 The installer is intentionally idempotent. Rerunning it preserves the existing `data/` location and ComfyUI connection, refreshes the minimal bootstrap metadata atomically, starts the app, and opens the browser. Generation setup is always available later from **Advanced Settings → General**, and the Phone access card can be reopened from its Finish step.
 

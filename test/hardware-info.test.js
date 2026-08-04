@@ -10,6 +10,7 @@ const {
   parseNvidiaGpuCsv,
   parseRocmSmiJson,
   parseWindowsGpuJson,
+  intelArcVramBytes,
   readDiskInfo,
   hardwareInfo,
 } = require('../lib/hardware-info');
@@ -36,6 +37,25 @@ test('reads Apple Metal identity from ComfyUI system stats', () => {
   }]);
 });
 
+test('Intel Arc VRAM is corrected when WMI reports unreliable values', () => {
+  assert.equal(intelArcVramBytes('Intel(R) Arc(TM) Pro B70 Graphics'), 32 * 1024 ** 3);
+  assert.equal(intelArcVramBytes('Intel Arc A770'), 16 * 1024 ** 3);
+  assert.equal(intelArcVramBytes('Intel Arc Pro A40'), 16 * 1024 ** 3);
+  assert.equal(intelArcVramBytes('Intel Arc B70'), 32 * 1024 ** 3);
+  assert.equal(intelArcVramBytes('NVIDIA GeForce RTX 5090'), null);
+  assert.equal(intelArcVramBytes(''), null);
+});
+
+test('parseWindowsGpuJson corrects Intel Arc VRAM below 4 GB', () => {
+  const result = parseWindowsGpuJson(JSON.stringify([
+    { name: 'Intel(R) Arc(TM) Pro B70 Graphics', memoryBytes: 2 * 1024 ** 3, driver: '32.0.101.8805' },
+  ]));
+  assert.equal(result[0].name, 'Intel(R) Arc(TM) Pro B70 Graphics');
+  assert.equal(result[0].memoryBytes, 32 * 1024 ** 3);
+  assert.equal(result[0].vendor, 'intel');
+  assert.equal(result[0].backend, 'xpu');
+});
+
 test('parses AMD ROCm identity and filters unsupported Windows display adapters', () => {
   assert.deepEqual(parseRocmSmiJson(JSON.stringify({
     card0: {
@@ -54,6 +74,9 @@ test('parses AMD ROCm identity and filters unsupported Windows display adapters'
   ])), [{
     name: 'AMD Radeon RX 7900 XTX', memoryBytes: 24 * 1024 ** 3, driver: '32.0',
     vendor: 'amd', backend: 'rocm',
+  }, {
+    name: 'Intel Arc A770', memoryBytes: 16 * 1024 ** 3, driver: '31.0',
+    vendor: 'intel', backend: 'xpu',
   }]);
 });
 

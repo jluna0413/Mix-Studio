@@ -13,25 +13,16 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { execFile, spawn } = require('child_process');
-const { pipeline } = require('stream/promises');
-const { gitCommand, readAppRelease, updateFromGit } = require('./lib/app-update');
-const {
-  inspectCriticalPublicAssets,
-  isCriticalPublicAsset,
-  isUsableCriticalPublicAsset,
-  loadCriticalPublicAssetCache,
-} = require('./lib/app-assets');
+const { readAppRelease, updateFromGit } = require('./lib/app-update');
 const { createGithubReleaseChecker } = require('./lib/github-releases');
 const { resolveRuntimeConfig, publicAnalyticsConfig } = require('./lib/runtime-config');
 const { sam3InstallStatus } = require('./lib/sam3-installer');
 const { probeSageAttention } = require('./lib/sage-attention');
-const { h3PerformanceReport } = require('./lib/h3-performance');
 const {
   krea2ClipCompatibility,
   krea2ClipCompatibilityError,
   minimaxH3Compatibility,
   minimaxH3CompatibilityError,
-  minimaxH3NativeAudioSampling,
   nativeInt8Compatibility,
   nativeInt8CompatibilityError,
   objectInfoComboChoices,
@@ -40,26 +31,9 @@ const {
   COMPONENTS: DEPENDENCY_COMPONENTS,
   NODE_PACKS: DEPENDENCY_NODE_PACKS,
   availableComponents,
-  inspectPinnedNodeRevisions,
   installComponents,
-  MODEL_ASSETS: DEPENDENCY_MODEL_ASSETS,
   normalizeHuggingFaceEndpoint,
 } = require('./lib/dependency-installer');
-const {
-  activeH3ModelSettingKeys,
-  h3EffectiveModelName,
-  h3FrameVariant,
-  h3ReferenceVariant,
-  h3TurboCompatibility,
-  h3VariantSettingDefaults,
-  normalizeH3FrameVariant,
-  normalizeH3ReferenceVariant,
-} = require('./lib/h3-model-variants');
-const { dynTimePatchStatus, restoreDynTimePatch } = require('./lib/h3-dyntime-patch');
-const {
-  deleteManagedModelCandidate,
-  managedModelCleanupCandidates,
-} = require('./lib/model-cleanup');
 const { discoverModels } = require('./installer/model-discovery');
 const { restartComfy, restartStatus, startComfy, startStatus } = require('./lib/comfy-restart');
 const { discoverComfyEndpoints, probeComfyUrl } = require('./lib/comfy-discovery');
@@ -92,9 +66,9 @@ const {
   seedVr2AttentionForVendor,
   installedSeedVr2Models,
   seedVr2Profile,
+  seedVr2DitInputs,
   targetResolutionForUpscale,
   rtxVideoSuperResolutionNode,
-  seedVr2UpscaleNodes,
   ULTIMATE_SD_UPSCALE_MODEL,
   buildUltimateSdUpscaleGraph,
 } = require('./lib/upscale-workflows');
@@ -106,27 +80,8 @@ const {
   motionPromptEnhanceParts,
   promptEnhanceParts,
   regionPromptEnhanceParts,
-  videoPromptEnhanceParts,
   videoPromptRevisionParts,
 } = require('./lib/prompt-enhance');
-const {
-  appendH3ValidationFeedback,
-  h3PromptReferenceTokens,
-  validatedH3Prompt,
-} = require('./lib/h3-prompt-validation');
-const {
-  DEFAULTS: EXTERNAL_LLM_DEFAULTS,
-  externalLlmEnabled,
-  externalLlmProviderConfig,
-  externalLlmRequest,
-  normalizeExternalLlmSettings,
-  normalizeOllamaUrl,
-} = require('./lib/external-llm');
-const {
-  localPromptAiCatalog,
-  localPromptAiConfig,
-  normalizeLocalPromptAiSettings,
-} = require('./lib/local-prompt-ai');
 const { combineNegativePrompts, normalizeNegativePrompt } = require('./lib/negative-prompt');
 const {
   buildDepthMapNodes,
@@ -186,20 +141,13 @@ const {
 } = require('./lib/edit-mask');
 const {
   H3_FPS,
-  H3_LONG_CONTEXT_MAX_SECONDS,
-  H3_MIN_SECONDS,
-  H3_TURBO_REFERENCE_CHUNK_FRAMES,
   LTX_MAX_SECONDS,
   LTX_CAMERA_FPS,
   LTX_CAMERA_MAX_SECONDS,
   buildMiniMaxH3Graph,
   h3Dimensions,
   h3DurationSeconds,
-  h3EffectiveDurationSeconds,
   h3FramesForSeconds,
-  h3LongContextSegments,
-  h3LongContextSegmentPrompt,
-  h3TurboReferenceSegments,
   ltxCameraDurationSeconds,
   ltxDurationSeconds,
   ltxFramesForSeconds,
@@ -217,24 +165,14 @@ const {
   videoProcessInfo,
 } = require('./lib/video-workflows');
 const {
-  WAN_ANIMATE_2_FRAMES,
-  WAN_ANIMATE_2_STEPS,
-  buildWanAnimate2Graph,
-  wanAnimate2Dimensions,
-} = require('./lib/wan-animate2-workflow');
-const {
   normalizeDirectorExtensionPlan,
   resolveDurableUploadedVideo,
   videoExtensionInfo,
 } = require('./lib/video-extension');
 const {
-  joinVideoChunks,
   joinVideoExtension,
-  normalizeVideoPreviewOptions,
   probeVideoFile,
   resolveFfmpegExecutable,
-  transcodeVideoFileToMp4,
-  transcodeVideoPreview,
 } = require('./lib/video-extension-join');
 const {
   DIRECTOR_FPS,
@@ -279,14 +217,6 @@ const {
   mobileAccessSummary,
   tailscaleHttpsStatus,
 } = require('./lib/mobile-access');
-const {
-  disableSparkFunnel,
-  enableSparkFunnel,
-  newSparkAccessToken,
-  normalizeSparkAccess,
-  sparkFunnelStatus,
-} = require('./lib/spark-access');
-const { SUPPORTED_PROTOCOL_VERSIONS, handleMcpPayload, mcpToolDefinitions } = require('./lib/spark-mcp');
 const { hardwareInfo } = require('./lib/hardware-info');
 const { isWidgetSpec } = require('./lib/comfy-widget-spec');
 const { browseGenerationFolder } = require('./lib/folder-picker');
@@ -367,8 +297,6 @@ const {
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
-const CRITICAL_PUBLIC_STARTUP_CACHE = loadCriticalPublicAssetCache(ROOT);
-const CRITICAL_PUBLIC_GIT_CACHE = new Map();
 const officialReleaseChecker = createGithubReleaseChecker();
 const SETUP_FEATURE_MANIFEST = loadJson(path.join(ROOT, 'installer', 'feature-manifest.json'), { features: [] });
 let RUNTIME = resolveRuntimeConfig(ROOT);
@@ -376,16 +304,13 @@ let videoExtensionFfmpeg = '';
 const DATA = RUNTIME.dataDir;
 const IMAGES = path.join(DATA, 'images');
 const VIDEOS = path.join(DATA, 'videos');
-const VIDEO_PREVIEWS = path.join(DATA, 'video-previews');
 const INPUTS = path.join(DATA, 'inputs');
 const TRASH_ROOT = path.join(DATA, 'trash');
 const PROMPT_PACKS = path.join(DATA, 'addons', 'prompt-packs');
 const PORT = Number(process.env.PORT || 3300);
-const MAX_DOCUMENTATION_VIDEO_BYTES = 256 * 1024 * 1024;
 
 fs.mkdirSync(IMAGES, { recursive: true });
 fs.mkdirSync(VIDEOS, { recursive: true });
-fs.mkdirSync(VIDEO_PREVIEWS, { recursive: true });
 fs.mkdirSync(INPUTS, { recursive: true });
 fs.mkdirSync(TRASH_ROOT, { recursive: true });
 fs.mkdirSync(PROMPT_PACKS, { recursive: true });
@@ -421,15 +346,6 @@ function serializePromptPackMutation(task) {
 /* ------------------------------------------------------------------ */
 
 const SETTINGS_FILE = path.join(DATA, 'settings.json');
-const SPARK_ACCESS_FILE = path.join(DATA, 'spark_access.json');
-const SETTINGS_SCHEMA_VERSION = 3;
-const LEGACY_H3_TURBO_LORA = 'minimax_h3_turbo_4step_ema_ckpt850.safetensors';
-const DEFAULT_H3_TURBO_LORA = 'minimax_h3_turbo_v4_step600_ema.safetensors';
-
-function h3FramesTurboDefaultSteps(value) {
-  const filename = String(value || '').trim().replace(/\\/g, '/').split('/').pop().toLowerCase();
-  return filename === LEGACY_H3_TURBO_LORA.toLowerCase() ? 4 : 6;
-}
 const DEFAULT_SYSTEM_PROMPT = `You are an expert prompt engineer for text-to-image models. Your task is to expand the user's prompt into a highly effective image-generation prompt.
 
 Think step by step about the request before writing the answer:
@@ -453,7 +369,6 @@ Follow these rules strictly:
 User's Input:`;
 
 const DEFAULT_SETTINGS = {
-  settingsSchemaVersion: SETTINGS_SCHEMA_VERSION,
   comfyUrl: RUNTIME.comfy.url || 'http://127.0.0.1:8188',
   hfToken: '',
   hfEndpoint: '',
@@ -499,9 +414,6 @@ const DEFAULT_SETTINGS = {
   h3Clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
   h3VideoVae: 'minimax_h3_video_vae_fp16.safetensors',
   h3AudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
-  h3TurboLora: DEFAULT_H3_TURBO_LORA,
-  h3RefTurboLora: 'minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors',
-  ...h3VariantSettingDefaults(),
   wanHighUnet: 'wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors',
   wanLowUnet: 'wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors',
   wanClip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
@@ -520,25 +432,7 @@ const DEFAULT_SETTINGS = {
   scailPusaLora: 'Pusa\\Wan21_PusaV1_LoRA_14B_rank512_bf16.safetensors',
   scailClipVision: 'clip_vision_h.safetensors',
   scailSam: 'sam3.1_multiplex_fp16.safetensors',
-  wanAnimate2Unet: 'wan_animate_2_int8_convrot.safetensors',
-  wanAnimate2Lora: 'lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors',
-  wanAnimate2Clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-  wanAnimate2ClipVision: 'clip_vision_h.safetensors',
-  wanAnimate2Vae: 'Wan2_1_VAE_bf16.safetensors',
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
-  externalLlmProvider: EXTERNAL_LLM_DEFAULTS.externalLlmProvider,
-  externalLlmOpenAiApiKey: '',
-  externalLlmOpenAiModel: EXTERNAL_LLM_DEFAULTS.externalLlmOpenAiModel,
-  externalLlmGeminiApiKey: '',
-  externalLlmGeminiModel: EXTERNAL_LLM_DEFAULTS.externalLlmGeminiModel,
-  externalLlmOllamaUrl: EXTERNAL_LLM_DEFAULTS.externalLlmOllamaUrl,
-  externalLlmOllamaModel: EXTERNAL_LLM_DEFAULTS.externalLlmOllamaModel,
-  externalLlmImageRevise: false,
-  externalLlmImageEnhance: false,
-  externalLlmVideoRevise: false,
-  externalLlmVideoEnhance: false,
-  localPromptAiClip: '',
-  localPromptAiClipType: 'krea2',
   galleryPassword: DEFAULT_PRIVATE_PASSWORD,
   exportDir: '',
   smartFilenames: true,
@@ -557,13 +451,9 @@ function saveJsonSync(file, obj) {
 }
 
 function normalizeSettings(s) {
-  s.settingsSchemaVersion = SETTINGS_SCHEMA_VERSION;
   normalizeSeedVr2Defaults(s);
   s.krea2ModelVariant = normalizeKrea2Variant(s.krea2ModelVariant, s);
   s.vramProfile = normalizeVramProfile(s.vramProfile);
-  s.h3FrameModelVariant = normalizeH3FrameVariant(s.h3FrameModelVariant);
-  s.h3ReferenceModelVariant = normalizeH3ReferenceVariant(s.h3ReferenceModelVariant);
-  s.h3TurboLora = String(s.h3TurboLora || '').trim() || DEFAULT_H3_TURBO_LORA;
   s.hfEndpoint = normalizeHuggingFaceEndpoint(s.hfEndpoint);
   if (!s.klein4Unet) s.klein4Unet = s.kleinUnet || DEFAULT_SETTINGS.klein4Unet;
   if (!s.klein4Clip) s.klein4Clip = s.kleinClip || DEFAULT_SETTINGS.klein4Clip;
@@ -577,32 +467,12 @@ function normalizeSettings(s) {
   s.galleryPassword = galleryPassword(s);
   try { s.exportDir = normalizeExportDirectory(s.exportDir); } catch { s.exportDir = ''; }
   s.smartFilenames = s.smartFilenames !== false;
-  Object.assign(s, normalizeExternalLlmSettings(s));
-  Object.assign(s, normalizeLocalPromptAiSettings(s));
   s.features = normalizeFeatures(s.features);
   return s;
 }
 
-function migrateStoredSettings(value) {
-  const stored = value && typeof value === 'object' ? Object.assign({}, value) : {};
-  const version = Math.max(0, Math.round(Number(stored.settingsSchemaVersion) || 0));
-  const changed = version < SETTINGS_SCHEMA_VERSION;
-  // Schema v3 makes the selected Turbo filename authoritative. In particular,
-  // keep the original ckpt850 four-step adapter when an existing install or a
-  // user explicitly selects it; only brand-new settings inherit the v4 default.
-  stored.settingsSchemaVersion = SETTINGS_SCHEMA_VERSION;
-  return { stored, changed };
-}
-
-const storedSettingsMigration = migrateStoredSettings(loadJson(SETTINGS_FILE, {}));
-let settings = normalizeSettings(Object.assign({}, DEFAULT_SETTINGS, storedSettingsMigration.stored));
-if (storedSettingsMigration.changed && fs.existsSync(SETTINGS_FILE)) saveJsonSync(SETTINGS_FILE, settings);
-let sparkAccess = normalizeSparkAccess(loadJson(SPARK_ACCESS_FILE, {}));
+let settings = normalizeSettings(Object.assign({}, DEFAULT_SETTINGS, loadJson(SETTINGS_FILE, {})));
 const APP_RESTART_SETTINGS_AT_BOOT = Object.freeze({ comfyUrl: settings.comfyUrl });
-
-function saveSparkAccess() {
-  saveJsonSync(SPARK_ACCESS_FILE, sparkAccess);
-}
 
 function settingsRequireAppRestart() {
   return settings.comfyUrl !== APP_RESTART_SETTINGS_AT_BOOT.comfyUrl;
@@ -611,33 +481,11 @@ function settingsRequireAppRestart() {
 function settingsResponse() {
   const response = Object.assign({}, settings, {
     hfTokenConfigured: !!String(settings.hfToken || process.env.HF_TOKEN || '').trim(),
-    externalLlmOpenAiApiKeyConfigured: !!String(settings.externalLlmOpenAiApiKey || process.env.OPENAI_API_KEY || '').trim(),
-    externalLlmGeminiApiKeyConfigured: !!String(settings.externalLlmGeminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim(),
-    externalLlmOpenAiApiKeyStored: !!String(settings.externalLlmOpenAiApiKey || '').trim(),
-    externalLlmGeminiApiKeyStored: !!String(settings.externalLlmGeminiApiKey || '').trim(),
     appRestartRequired: settingsRequireAppRestart(),
     gpuVendor: setupHardwareProfile(setupHardwareSnapshot || {}).gpuVendor || '',
   });
   delete response.hfToken;
-  delete response.externalLlmOpenAiApiKey;
-  delete response.externalLlmGeminiApiKey;
   return response;
-}
-
-function configuredModelsRoot() {
-  const install = sam3InstallStatus(RUNTIME);
-  return String(RUNTIME.comfy.modelsPath || (install.basePath ? path.join(install.basePath, 'models') : '')).trim();
-}
-
-function publicModelCleanupCandidate(candidate) {
-  return {
-    id: candidate.id,
-    settingKey: candidate.settingKey,
-    filename: candidate.filename,
-    folder: candidate.folder,
-    bytes: candidate.bytes,
-    modifiedAt: candidate.modifiedAt,
-  };
 }
 
 function adoptDeviceCompatibleModelSettings(hardwareProfile = {}) {
@@ -688,10 +536,8 @@ function seedVr2ModelDirs() {
 const DB_FILE = path.join(DATA, 'db.json');
 let db = loadJson(DB_FILE, { folders: [], items: [] });
 let dbSaveTimer = null;
-let dbRevision = 1;
 let mediaDeletionQueue = Promise.resolve();
 function saveDb() {
-  dbRevision += 1;
   clearTimeout(dbSaveTimer);
   dbSaveTimer = setTimeout(() => saveJsonSync(DB_FILE, db), 150);
 }
@@ -989,7 +835,6 @@ let dependencyInstallState = {
   nodeFailures: [],
   updatedAt: Date.now(),
 };
-let pinnedNodeRevisionCache = { key: '', at: 0, nodes: [], components: [] };
 
 const EMPTY_DEPENDENCY_FAILURE = Object.freeze({
   errorCode: null,
@@ -1024,30 +869,6 @@ function dependencyFailureState(error) {
 function updateDependencyInstallState(patch) {
   dependencyInstallState = Object.assign({}, dependencyInstallState, patch, { updatedAt: Date.now() });
   broadcast('dependencyInstall', dependencyInstallState);
-}
-
-function invalidatePinnedNodeRevisionCache() {
-  pinnedNodeRevisionCache = { key: '', at: 0, nodes: [], components: [] };
-}
-
-async function pinnedNodeRevisionStatus(status, force = false) {
-  const customNodesPath = String(status?.customNodesPath || '');
-  const pins = Object.entries(DEPENDENCY_NODE_PACKS)
-    .map(([id, pack]) => `${id}:${pack.ref || ''}`)
-    .join('|');
-  const key = `${customNodesPath}::${pins}`;
-  if (!force && pinnedNodeRevisionCache.key === key && Date.now() - pinnedNodeRevisionCache.at < 60_000) {
-    return pinnedNodeRevisionCache;
-  }
-  let nodes = [];
-  try {
-    nodes = await inspectPinnedNodeRevisions(status, {
-      gitExecutable: RUNTIME?.update?.gitExecutable,
-    });
-  } catch { /* node classes remain the fallback when revision inspection is unavailable */ }
-  const components = [...new Set(nodes.flatMap((entry) => entry.componentIds || []))];
-  pinnedNodeRevisionCache = { key, at: Date.now(), nodes, components };
-  return pinnedNodeRevisionCache;
 }
 
 function updateComfySetupState(patch) {
@@ -1598,22 +1419,14 @@ function configuredModelsStatus(info) {
     },
     h3: {
       label: 'MiniMax H3',
-      model: diffusionModelStatus(info, h3EffectiveModelName(settings, 'frames')),
+      model: diffusionModelStatus(info, settings.h3Unet),
       textEncoder: modelStatus(info, 'CLIPLoader', 'clip_name', settings.h3Clip),
       videoVae: modelStatus(info, 'VAELoader', 'vae_name', settings.h3VideoVae),
       audioVae: modelStatus(info, 'VAELoader', 'vae_name', settings.h3AudioVae),
     },
     h3Ref: {
       label: 'MiniMax H3 Reference-to-Video',
-      model: diffusionModelStatus(info, h3EffectiveModelName(settings, 'reference')),
-    },
-    h3Turbo: {
-      label: 'MiniMax H3 Turbo',
-      lora: modelStatus(info, 'MiniMaxH3TurboLoRA', 'lora_name', settings.h3TurboLora, loraList),
-    },
-    h3RefTurbo: {
-      label: 'MiniMax H3 Reference Turbo',
-      lora: modelStatus(info, 'LoraLoaderModelOnly', 'lora_name', settings.h3RefTurboLora, loraList),
+      model: diffusionModelStatus(info, settings.h3RefUnet),
     },
     ltxDirector: {
       label: 'LTX 2.3 Director',
@@ -1654,14 +1467,6 @@ function configuredModelsStatus(info) {
       clipVision: modelStatus(info, 'CLIPVisionLoader', 'clip_name', settings.scailClipVision),
       sam: modelStatus(info, 'CheckpointLoaderSimple', 'ckpt_name', settings.scailSam),
     },
-    wanAnimate2: {
-      label: 'Wan Animate 2',
-      unet: diffusionModelStatus(info, settings.wanAnimate2Unet),
-      lightx: modelStatus(info, 'LoraLoaderModelOnly', 'lora_name', settings.wanAnimate2Lora, loraList),
-      textEncoder: modelStatus(info, 'CLIPLoader', 'clip_name', settings.wanAnimate2Clip),
-      clipVision: modelStatus(info, 'CLIPVisionLoader', 'clip_name', settings.wanAnimate2ClipVision),
-      vae: modelStatus(info, 'VAELoader', 'vae_name', settings.wanAnimate2Vae),
-    },
     scailInfinity: Object.assign({ label: 'SCAIL 2 Infinity' }, scailInfinityStatus(info)),
   };
 }
@@ -1680,9 +1485,6 @@ function missingDependencyComponentIds(missing, models, capabilities = {}) {
     video: ['video'],
     h3: ['h3'],
     h3r2v: ['h3r2v'],
-    h3turbo: ['h3turbo'],
-    h3turbor2v: ['h3turbor2v'],
-    h3context: ['h3context'],
     h3sage: ['h3sage'],
     ltxcamera: ['ltxcamera'],
     ltxdirector: ['ltxdirector'],
@@ -1690,7 +1492,6 @@ function missingDependencyComponentIds(missing, models, capabilities = {}) {
     video4k: ['video4k'],
     rife: ['rife'],
     wan: ['wan'],
-    wananimate2: ['wananimate2'],
     eros: ['eros'],
     scail: ['scail'],
     scailinfinity: ['scailinfinity'],
@@ -1708,14 +1509,13 @@ function missingDependencyComponentIds(missing, models, capabilities = {}) {
   const krea2CoreChecks = ['turbo', 'clip', 'vae'].map((key) => krea2[key]).filter(Boolean);
   if (krea2CoreChecks.some((check) => !check.ok)) ids.add('image');
   if (krea2.raw && !krea2.raw.ok) ids.add('krea2raw');
-  const modelToComponent = { krea2Depth: 'krea2depth', krea2IdentityEdit: 'krea2ref', klein4: 'klein4', klein9: 'klein9', qwen: 'qwen', upscale: 'upscale', ltx: 'video', h3: 'h3', h3Ref: 'h3r2v', h3Turbo: 'h3turbo', h3RefTurbo: 'h3turbor2v', ltxDirector: 'ltxdirector', ltxCamera: 'ltxcamera', ltxEdit: 'videoedit', faceid: 'faceid', wan: 'wan', wanAnimate2: 'wananimate2', eros: 'eros', scail: 'scail', scailInfinity: 'scailinfinity' };
+  const modelToComponent = { krea2Depth: 'krea2depth', krea2IdentityEdit: 'krea2ref', klein4: 'klein4', klein9: 'klein9', qwen: 'qwen', upscale: 'upscale', ltx: 'video', h3: 'h3', h3Ref: 'h3r2v', ltxDirector: 'ltxdirector', ltxCamera: 'ltxcamera', ltxEdit: 'videoedit', faceid: 'faceid', wan: 'wan', eros: 'eros', scail: 'scail', scailInfinity: 'scailinfinity' };
   for (const [model, value] of Object.entries(models || {})) {
     const checks = Object.values(value || {}).filter((check) => check && typeof check === 'object' && Object.prototype.hasOwnProperty.call(check, 'ok'));
     if (checks.some((check) => !check.ok) && modelToComponent[model]) ids.add(modelToComponent[model]);
   }
   if (Object.prototype.hasOwnProperty.call(capabilities, 'sageAttention')
     && capabilities.sageAttention?.ready !== true) ids.add('h3sage');
-  for (const component of capabilities.repairComponents || []) ids.add(component);
   return [...ids];
 }
 
@@ -2091,21 +1891,6 @@ function clearPendingJobState(job) {
   }
 }
 
-async function stopComfyPrompt(pid) {
-  await comfyFetch('/queue', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ delete: [pid] }),
-  }).catch(() => { /* prompt may already be running or complete */ });
-  let running = false;
-  try {
-    const queue = await (await comfyFetch('/queue')).json();
-    running = (queue.queue_running || []).some((entry) => String(entry?.[1] || '') === pid);
-  } catch { /* ComfyUI may be temporarily offline */ }
-  if (running) await comfyFetch('/interrupt', { method: 'POST' }).catch(() => { /* noop */ });
-  return running;
-}
-
 function cancelJob(pid, message = 'Cancelled') {
   const job = jobs.get(pid);
   if (!job) return false;
@@ -2360,44 +2145,6 @@ async function completeStrengthHuntJob(pid, job, outputFiles, durationMs, textOu
   broadcast('jobDone', { jobId: pid, items: [composite, ...created], strengthHunt: true, count: created.length });
 }
 
-async function queueNextH3VideoChunk(job) {
-  const sequence = job && job.videoChunkSequence;
-  if (!sequence || sequence.index >= sequence.segments.length - 1) return null;
-  const nextIndex = sequence.index + 1;
-  const nextSegment = sequence.segments[nextIndex];
-  const nextOpts = sequence.type === 'long-context'
-    ? Object.assign({}, sequence.opts, {
-      prompt: h3LongContextSegmentPrompt(sequence.basePrompt, nextSegment, sequence.segments.length),
-      frames: nextSegment.generationFrames,
-      seed: (Number(sequence.opts.seed) + nextIndex) % (2 ** 48),
-      makePoster: false,
-      firstImageName: null,
-      endImageName: nextIndex === sequence.segments.length - 1 ? sequence.finalEndImageName : null,
-      longContext: { chainId: sequence.chainId, clipIndex: nextIndex },
-      turboReferenceSegment: sequence.turboReferenceVideo ? nextSegment : null,
-    })
-    : Object.assign({}, sequence.opts, {
-      makePoster: false,
-      turboReferenceSegment: nextSegment,
-    });
-  const graph = await buildMiniMaxH3Graph(nextOpts, settings, {
-    nodeFromOrdered, filterInputs, rtxVideoSuperResolutionNode,
-  });
-  const nextPid = await queuePrompt(graph, { profileId: job.profileId });
-  trackJob(nextPid, {
-    kind: 'video',
-    profileId: job.profileId,
-    itemId: job.itemId || null,
-    createItem: job.createItem,
-    graph,
-    videoInfo: job.videoInfo,
-    thumbnailName: job.thumbnailName,
-    videoChunkSequence: Object.assign({}, sequence, { index: nextIndex }),
-  });
-  ensureWs();
-  return nextPid;
-}
-
 async function completeJob(pid) {
   const job = jobs.get(pid);
   if (!job) return;
@@ -2453,59 +2200,6 @@ async function completeJob(pid) {
     const vids = findOutputFiles(outputs, /\.(mp4|webm|mov|mkv)$/i);
     if (!vids.length) return failJob(pid, 'ComfyUI produced no video file');
     let buf = await downloadOutput(vids[vids.length - 1]);
-    const videoChunkSequence = job.videoChunkSequence;
-    if (videoChunkSequence) {
-      videoChunkSequence.chunkBuffers[videoChunkSequence.index] = buf;
-      if (videoChunkSequence.index === 0 && job.createItem && !videoChunkSequence.posterBuffer) {
-        const posters = findOutputFiles(outputs, /\.(png|jpg|jpeg|webp)$/i);
-        if (posters.length) videoChunkSequence.posterBuffer = await downloadOutput(posters[0]);
-      }
-      if (videoChunkSequence.index < videoChunkSequence.segments.length - 1) {
-        try {
-          const nextJobId = await queueNextH3VideoChunk(job);
-          jobs.delete(pid);
-          broadcast('videoChunkStep', {
-            jobId: pid,
-            nextJobId,
-            profileId: job.profileId,
-            completedChunk: videoChunkSequence.index + 1,
-            nextChunk: videoChunkSequence.index + 2,
-            total: videoChunkSequence.segments.length,
-            sequenceKind: videoChunkSequence.type || 'turbo-reference',
-          });
-        } catch (error) {
-          return failJob(pid, `MiniMax H3 chunk ${videoChunkSequence.index + 2} could not start: ${error.message}`);
-        }
-        return;
-      }
-      broadcast('status', {
-        jobId: pid,
-        profileId: job.profileId,
-        kind: 'video',
-        text: videoChunkSequence.type === 'long-context'
-          ? 'Joining H3 long-context clips…'
-          : 'Joining H3 video chunks…',
-        itemId: job.itemId || null,
-      });
-      try {
-        const ffmpegPath = await resolveFfmpegExecutable(RUNTIME);
-        if (videoChunkSequence.chunkBuffers.length !== videoChunkSequence.segments.length
-          || videoChunkSequence.chunkBuffers.some((chunk) => !chunk)) {
-          throw new Error('One or more generated chunks are missing');
-        }
-        buf = await joinVideoChunks({
-          chunkBuffers: videoChunkSequence.chunkBuffers,
-          segments: videoChunkSequence.segments,
-          fps: videoChunkSequence.fps,
-          width: videoChunkSequence.width,
-          height: videoChunkSequence.height,
-          ffmpegPath,
-        });
-        durationMs = Math.max(jobDurationMs(job), Date.now() - videoChunkSequence.startedAt);
-      } catch (error) {
-        return failJob(pid, error.message || 'Could not join the generated H3 video chunks');
-      }
-    }
     if (job.extensionJoin) {
       broadcast('status', {
         jobId: pid,
@@ -2536,8 +2230,7 @@ async function completeJob(pid) {
         ? smartAssetFilename(videoPrompt, id, '.png', 'video')
         : `${id}.png`;
       const posters = findOutputFiles(outputs, /\.(png|jpg|jpeg|webp)$/i);
-      const pbuf = videoChunkSequence?.posterBuffer
-        || (posters.length ? await downloadOutput(posters[0]) : BLANK_PNG);
+      const pbuf = posters.length ? await downloadOutput(posters[0]) : BLANK_PNG;
       await fsp.writeFile(path.join(IMAGES, posterName), pbuf);
       item = {
         id,
@@ -2567,44 +2260,26 @@ async function completeJob(pid) {
     const fname = settings.smartFilenames
       ? smartAssetFilename(job.videoInfo.motionPrompt, videoId, '.mp4', 'video')
       : `${item.id}_${Date.now()}.mp4`;
-    const storedVideoPath = path.join(VIDEOS, fname);
-    await fsp.writeFile(storedVideoPath, buf);
-    const completedVideoInfo = Object.assign({}, job.videoInfo, {
-      refinedMotionPrompt: completedRefinedMotionPrompt,
-      durationMs,
-    });
-    if (completedVideoInfo.engine === 'wan-animate2') {
-      try {
-        const ffmpegPath = await resolveFfmpegExecutable(RUNTIME);
-        const probe = await probeVideoFile(storedVideoPath, ffmpegPath);
-        Object.assign(completedVideoInfo, {
-          frames: probe.frames,
-          fps: probe.fps,
-          seconds: probe.durationSeconds,
-          width: probe.width,
-          height: probe.height,
-          exactFrameCount: true,
-          sourceFrameRate: true,
-          driveDurSeconds: probe.durationSeconds,
-        });
-      } catch { /* The saved video remains valid; browser metadata is the fallback. */ }
-    }
+    await fsp.writeFile(path.join(VIDEOS, fname), buf);
     const entry = {
       id: videoId,
       file: fname,
       createdAt: Date.now(),
-      info: completedVideoInfo,
+      info: Object.assign({}, job.videoInfo, {
+        refinedMotionPrompt: completedRefinedMotionPrompt,
+        durationMs,
+      }),
     };
     item.videos = (Array.isArray(item.videos) ? item.videos : []).concat([entry]);
     saveDb();
     const videoActionLabel = job.videoInfo.processed === 'upscale'
-      ? `Video upscale (${{ seedvr2: 'SeedVR2', rtx: 'RTX' }[job.videoInfo.upscaleEngine] || 'RTX'})`
+      ? 'Video upscale'
       : (job.videoInfo.processed === 'interpolate'
         ? 'Frame interpolation'
         : (job.videoInfo.processed === 'extend' ? 'Video extension' : (job.videoInfo.composite ? 'Side-by-side' : 'Video')));
     pushHistory({
       kind: 'video', profileId: job.profileId, itemId: item.id, videoId: entry.id, durationMs,
-      label: `${videoActionLabel} (${{ h3: 'MiniMax H3', wan: 'Wan 2.2', 'wan-animate2': 'Wan Animate 2', eros: '10Eros', scail: 'SCAIL 2' }[job.videoInfo.engine] || 'LTX 2.3'}): ${(job.videoInfo.motionPrompt || '').slice(0, 60)}`,
+      label: `${videoActionLabel} (${{ h3: 'MiniMax H3', wan: 'Wan 2.2', eros: '10Eros', scail: 'SCAIL 2' }[job.videoInfo.engine] || 'LTX 2.3'}): ${(job.videoInfo.motionPrompt || '').slice(0, 60)}`,
     });
     jobs.delete(pid);
     broadcast('videoDone', { jobId: pid, item });
@@ -2886,127 +2561,6 @@ function cleanEnhancedText(raw, fallback) {
   return cleanGeneratedPrompt(raw, fallback);
 }
 
-const MAX_EXTERNAL_LLM_IMAGE_BYTES = 20 * 1024 * 1024;
-
-function configuredExternalLlm() {
-  return externalLlmProviderConfig(Object.assign({}, settings, {
-    externalLlmOpenAiApiKey: settings.externalLlmOpenAiApiKey || process.env.OPENAI_API_KEY || '',
-    externalLlmGeminiApiKey: settings.externalLlmGeminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '',
-  }));
-}
-
-function externalPromptStatus(action, provider) {
-  const verb = action === 'revise' ? 'Revising' : 'Enhancing';
-  return `${verb} prompt with ${provider.label}...`;
-}
-
-async function externalPromptImage(imageName, profileId) {
-  const name = String(imageName || '').trim();
-  if (!name) return null;
-  const catalogedAsset = db.uploadedAssets.find((asset) => asset.name === name);
-  if (catalogedAsset && (catalogedAsset.profileId !== profileId || catalogedAsset.deletedAt)) {
-    throw new Error('The selected reference image is unavailable');
-  }
-  const ext = path.extname(name.split('/').pop()).toLowerCase();
-  const mimeType = {
-    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-    '.webp': 'image/webp', '.gif': 'image/gif',
-  }[ext];
-  if (!mimeType) throw new Error('External prompt vision supports PNG, JPEG, WebP, or GIF references');
-  const local = inputAssetPath(INPUTS, name);
-  try {
-    const stat = await fsp.stat(local);
-    if (stat.size > MAX_EXTERNAL_LLM_IMAGE_BYTES) throw new Error('The reference image is larger than the 20 MB external prompt limit');
-    return { data: await fsp.readFile(local), mimeType };
-  } catch (error) {
-    if (/20 MB external prompt limit/.test(String(error?.message || ''))) throw error;
-  }
-  const parts = name.split('/');
-  const filename = parts.pop();
-  const subfolder = parts.join('/');
-  const response = await comfyFetch(`/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=input`);
-  const data = Buffer.from(await response.arrayBuffer());
-  if (data.length > MAX_EXTERNAL_LLM_IMAGE_BYTES) throw new Error('The reference image is larger than the 20 MB external prompt limit');
-  return { data, mimeType };
-}
-
-function orderedPromptImageNames(options = {}) {
-  const plural = Array.isArray(options.imageNames)
-    ? options.imageNames.map((name) => String(name || '').trim()).filter(Boolean)
-    : [];
-  if (plural.length) return plural.slice(0, 8);
-  const singular = String(options.imageName || '').trim();
-  return singular ? [singular] : [];
-}
-
-function h3ReferenceInputTokens(references = {}) {
-  const tokens = [];
-  (references.images || []).forEach((_asset, index) => tokens.push(`<Picture ${index + 1}>`));
-  let audioIndex = 0;
-  (references.videos || []).forEach((asset, index) => {
-    tokens.push(`<Video ${index + 1}>`);
-    if (asset?.hasAudio) {
-      audioIndex += 1;
-      tokens.push(`<Audio ${audioIndex}>`);
-    }
-  });
-  (references.audios || []).forEach(() => {
-    audioIndex += 1;
-    tokens.push(`<Audio ${audioIndex}>`);
-  });
-  return tokens;
-}
-
-function h3PromptPartsWithAllowedReferences(parts, options = {}) {
-  const allowed = Array.isArray(options.allowedReferenceTokens)
-    ? options.allowedReferenceTokens.filter((token) => /^<(?:Picture|Video|Audio)\s+\d+>$/.test(token))
-    : [];
-  if (String(options.mode || '').toLowerCase() !== 'reference' || !allowed.length) return parts;
-  return Object.assign({}, parts, {
-    instruction: `${parts.instruction}\n\nAvailable reference tokens: ${allowed.join(', ')}. Use only these exact supplied tokens; never invent a different number or media type.`,
-  });
-}
-
-function h3PromptPartsWithVisionOrder(parts, options = {}, layout = 'attachments') {
-  const imageNames = orderedPromptImageNames(options);
-  if (String(options.engine || '').toLowerCase() !== 'h3'
-    || options.hasFirstFrame !== true
-    || options.hasLastFrame !== true
-    || imageNames.length < 2) return parts;
-  const note = layout === 'stitched'
-    ? 'Visual-input mapping: the supplied image is a left-to-right composite of the two exact anchors. The left panel is Picture 1, the first frame at 0.00 seconds; the right panel is Picture 2, the last frame at the effective duration. The narrow black divider is only a separator and is not part of either frame.'
-    : 'Visual-input mapping: the two image attachments are supplied in Picture order. Attachment 1 is Picture 1, the first frame at 0.00 seconds; attachment 2 is Picture 2, the last frame at the effective duration.';
-  return Object.assign({}, parts, { instruction: `${parts.instruction}\n\n${note}` });
-}
-
-async function runConfiguredExternalPrompt(parts, maxTokens, options = {}) {
-  const provider = configuredExternalLlm();
-  const imageNames = orderedPromptImageNames(options);
-  parts = h3PromptPartsWithVisionOrder(parts, options, 'attachments');
-  const images = await Promise.all(imageNames.map((name) => externalPromptImage(name, options.profileId)));
-  if (options.statusText !== false) {
-    broadcast('status', {
-      jobId: 'external-prompt',
-      profileId: options.profileId,
-      text: options.statusText || externalPromptStatus(options.action, provider),
-    });
-  }
-  return externalLlmRequest({
-    provider: provider.provider,
-    model: provider.model,
-    apiKey: provider.apiKey,
-    baseUrl: provider.baseUrl,
-    instruction: parts.instruction,
-    userInput: parts.userInput,
-    images,
-    maxTokens,
-  });
-}
-
-function shouldUseExternalPrompt(domain, action) {
-  return externalLlmEnabled(settings, domain, action);
-}
-
 function textGenInputs(seed, maxLength) {
   return {
     max_length: maxLength,
@@ -3023,11 +2577,6 @@ function textGenInputs(seed, maxLength) {
   };
 }
 
-function localPromptAiLoaderInputs() {
-  const promptAi = localPromptAiConfig(settings);
-  return { clip_name: promptAi.model, type: promptAi.type, device: 'default' };
-}
-
 function armPromptJobDeadline(pid, reject, label) {
   let stopped = false;
   let timer = null;
@@ -3042,17 +2591,8 @@ function armPromptJobDeadline(pid, reject, label) {
     const limit = job.startedAt ? 5 * 60_000 : 20 * 60_000;
     const remaining = limit - (Date.now() - base);
     if (remaining <= 0) {
-      stopped = true;
-      const timedOutJob = jobs.get(pid);
-      if (timedOutJob) {
-        timedOutJob.cancelRequested = true;
-        timedOutJob.cancelMessage = `${label} timed out`;
-      }
       jobs.delete(pid);
-      const error = new Error(`${label} timed out`);
-      error.code = 'prompt_timeout';
-      reject(error);
-      stopComfyPrompt(pid).catch(() => { /* best-effort orphan cleanup */ });
+      reject(new Error(`${label} timed out`));
       return;
     }
     timer = setTimeout(check, Math.min(30_000, remaining));
@@ -3066,123 +2606,20 @@ function armPromptJobDeadline(pid, reject, label) {
 
 const motionPromptFlights = new Map();
 const h3PromptFlights = new Map();
-const promptRevisionRequests = new Map();
-
-function promptRevisionRequestId(value) {
-  const id = String(value || '').trim();
-  return /^[A-Za-z0-9_-]{8,96}$/.test(id) ? id : '';
-}
-
-function startPromptRevisionRequest(requestId, profileId) {
-  if (!requestId) return null;
-  const record = {
-    requestId,
-    profileId,
-    stage: 'preparing',
-    attempt: 1,
-    jobId: '',
-    cancelled: false,
-    warnings: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  };
-  promptRevisionRequests.set(requestId, record);
-  return record;
-}
-
-function updatePromptRevisionRequest(record, stage, details = {}) {
-  if (!record) return;
-  Object.assign(record, details, { stage, updatedAt: Date.now() });
-}
-
-function promptRevisionCancellationError() {
-  const error = new Error('Prompt revision cancelled');
-  error.code = 'job_cancelled';
-  return error;
-}
-
-function finishPromptRevisionRequest(record, stage, details = {}) {
-  if (!record) return;
-  updatePromptRevisionRequest(record, stage, Object.assign({ jobId: '' }, details));
-  const summary = {
-    requestId: record.requestId,
-    profileId: record.profileId,
-    stage,
-    attempts: record.attempt,
-    durationMs: Date.now() - record.createdAt,
-    warningCodes: (record.warnings || []).map((warning) => warning.code).filter(Boolean),
-    errorCode: record.errorCode || undefined,
-  };
-  if (stage === 'error') console.error('[prompt-revise]', JSON.stringify(summary));
-  else console.info('[prompt-revise]', JSON.stringify(summary));
-  const timer = setTimeout(() => {
-    if (promptRevisionRequests.get(record.requestId) === record) {
-      promptRevisionRequests.delete(record.requestId);
-    }
-  }, 5 * 60_000);
-  if (typeof timer.unref === 'function') timer.unref();
-}
-
-function h3PromptMaxTokens(mode) {
-  // Full-reference rewrites contain six sections and normally need a much
-  // longer detailed_description than the three-field frame-mode format.
-  return mode === 'reference' ? 1400 : 900;
-}
-
-async function appendPromptVisionImages(graph, options = {}) {
-  const imageNames = orderedPromptImageNames(options);
-  if (!imageNames.length) return null;
-  imageNames.forEach((name, index) => {
-    const key = index === 0 ? 'img' : `img_${index + 1}`;
-    graph[key] = { class_type: 'LoadImage', inputs: { image: name } };
-  });
-  let image = ['img', 0];
-  for (let index = 1; index < imageNames.length; index += 1) {
-    const key = `img_stitch_${index + 1}`;
-    graph[key] = await nodeFromOrdered(
-      'ImageStitch',
-      ['right', true, 8, 'black'],
-      { image1: image, image2: [`img_${index + 1}`, 0] }
-    );
-    image = [key, 0];
-  }
-  return image;
-}
 
 /** Vision pass: Qwen3-VL looks at the image and suggests a motion prompt. */
 function suggestMotionPrompt(comfyImageName, seed, profileId, userPrompt = '', options = {}) {
-  const imageNames = orderedPromptImageNames(Object.assign({ imageName: comfyImageName }, options));
-  if (shouldUseExternalPrompt('video', 'enhance')) {
-    const parts = appendH3ValidationFeedback(
-      motionPromptEnhanceParts(userPrompt, options),
-      String(options.engine || '').toLowerCase() === 'h3' ? options.validationFeedback : '',
-    );
-    return runConfiguredExternalPrompt(parts, String(options.engine || '').toLowerCase() === 'h3' ? h3PromptMaxTokens(options.mode) : 384, Object.assign({}, options, {
-      action: 'enhance',
-      imageName: comfyImageName,
-      imageNames,
-      profileId,
-    }));
-  }
   return new Promise((resolve, reject) => {
     (async () => {
       const graph = {};
-      let parts = appendH3ValidationFeedback(
-        motionPromptEnhanceParts(userPrompt, options),
-        String(options.engine || '').toLowerCase() === 'h3' ? options.validationFeedback : '',
-      );
-      parts = h3PromptPartsWithVisionOrder(
-        parts,
-        Object.assign({}, options, { imageName: comfyImageName, imageNames }),
-        'stitched',
-      );
-      graph.clip = { class_type: 'CLIPLoader', inputs: localPromptAiLoaderInputs() };
-      const promptImage = await appendPromptVisionImages(graph, { imageName: comfyImageName, imageNames });
+      const parts = motionPromptEnhanceParts(userPrompt, options);
+      graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
+      graph.img = { class_type: 'LoadImage', inputs: { image: comfyImageName } };
       graph.gen = {
         class_type: 'TextGenerate',
         inputs: Object.assign(
-          { clip: ['clip', 0], image: promptImage, prompt: parts.instruction + parts.userInput },
-          textGenInputs(seed, String(options.engine || '').toLowerCase() === 'h3' ? h3PromptMaxTokens(options.mode) : 256)
+          { clip: ['clip', 0], image: ['img', 0], prompt: parts.instruction + parts.userInput },
+          textGenInputs(seed, String(options.engine || '').toLowerCase() === 'h3' ? 512 : 256)
         ),
       };
       graph.show = { class_type: 'PreviewAny', inputs: { source: ['gen', 0] } };
@@ -3210,32 +2647,10 @@ function sharedMotionPrompt(comfyImageName, seed, profileId, userPrompt = '', op
     String(userPrompt || '').trim(),
     String(options.engine || ''),
     Number(options.seconds) || 0,
-    options.longContext === true,
-    orderedPromptImageNames(Object.assign({ imageName: comfyImageName }, options)),
-    options.hasFirstFrame === true,
-    options.hasLastFrame === true,
   ]);
   const active = motionPromptFlights.get(key);
   if (active) return active;
-  const run = String(options.engine || '').toLowerCase() === 'h3'
-    ? validatedH3Prompt(
-      (attempt, validationFeedback) => suggestMotionPrompt(
-        comfyImageName,
-        (Number(seed) || 0) + attempt,
-        profileId,
-        userPrompt,
-        Object.assign({}, options, { validationFeedback }),
-      ),
-      userPrompt,
-      Object.assign({
-        preserveAuthoredText: true,
-        referenceSource: userPrompt,
-        allowDialogueFormatFallback: true,
-        fallbackOnFailure: true,
-      }, options),
-    )
-    : suggestMotionPrompt(comfyImageName, seed, profileId, userPrompt, options);
-  const flight = run
+  const flight = suggestMotionPrompt(comfyImageName, seed, profileId, userPrompt, options)
     .finally(() => {
       if (motionPromptFlights.get(key) === flight) motionPromptFlights.delete(key);
     });
@@ -3248,7 +2663,7 @@ function suggestImagePrompt(comfyImageName, seed, profileId) {
   return new Promise((resolve, reject) => {
     (async () => {
       const graph = {};
-      graph.clip = { class_type: 'CLIPLoader', inputs: localPromptAiLoaderInputs() };
+      graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
       graph.img = { class_type: 'LoadImage', inputs: { image: comfyImageName } };
       graph.gen = {
         class_type: 'TextGenerate',
@@ -3280,15 +2695,14 @@ function queueTextEnhancement(parts, seed, statusText, maxTokens = 512, options 
   return new Promise((resolve, reject) => {
     (async () => {
       const graph = {};
-      parts = h3PromptPartsWithVisionOrder(parts, options, 'stitched');
-      graph.clip = { class_type: 'CLIPLoader', inputs: localPromptAiLoaderInputs() };
-      const promptImage = await appendPromptVisionImages(graph, options);
+      graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
+      if (options.imageName) graph.img = { class_type: 'LoadImage', inputs: { image: options.imageName } };
       graph.concat = {
         class_type: 'StringConcatenate',
         inputs: { string_a: parts.instruction, string_b: parts.userInput, delimiter: '\n' },
       };
       const refineInputs = Object.assign({ clip: ['clip', 0], prompt: ['concat', 0] }, textGenInputs(seed, maxTokens));
-      if (promptImage) refineInputs.image = promptImage;
+      if (options.imageName) refineInputs.image = ['img', 0];
       graph.refine = {
         class_type: 'TextGenerate',
         inputs: refineInputs,
@@ -3301,39 +2715,19 @@ function queueTextEnhancement(parts, seed, statusText, maxTokens = 512, options 
         kind: 'enhance',
         profileId: options.profileId,
         graph,
-        resolve: (t) => {
-          clearDeadline();
-          if (typeof options.onPromptJobSettled === 'function') options.onPromptJobSettled(pid, null);
-          resolve(t);
-        },
-        reject: (e) => {
-          clearDeadline();
-          if (typeof options.onPromptJobSettled === 'function') options.onPromptJobSettled(pid, e);
-          reject(e);
-        },
+        resolve: (t) => { clearDeadline(); resolve(t); },
+        reject: (e) => { clearDeadline(); reject(e); },
       });
       clearDeadline = armPromptJobDeadline(pid, reject, 'Prompt enhance');
-      if (typeof options.onPromptJobQueued === 'function') options.onPromptJobQueued(pid);
       ensureWs();
-      if (statusText && options.broadcastStatus !== false) {
-        broadcast('status', {
-          jobId: 'pre',
-          profileId: options.profileId,
-          scope: 'generation-preflight',
-          text: statusText,
-        });
-      }
+      if (statusText) broadcast('status', { jobId: 'pre', profileId: options.profileId, text: statusText });
     })().catch(reject);
   });
 }
 
 function enhancePrompt(p, profileId) {
-  const parts = promptEnhanceParts(settings.systemPrompt, p.prompt);
-  if (shouldUseExternalPrompt('image', 'enhance')) {
-    return runConfiguredExternalPrompt(parts, 512, { action: 'enhance', profileId });
-  }
   return queueTextEnhancement(
-    parts,
+    promptEnhanceParts(settings.systemPrompt, p.prompt),
     p.seed,
     'Enhancing global prompt...',
     512,
@@ -3344,9 +2738,6 @@ function enhancePrompt(p, profileId) {
 function reviseImagePrompt(currentPrompt, changeRequest, seed, options = {}) {
   const parts = imagePromptRevisionParts(currentPrompt, changeRequest, { hasImage: !!options.imageName });
   parts.userInput += ENHANCE_TAIL;
-  if (shouldUseExternalPrompt('image', 'revise')) {
-    return runConfiguredExternalPrompt(parts, 384, Object.assign({ action: 'revise' }, options));
-  }
   return queueTextEnhancement(
     parts,
     seed,
@@ -3357,51 +2748,33 @@ function reviseImagePrompt(currentPrompt, changeRequest, seed, options = {}) {
 }
 
 function reviseVideoPrompt(currentPrompt, changeRequest, seed, options = {}) {
-  const imageNames = orderedPromptImageNames(options);
-  let parts = appendH3ValidationFeedback(videoPromptRevisionParts(currentPrompt, changeRequest, {
+  const parts = videoPromptRevisionParts(currentPrompt, changeRequest, {
     engine: options.engine,
     seconds: options.seconds,
-    longContext: options.longContext === true,
     mode: options.mode,
-    hasImage: imageNames.length > 0,
-    hasFirstImage: options.hasFirstFrame === true,
-    hasEndImage: options.hasLastFrame === true,
-  }), options.engine === 'h3' ? options.validationFeedback : '');
-  if (options.engine === 'h3') parts = h3PromptPartsWithAllowedReferences(parts, options);
+    hasImage: !!options.imageName,
+  });
   parts.userInput += ENHANCE_TAIL;
-  if (shouldUseExternalPrompt('video', 'revise')) {
-    return runConfiguredExternalPrompt(parts, options.engine === 'h3' ? h3PromptMaxTokens(options.mode) : 384, Object.assign({ action: 'revise' }, options));
-  }
   return queueTextEnhancement(
     parts,
     seed,
     'Revising video prompt...',
-    options.engine === 'h3' ? h3PromptMaxTokens(options.mode) : 384,
+    options.engine === 'h3' ? 640 : 384,
     options,
   );
 }
 
 function enhanceH3Prompt(userPrompt, seed, options = {}) {
-  const h3Options = Object.assign({}, options, { engine: 'h3' });
-  const imageNames = orderedPromptImageNames(h3Options);
-  let parts = appendH3ValidationFeedback(h3PromptEnhanceParts(userPrompt, {
-    seconds: h3Options.seconds,
-    longContext: h3Options.longContext === true,
-    mode: h3Options.mode,
-    hasImage: imageNames.length > 0,
-    hasFirstImage: h3Options.hasFirstFrame === true,
-    hasEndImage: h3Options.hasLastFrame === true,
-  }), h3Options.validationFeedback);
-  parts = h3PromptPartsWithAllowedReferences(parts, h3Options);
-  if (shouldUseExternalPrompt('video', 'enhance')) {
-    return runConfiguredExternalPrompt(parts, h3PromptMaxTokens(h3Options.mode), Object.assign({ action: 'enhance' }, h3Options));
-  }
   return queueTextEnhancement(
-    parts,
+    h3PromptEnhanceParts(userPrompt, {
+      seconds: options.seconds,
+      mode: options.mode,
+      hasImage: !!options.imageName,
+    }),
     seed,
     'Enhancing MiniMax H3 prompt...',
-    h3PromptMaxTokens(h3Options.mode),
-    h3Options,
+    640,
+    options,
   );
 }
 
@@ -3409,29 +2782,13 @@ function sharedH3PromptEnhancement(userPrompt, seed, options = {}) {
   const key = JSON.stringify([
     options.profileId || '',
     String(userPrompt || '').trim(),
-    orderedPromptImageNames(options),
+    String(options.imageName || ''),
     String(options.mode || ''),
     Number(options.seconds) || 0,
-    options.longContext === true,
-    options.hasFirstFrame === true,
-    options.hasLastFrame === true,
   ]);
   const active = h3PromptFlights.get(key);
   if (active) return active;
-  const flight = validatedH3Prompt(
-    (attempt, validationFeedback) => enhanceH3Prompt(
-      userPrompt,
-      (Number(seed) || 0) + attempt,
-      Object.assign({}, options, { validationFeedback }),
-    ),
-    userPrompt,
-    Object.assign({
-      referenceSource: userPrompt,
-      preserveAuthoredText: true,
-      allowDialogueFormatFallback: true,
-      fallbackOnFailure: true,
-    }, options),
-  )
+  const flight = enhanceH3Prompt(userPrompt, seed, options)
     .finally(() => {
       if (h3PromptFlights.get(key) === flight) h3PromptFlights.delete(key);
     });
@@ -3440,14 +2797,10 @@ function sharedH3PromptEnhancement(userPrompt, seed, options = {}) {
 }
 
 function enhanceRegionPrompt(description, globalPrompt, seed, options = {}) {
-  const parts = regionPromptEnhanceParts(settings.systemPrompt, globalPrompt, description, {
-    hasReference: !!options.imageName,
-  });
-  if (shouldUseExternalPrompt('image', 'enhance')) {
-    return runConfiguredExternalPrompt(parts, 384, Object.assign({ action: 'enhance' }, options));
-  }
   return queueTextEnhancement(
-    parts,
+    regionPromptEnhanceParts(settings.systemPrompt, globalPrompt, description, {
+      hasReference: !!options.imageName,
+    }),
     seed,
     options.statusText || '',
     384,
@@ -3457,22 +2810,16 @@ function enhanceRegionPrompt(description, globalPrompt, seed, options = {}) {
 
 /** Wan 2.2 enhance: Qwen3-VL sees the image + user's idea, writes the video prompt. */
 function wanEnhance(comfyImageName, userPrompt, seed, profileId) {
-  const instruction = "Look at the provided image. Rewrite the user's motion idea into one vivid video-generation prompt paragraph (under 90 words) for an image-to-video model: describe subject actions, secondary motion, camera behavior and atmosphere, staying faithful to what is actually in the image and to the user's intent. Use present-progressive verbs.";
-  const promptInput = `User's motion idea: ${userPrompt}`;
-  if (shouldUseExternalPrompt('video', 'enhance')) {
-    return runConfiguredExternalPrompt({ instruction, userInput: promptInput + ENHANCE_TAIL }, 384, {
-      action: 'enhance', imageName: comfyImageName, profileId,
-    });
-  }
+  const instruction = `Look at the provided image. Rewrite the user's motion idea into one vivid video-generation prompt paragraph (under 90 words) for an image-to-video model: describe subject actions, secondary motion, camera behavior and atmosphere, staying faithful to what is actually in the image and to the user's intent. Use present-progressive verbs.\n\nUser's motion idea: ${userPrompt}`;
   return new Promise((resolve, reject) => {
     (async () => {
       const graph = {};
-      graph.clip = { class_type: 'CLIPLoader', inputs: localPromptAiLoaderInputs() };
+      graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
       graph.img = { class_type: 'LoadImage', inputs: { image: comfyImageName } };
       graph.gen = {
         class_type: 'TextGenerate',
         inputs: Object.assign(
-          { clip: ['clip', 0], image: ['img', 0], prompt: `${instruction}\n\n${promptInput}${ENHANCE_TAIL}` },
+          { clip: ['clip', 0], image: ['img', 0], prompt: instruction + ENHANCE_TAIL },
           textGenInputs(seed, 300)
         ),
       };
@@ -3486,9 +2833,7 @@ function wanEnhance(comfyImageName, userPrompt, seed, profileId) {
         reject: (e) => { clearTimeout(timer); reject(e); },
       });
       ensureWs();
-      broadcast('status', {
-        jobId: 'pre', profileId, scope: 'generation-preflight', text: 'Enhancing motion prompt...',
-      });
+      broadcast('status', { jobId: 'pre', profileId, text: 'Enhancing motion prompt...' });
     })().catch(reject);
   });
 }
@@ -4196,16 +3541,46 @@ async function buildUpscale(imageName, opts) {
   }
   // Explicit inputs matching the current SeedVR2 node pack schema
   // (verified against /object_info via /api/debug/upscale).
-  const seedVr2 = seedVr2UpscaleNodes(imgRef, {
-    settings,
-    availableModels: installedDitModels,
-    gpuVendor,
-    profile: opts.profile,
-    noise: opts.noise,
-    resolution: opts.resolution || 2160,
-    batchSize: 1,
-  });
-  Object.assign(graph, seedVr2.nodes);
+  graph.dit = {
+    class_type: 'SeedVR2LoadDiTModel',
+    inputs: seedVr2DitInputs(Object.assign({}, settings, { seedvr2Dit: profile.ditModel, gpuVendor })),
+  };
+  graph.svvae = {
+    class_type: 'SeedVR2LoadVAEModel',
+    inputs: {
+      model: settings.seedvr2Vae,
+      ...(/^nvidia$/i.test(gpuVendor) ? { device: 'cuda:0' } : {}),
+      encode_tiled: true,
+      encode_tile_size: 1024,
+      encode_tile_overlap: 256,
+      decode_tiled: true,
+      decode_tile_size: 1024,
+      decode_tile_overlap: 256,
+      tile_debug: 'false',
+      offload_device: 'cpu',
+      cache_model: false,
+    },
+  };
+  graph.upscale = {
+    class_type: 'SeedVR2VideoUpscaler',
+    inputs: {
+      image: imgRef,
+      dit: ['dit', 0],
+      vae: ['svvae', 0],
+      seed: Math.floor(Math.random() * 2 ** 31),
+      resolution: opts.resolution || 2160,
+      max_resolution: 0,
+      batch_size: 1,
+      uniform_batch_size: false,
+      color_correction: profile.colorCorrection,
+      temporal_overlap: 0,
+      prepend_frames: 0,
+      input_noise_scale: profile.inputNoiseScale,
+      latent_noise_scale: 0,
+      offload_device: 'cpu',
+      enable_debug: false,
+    },
+  };
   graph.save = { class_type: 'SaveImage', inputs: { images: ['upscale', 0], filename_prefix: 'KreaStudio/upscale' } };
   return filterInputs(graph);
 }
@@ -4928,14 +4303,6 @@ function erosSigmas(preset) {
   return EROS_SIGMA_PRESETS[preset] || EROS_SIGMA_PRESETS.dmd;
 }
 
-function manualSigmaStepCount(value) {
-  const sigmas = String(value || '')
-    .split(',')
-    .map((entry) => Number(entry.trim()))
-    .filter(Number.isFinite);
-  return Math.max(0, sigmas.length - 1);
-}
-
 /** Chain user LoRAs (model-only) onto a video model path. */
 function chainModelLoras(graph, model, loras, prefix) {
   let m = model;
@@ -5584,34 +4951,13 @@ async function buildExistingVideoUpscale(videoName, opts) {
     select_every_nth: 1,
     format: 'None',
   });
-  const engine = opts.engine === 'seedvr2' ? 'seedvr2' : 'rtx';
-  let frameSource;
-  if (engine === 'seedvr2') {
-    const gpuVendor = setupHardwareProfile(await getSetupHardwareInfo()).gpuVendor;
-    const availableModels = installedSeedVr2Models(seedVr2ModelDirs());
-    const seedVr2 = seedVr2UpscaleNodes(['src', 0], {
-      settings,
-      availableModels,
-      gpuVendor,
-      profile: opts.profile || 'sharp',
-      noise: opts.noise || 'low',
-      resolution: opts.resolution || 1080,
-      batchSize: 5,
-      uniformBatchSize: true,
-      temporalOverlap: 2,
-    });
-    Object.assign(graph, seedVr2.nodes);
-    frameSource = seedVr2.output;
-  } else {
-    graph.vsr = rtxVideoSuperResolutionNode(['src', 0], opts.scale || 2);
-    frameSource = ['vsr', 0];
-  }
-  const videoInputs = { images: frameSource, fps: opts.fps || 16 };
+  graph.vsr = rtxVideoSuperResolutionNode(['src', 0], opts.scale || 2);
+  const videoInputs = { images: ['vsr', 0], fps: opts.fps || 16 };
   if (opts.hasAudio) videoInputs.audio = ['src', 2];
   graph.video = { class_type: 'CreateVideo', inputs: videoInputs };
   graph.save = {
     class_type: 'SaveVideo',
-    inputs: { video: ['video', 0], filename_prefix: `KreaStudio/video_upscale_${engine}`, format: 'auto', codec: 'auto' },
+    inputs: { video: ['video', 0], filename_prefix: 'KreaStudio/video_upscale', format: 'auto', codec: 'auto' },
   };
   return filterInputs(graph);
 }
@@ -5722,56 +5068,6 @@ function serveFile(res, file, range) {
   });
 }
 
-function sendPublicAssetBuffer(res, name, buffer, recoveredFrom = '') {
-  const mime = MIME[path.extname(name).toLowerCase()] || 'application/octet-stream';
-  const headers = {
-    'Content-Type': mime,
-    'Content-Length': buffer.length,
-    'Accept-Ranges': 'bytes',
-    'Cache-Control': 'no-cache',
-  };
-  if (recoveredFrom) headers['X-Mix-Studio-Asset-Recovery'] = recoveredFrom;
-  res.writeHead(200, headers);
-  res.end(buffer);
-}
-
-async function trackedCriticalPublicAsset(name) {
-  if (!isCriticalPublicAsset(name)) return null;
-  if (CRITICAL_PUBLIC_GIT_CACHE.has(name)) return CRITICAL_PUBLIC_GIT_CACHE.get(name);
-  try {
-    const text = await gitCommand(ROOT, ['show', `HEAD:public/${name}`], {
-      gitExecutable: RUNTIME.update.gitExecutable,
-    });
-    const data = Buffer.from(text, 'utf8');
-    if (!isUsableCriticalPublicAsset(name, data)) return null;
-    CRITICAL_PUBLIC_GIT_CACHE.set(name, data);
-    return data;
-  } catch (error) {
-    console.error(`[static] Could not recover public/${name} from Git:`, error.message);
-    return null;
-  }
-}
-
-async function serveCriticalPublicAsset(res, file, name) {
-  try {
-    const data = await fsp.readFile(file);
-    if (isUsableCriticalPublicAsset(name, data)) return sendPublicAssetBuffer(res, name, data);
-  } catch { /* Use the startup or Git fallback below. */ }
-
-  const startup = CRITICAL_PUBLIC_STARTUP_CACHE.get(name);
-  if (startup) {
-    console.warn(`[static] Recovered missing public/${name} from the startup cache.`);
-    return sendPublicAssetBuffer(res, name, startup, 'startup-cache');
-  }
-  const tracked = await trackedCriticalPublicAsset(name);
-  if (tracked) {
-    console.warn(`[static] Recovered missing public/${name} from Git HEAD.`);
-    return sendPublicAssetBuffer(res, name, tracked, 'git-head');
-  }
-  res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-  return res.end(`Mix Studio cannot load public/${name}. Repair or reinstall the app.`);
-}
-
 function safeMediaPath(root, encodedName) {
   let decoded;
   try { decoded = decodeURIComponent(String(encodedName || '')); } catch { return null; }
@@ -5782,47 +5078,6 @@ function safeMediaPath(root, encodedName) {
     file,
     name: path.relative(root, file).split(path.sep).join('/'),
   };
-}
-
-const videoPreviewJobs = new Map();
-let videoPreviewQueue = Promise.resolve();
-
-async function cachedVideoPreview(media, options = {}) {
-  const preview = normalizeVideoPreviewOptions(options);
-  const sourceStat = await fsp.stat(media.file);
-  if (!sourceStat.isFile()) throw Object.assign(new Error('Video not found'), { code: 'ENOENT' });
-  const fingerprint = crypto.createHash('sha256')
-    .update(`preview-v2\0${media.name}\0${sourceStat.size}\0${Math.round(sourceStat.mtimeMs)}\0${preview.size}\0${preview.fps}`)
-    .digest('hex')
-    .slice(0, 24);
-  const output = path.join(VIDEO_PREVIEWS, `${fingerprint}.mp4`);
-  const existing = await fsp.stat(output).catch(() => null);
-  if (existing?.isFile() && existing.size > 0) return output;
-  if (videoPreviewJobs.has(output)) return videoPreviewJobs.get(output);
-
-  const temp = path.join(VIDEO_PREVIEWS, `${fingerprint}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp.mp4`);
-  const create = async () => {
-    if (!videoExtensionFfmpeg) videoExtensionFfmpeg = await resolveFfmpegExecutable(RUNTIME);
-    if (!videoExtensionFfmpeg) throw Object.assign(new Error('Video previews require FFmpeg'), { code: 'ffmpeg_unavailable' });
-    try {
-      await transcodeVideoPreview({
-        sourcePath: media.file,
-        outputPath: temp,
-        ffmpegPath: videoExtensionFfmpeg,
-        size: preview.size,
-        fps: preview.fps,
-      });
-      await fsp.rename(temp, output);
-      return output;
-    } finally {
-      await fsp.rm(temp, { force: true }).catch(() => {});
-    }
-  };
-  const job = videoPreviewQueue.then(create, create);
-  videoPreviewQueue = job.then(() => undefined, () => undefined);
-  videoPreviewJobs.set(output, job);
-  job.finally(() => videoPreviewJobs.delete(output)).catch(() => {});
-  return job;
 }
 
 function storedMediaName(value) {
@@ -5907,10 +5162,6 @@ const REQUIRED_CLASSES = {
     'KSamplerSelect', 'BasicScheduler', 'SamplerCustomAdvanced', 'VAEDecode', 'VAEDecodeAudio',
     'CreateVideo', 'SaveVideo', 'ImageFromBatch', 'SaveImage'],
   h3r2v: ['MiniMaxH3ReferenceToVideo', 'VHS_LoadVideo', 'VHS_LoadAudioUpload'],
-  h3turbo: ['MiniMaxH3TurboLoRA', 'MiniMaxH3TurboSampler'],
-  h3turbor2v: ['LoraLoaderModelOnly', 'MiniMaxH3SigmaShift', 'MiniMaxH3TurboSampler'],
-  h3context: ['MiniMaxH3MotionContext', 'MiniMaxH3MotionContextTrim',
-    'MiniMaxH3MotionContextSaveLatent', 'MiniMaxH3MotionContextLoadLatent'],
   h3sage: ['PathchSageAttentionKJ'],
   ltxdirector: ['LTXDirector', 'LTXDirectorGuide', 'LTXDirectorCropGuides'],
   ltxcamera: ['LTXICLoRALoaderModelOnly', 'LTXAddVideoICLoRAGuide', 'LTXVImgToVideoConditionOnly',
@@ -5920,10 +5171,6 @@ const REQUIRED_CLASSES = {
   rife: ['RIFE VFI'],
   wan: ['UNETLoader', 'CLIPLoader', 'VAELoader', 'LoraLoaderModelOnly', 'ModelSamplingSD3',
     'WanImageToVideo', 'KSamplerAdvanced', 'VAEDecode', 'CreateVideo', 'SaveVideo'],
-  wananimate2: ['UNETLoader', 'LoraLoaderModelOnly', 'CLIPLoader', 'CLIPTextEncode', 'CLIPVisionLoader',
-    'CLIPVisionEncode', 'VAELoader', 'LoadImage', 'LoadVideo', 'GetVideoComponents', 'ResizeImageMaskNode',
-    'ImageFromBatch', 'WanAnimate2Cache', 'WanAnimate2ToVideo', 'ModelSamplingSD3', 'BasicScheduler',
-    'KSamplerSelect', 'SamplerCustom', 'TrimVideoLatent', 'VAEDecode', 'CreateVideo', 'SaveVideo'],
   eros: ['CheckpointLoaderSimple', 'LTXVAudioVAELoader', 'LTXAVTextEncoderLoader', 'ImageResizeKJv2',
     'LTXVPreprocess', 'LTXReferenceEnable', 'LTXReferenceConditioning', 'LoraLoaderModelOnly',
     'EmptyLTXVLatentVideo', 'LTXVEmptyLatentAudio', 'LTXVImgToVideoInplaceKJ', 'LTXVConcatAVLatent',
@@ -5940,7 +5187,7 @@ const REQUIRED_CLASSES = {
 const KREA2_DEPENDENCY_COMPONENTS = new Set([
   'image', 'krea2raw', 'regional', 'krea2ref', 'krea2remix', 'krea2outpaint', 'krea2depth', 'krea2style',
 ]);
-const H3_DEPENDENCY_COMPONENTS = new Set(['h3', 'h3r2v', 'h3turbo', 'h3turbor2v', 'h3context', 'h3sage', 'h3dyntime']);
+const H3_DEPENDENCY_COMPONENTS = new Set(['h3', 'h3r2v', 'h3sage']);
 
 function dependencyComponentInfo(id, fit = null) {
   const component = DEPENDENCY_COMPONENTS[id] || {};
@@ -5959,7 +5206,7 @@ function dependencyComponentInfo(id, fit = null) {
   };
 }
 
-function setupDependencyComponentInfo(id, fit, krea2Core, h3Core, wanAnimate2Core = null, sageAttention = null) {
+function setupDependencyComponentInfo(id, fit, krea2Core, h3Core, sageAttention = null) {
   const component = dependencyComponentInfo(id, fit);
   if (fit?.blocked) {
     component.installable = false;
@@ -5976,31 +5223,12 @@ function setupDependencyComponentInfo(id, fit, krea2Core, h3Core, wanAnimate2Cor
     component.blockedBy = 'comfy-core';
     component.installReason = minimaxH3CompatibilityError(h3Core);
   }
-  if (id === 'wananimate2' && wanAnimate2Core && wanAnimate2Core.supported !== true) {
-    component.installable = false;
-    component.blockedBy = 'comfy-core';
-    component.installReason = wanAnimate2Core.reason;
-  }
   if (id === 'h3sage' && sageAttention && sageAttention.ready !== true && sageAttention.installable !== true) {
     component.installable = false;
     component.blockedBy = 'sage-runtime';
     component.installReason = sageAttention.reason || 'SageAttention cannot be installed automatically in this ComfyUI Python environment.';
   }
   return component;
-}
-
-function wanAnimate2CoreCompatibility(info, version = '') {
-  const required = ['WanAnimate2ToVideo', 'WanAnimate2Cache', 'LoadVideo', 'GetVideoComponents',
-    'ResizeImageMaskNode', 'TrimVideoLatent', 'CreateVideo', 'SaveVideo'];
-  const missingNodes = required.filter((className) => !info?.[className]);
-  return {
-    supported: missingNodes.length === 0,
-    version: String(version || ''),
-    missingNodes,
-    reason: missingNodes.length
-      ? 'Update ComfyUI to a current build with native Wan Animate 2 support, restart it, then check again.'
-      : '',
-  };
 }
 
 let mobileAccessStatusCache = null;
@@ -6024,27 +5252,6 @@ async function currentMobileAccessStatus(force = false) {
   });
   mobileAccessStatusExpiresAt = Date.now() + 15_000;
   return mobileAccessStatusCache;
-}
-
-async function currentSparkAccessStatus() {
-  const owner = db.profiles[0] || null;
-  const token = sparkAccess.token;
-  const funnel = token
-    ? await sparkFunnelStatus(token, PORT)
-    : { available: true, configured: false, conflict: false, url: '', reason: '' };
-  const enabled = sparkAccess.enabled === true
-    && !!token
-    && !!owner
-    && sparkAccess.profileId === owner.id;
-  return {
-    enabled,
-    configured: enabled && funnel.configured === true,
-    available: funnel.available === true,
-    conflict: funnel.conflict === true,
-    url: enabled && funnel.configured ? funnel.url : '',
-    reason: funnel.reason || '',
-    scope: ['status', 'recent generations', 'generate image', 'generate video'],
-  };
 }
 
 async function setupStatusPayload(forceCompatibility = false) {
@@ -6079,7 +5286,6 @@ async function setupStatusPayload(forceCompatibility = false) {
     ? krea2ClipCompatibility(info, compatibility.version)
     : krea2ClipCompatibility(null, compatibility.version);
   const h3Core = minimaxH3Compatibility(connected ? info : null, compatibility.version);
-  const wanAnimate2Core = connected ? wanAnimate2CoreCompatibility(info, compatibility.version) : null;
   const sageRuntime = await probeSageAttention(RUNTIME, {
     status: detected,
     force: forceCompatibility,
@@ -6115,7 +5321,6 @@ async function setupStatusPayload(forceCompatibility = false) {
       guidance[id] || null,
       connected ? krea2Core : null,
       h3Core,
-      wanAnimate2Core,
       sageAttention,
     )),
     comfy: {
@@ -6124,7 +5329,6 @@ async function setupStatusPayload(forceCompatibility = false) {
       version: compatibility.version,
       krea2: krea2Core,
       minimaxH3: h3Core,
-      wanAnimate2: wanAnimate2Core,
       sageAttention,
       nativeInt8: compatibility,
       url: settings.comfyUrl,
@@ -6328,49 +5532,6 @@ async function handleApi(req, res, url) {
     return json(res, 401, { error: 'Sign in to continue', code: 'auth' });
   }
 
-  if (route === '/api/spark-access' && req.method === 'GET') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can manage Gemini Spark access' });
-    res.setHeader('Cache-Control', 'no-store');
-    return json(res, 200, { sparkAccess: await currentSparkAccessStatus() });
-  }
-  if (route === '/api/spark-access/enable' && req.method === 'POST') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can enable Gemini Spark access' });
-    if (!sparkAccess.token) sparkAccess.token = newSparkAccessToken();
-    sparkAccess.profileId = profile.id;
-    sparkAccess.createdAt = sparkAccess.createdAt || Date.now();
-    sparkAccess.enabled = false;
-    saveSparkAccess();
-    try {
-      const funnel = await enableSparkFunnel(sparkAccess.token, PORT);
-      sparkAccess.enabled = true;
-      saveSparkAccess();
-      return json(res, 200, {
-        sparkAccess: Object.assign(await currentSparkAccessStatus(), { url: funnel.url }),
-      });
-    } catch (error) {
-      return json(res, error?.code === 'tailscale_funnel_conflict' ? 409 : 400, {
-        error: String(error?.message || error || 'Could not enable Gemini Spark access'),
-        code: error?.code || 'spark_access_failed',
-        approvalUrl: error?.approvalUrl || '',
-      });
-    }
-  }
-  if (route === '/api/spark-access/disable' && req.method === 'POST') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can disable Gemini Spark access' });
-    const token = sparkAccess.token;
-    sparkAccess.enabled = false;
-    saveSparkAccess();
-    try {
-      await disableSparkFunnel(token);
-      return json(res, 200, { sparkAccess: await currentSparkAccessStatus() });
-    } catch (error) {
-      return json(res, 400, {
-        error: `Gemini Spark access is blocked in Mix Studio, but Tailscale could not remove its stale Funnel route: ${String(error?.message || error)}`,
-        code: error?.code || 'spark_funnel_disable_failed',
-      });
-    }
-  }
-
   if (route === '/api/addons' && req.method === 'GET') {
     const packs = await listInstalledPromptPacks(PROMPT_PACKS);
     return json(res, 200, {
@@ -6565,7 +5726,6 @@ async function handleApi(req, res, url) {
       const update = await updateFromGit(ROOT, {
         channel: RUNTIME.update.channel,
         gitExecutable: RUNTIME.update.gitExecutable,
-        inspectAssets: () => inspectCriticalPublicAssets(ROOT),
       });
       // ComfyUI can receive work outside Mix Studio. Check it again directly
       // before scheduling a process restart. If that race occurs after Git has
@@ -6607,7 +5767,6 @@ async function handleApi(req, res, url) {
         payload.dirtyFiles = e.dirtyFiles;
         payload.dirtyFileCount = Number.isFinite(e.dirtyFileCount) ? e.dirtyFileCount : e.dirtyFiles.length;
       }
-      if (e.code === 'update_assets_missing' && Array.isArray(e.missingFiles)) payload.missingFiles = e.missingFiles;
       return json(res, status, payload);
     } finally {
       if (!keepMaintenanceUntilRestart) appUpdateRunning = false;
@@ -6616,14 +5775,6 @@ async function handleApi(req, res, url) {
 
   if (route === '/api/app/restart' && req.method === 'POST') {
     if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can restart Mix Studio' });
-    const assets = inspectCriticalPublicAssets(ROOT);
-    if (!assets.ok) {
-      return json(res, 409, {
-        error: `Mix Studio cannot restart because critical app files are missing: ${assets.missing.join(', ')}.`,
-        code: 'app_assets_missing',
-        missingFiles: assets.missing,
-      });
-    }
     try {
       await assertDesktopIsIdle();
     } catch (error) {
@@ -6637,64 +5788,6 @@ async function handleApi(req, res, url) {
   if (route === '/api/settings' && req.method === 'GET') {
     await getSetupHardwareInfo().catch(() => null);
     return json(res, 200, settingsResponse());
-  }
-  if (route === '/api/h3/models/status' && req.method === 'GET') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can inspect shared H3 model setup' });
-    const frame = h3FrameVariant(settings);
-    const reference = h3ReferenceVariant(settings);
-    return json(res, 200, {
-      frame: Object.assign({}, frame, { filename: h3EffectiveModelName(settings, 'frames') }),
-      reference: Object.assign({}, reference, { filename: h3EffectiveModelName(settings, 'reference') }),
-      turbo: {
-        frames: h3TurboCompatibility(settings, 'frames'),
-        reference: h3TurboCompatibility(settings, 'reference'),
-      },
-      dynTimePatch: await dynTimePatchStatus(RUNTIME),
-    });
-  }
-  if (route === '/api/h3/dyntime/restore' && req.method === 'POST') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can restore shared ComfyUI files' });
-    if (dependencyInstallRunning) return json(res, 409, { error: 'Wait for the active dependency installation to finish.' });
-    const body = await readJsonBody(req);
-    if (body.confirm !== 'RESTORE COMFYUI') {
-      return json(res, 400, { error: 'Type RESTORE COMFYUI exactly to restore the verified pre-DynTime files.' });
-    }
-    try { await assertDesktopIsIdle(); }
-    catch (error) { return json(res, 409, { error: String(error.message || error) }); }
-    try {
-      const restored = await restoreDynTimePatch(RUNTIME);
-      return json(res, 200, { ok: true, restored: restored.restored, restartRequired: true });
-    } catch (error) {
-      return json(res, 409, { error: String(error.message || error), code: error?.code || 'h3_dyntime_restore_failed' });
-    }
-  }
-  if (route === '/api/models/cleanup' && req.method === 'GET') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can manage shared model files' });
-    const candidates = await managedModelCleanupCandidates(configuredModelsRoot(), settings, DEPENDENCY_MODEL_ASSETS);
-    return json(res, 200, {
-      candidates: candidates.map(publicModelCleanupCandidate),
-      bytes: candidates.reduce((sum, candidate) => sum + candidate.bytes, 0),
-      scope: 'inactive-mix-studio-managed',
-    });
-  }
-  if (route === '/api/models/cleanup' && req.method === 'DELETE') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can manage shared model files' });
-    if (dependencyInstallRunning) return json(res, 409, { error: 'Wait for the active model download or dependency installation to finish.' });
-    try { await assertDesktopIsIdle(); }
-    catch (error) { return json(res, 409, { error: String(error.message || error) }); }
-    const body = await readJsonBody(req);
-    try {
-      const deleted = await deleteManagedModelCandidate(
-        configuredModelsRoot(), settings, DEPENDENCY_MODEL_ASSETS, body.id, body.confirmName,
-      );
-      objectInfoCache = null;
-      return json(res, 200, { ok: true, deleted: publicModelCleanupCandidate(deleted), permanent: true });
-    } catch (error) {
-      return json(res, error?.code === 'model_cleanup_stale' ? 409 : 400, {
-        error: String(error.message || error),
-        code: error?.code || 'model_cleanup_failed',
-      });
-    }
   }
   if (route === '/api/setup/status' && req.method === 'GET') {
     return json(res, 200, await setupStatusPayload(url.searchParams.has('refresh')));
@@ -6826,24 +5919,7 @@ async function handleApi(req, res, url) {
   }
   if (route === '/api/hardware' && req.method === 'GET') {
     try {
-      const force = url.searchParams.get('refresh') === '1';
-      const hardware = await getSetupHardwareInfo(force);
-      const installStatus = sam3InstallStatus(RUNTIME);
-      const sageRuntime = await probeSageAttention(RUNTIME, { status: installStatus, force });
-      let sageNodeReady = false;
-      try {
-        const info = await getObjectInfo(force);
-        sageNodeReady = !!info.PathchSageAttentionKJ;
-      } catch { /* Python runtime details remain useful while ComfyUI is offline. */ }
-      const performanceRuntime = Object.assign({}, sageRuntime, {
-        ready: sageRuntime.ready === true && sageNodeReady,
-        reason: sageRuntime.ready === true && !sageNodeReady
-          ? 'ComfyUI-KJNodes is needed for the H3 SageAttention graph patch.'
-          : sageRuntime.reason,
-      });
-      return json(res, 200, Object.assign({}, hardware, {
-        performance: h3PerformanceReport({ hardware, runtime: performanceRuntime, models: settings }),
-      }));
+      return json(res, 200, await getSetupHardwareInfo(true));
     } catch (error) {
       return json(res, 500, { error: String(error.message || error) });
     }
@@ -6864,28 +5940,6 @@ async function handleApi(req, res, url) {
   }
   if (route === '/api/settings' && req.method === 'POST') {
     const body = await readJsonBody(req);
-    if (typeof body.externalLlmOllamaUrl === 'string' && body.externalLlmOllamaUrl.trim()) {
-      try { body.externalLlmOllamaUrl = normalizeOllamaUrl(body.externalLlmOllamaUrl); }
-      catch (error) { return json(res, 400, { error: String(error.message || error) }); }
-    }
-    const changesExternalLlm = body.clearExternalLlmOpenAiApiKey === true
-      || body.clearExternalLlmGeminiApiKey === true
-      || ['externalLlmOpenAiApiKey', 'externalLlmGeminiApiKey'].some((key) => typeof body[key] === 'string' && body[key].trim())
-      || ['externalLlmProvider', 'externalLlmOpenAiModel', 'externalLlmGeminiModel', 'externalLlmOllamaUrl', 'externalLlmOllamaModel']
-        .some((key) => typeof body[key] === 'string' && body[key].trim() && body[key].trim() !== String(settings[key] || ''))
-      || ['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance']
-        .some((key) => typeof body[key] === 'boolean' && body[key] !== settings[key]);
-    const changesLocalPromptAi = ['localPromptAiClip', 'localPromptAiClipType']
-      .some((key) => typeof body[key] === 'string' && body[key].trim() !== String(settings[key] || ''));
-    const changesH3ModelVariant = [
-      'h3FrameModelVariant', 'h3ReferenceModelVariant', 'h3Unet', 'h3RefUnet',
-      'h3Bf16Unet', 'h3Bf16RefUnet', 'h3DynTimeRefUnet', 'h3DynTimeRefHqUnet',
-      'h3TurboLora', 'h3RefTurboLora', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
-    ]
-      .some((key) => typeof body[key] === 'string' && body[key].trim() !== String(settings[key] || ''));
-    if ((changesExternalLlm || changesLocalPromptAi || changesH3ModelVariant) && !isAdmin()) {
-      return json(res, 403, { error: 'Only the owner profile can change the shared prompt AI settings or shared H3 model settings' });
-    }
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       if (key === 'exportDir') continue;
       if (typeof body[key] === 'string' && body[key].trim()) settings[key] = body[key].trim();
@@ -6894,17 +5948,8 @@ async function handleApi(req, res, url) {
       settings.krea2ModelVariant = body.krea2ModelVariant;
     }
     if (typeof body.hfEndpoint === 'string') settings.hfEndpoint = body.hfEndpoint.trim();
-    if (typeof body.localPromptAiClip === 'string') settings.localPromptAiClip = body.localPromptAiClip.trim();
-    if (typeof body.localPromptAiClipType === 'string' && body.localPromptAiClipType.trim()) {
-      settings.localPromptAiClipType = body.localPromptAiClipType.trim();
-    }
     if (typeof body.smartFilenames === 'boolean') settings.smartFilenames = body.smartFilenames;
     if (body.clearHfToken === true) settings.hfToken = '';
-    if (body.clearExternalLlmOpenAiApiKey === true) settings.externalLlmOpenAiApiKey = '';
-    if (body.clearExternalLlmGeminiApiKey === true) settings.externalLlmGeminiApiKey = '';
-    for (const key of ['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance']) {
-      if (typeof body[key] === 'boolean') settings[key] = body[key];
-    }
     if (body.features && typeof body.features === 'object') settings.features = normalizeFeatures(body.features);
     settings = normalizeSettings(settings);
     const hardwareProfile = setupHardwareProfile(await getSetupHardwareInfo().catch(() => ({})));
@@ -6934,12 +5979,6 @@ async function handleApi(req, res, url) {
       const compatibility = await getComfyCompatibility(url.searchParams.has('refresh'));
       const krea2Core = krea2ClipCompatibility(info, compatibility.version);
       const h3Core = minimaxH3Compatibility(info, compatibility.version);
-      const wanAnimate2Core = wanAnimate2CoreCompatibility(info, compatibility.version);
-      if (h3Core.nativeAudioSampling) {
-        // Current ComfyUI supplies the audio-safe AV schedule, so only the
-        // Turbo LoRA loader is needed; the legacy custom sampler is bypassed.
-        missing.h3turbo = ['MiniMaxH3TurboLoRA'].filter((className) => !info[className]);
-      }
       const sageRuntime = await probeSageAttention(RUNTIME, {
         status: installStatus,
         force: url.searchParams.has('refresh'),
@@ -6952,11 +5991,7 @@ async function handleApi(req, res, url) {
       if (sageRuntime.ready === true && !sageAttention.nodeReady) {
         sageAttention.reason = 'ComfyUI-KJNodes is needed for the H3 SageAttention graph patch.';
       }
-      const nodeRevisions = await pinnedNodeRevisionStatus(installStatus, url.searchParams.has('refresh'));
-      const missingComponents = missingDependencyComponentIds(missing, models, {
-        sageAttention,
-        repairComponents: nodeRevisions.components,
-      });
+      const missingComponents = missingDependencyComponentIds(missing, models, { sageAttention });
       if (url.searchParams.has('afterRestart') && dependencyInstallState.restartRequired) {
         const checkedComponents = Array.isArray(dependencyInstallState.components)
           ? dependencyInstallState.components.filter(Boolean)
@@ -6996,12 +6031,9 @@ async function handleApi(req, res, url) {
             hardwareGuidance[id] || null,
             krea2Core,
             h3Core,
-            wanAnimate2Core,
             sageAttention,
           )),
           missingComponents,
-          repairComponents: nodeRevisions.components,
-          outdatedNodes: nodeRevisions.nodes,
           install: dependencyInstallState,
           sam3: { canInstall: installStatus.canInstall, downloaded: installStatus.downloaded, reason: installStatus.reason },
           sageAttention,
@@ -7016,15 +6048,7 @@ async function handleApi(req, res, url) {
           depthModel: settings.depthAnythingV3Model,
           outpaintLora: settings.krea2OutpaintLora,
         },
-        minimaxH3: Object.assign({}, h3Core, {
-          frameVariant: h3FrameVariant(settings),
-          referenceVariant: h3ReferenceVariant(settings),
-          turbo: {
-            frames: h3TurboCompatibility(settings, 'frames'),
-            reference: h3TurboCompatibility(settings, 'reference'),
-          },
-        }),
-        wanAnimate2: wanAnimate2Core,
+        minimaxH3: h3Core,
         features: settings.features,
         capabilities: { video: configuredVideoEngineCapabilities(hardwareProfile, settings) },
         queue: jobs.size,
@@ -7394,7 +6418,6 @@ async function handleApi(req, res, url) {
           saveJsonSync(SETTINGS_FILE, settings);
         }
         objectInfoCache = null;
-        invalidatePinnedNodeRevisionCache();
         if (result.failures?.length) {
           const firstFailure = result.failures[0];
           updateDependencyInstallState({
@@ -8121,25 +7144,10 @@ async function handleApi(req, res, url) {
 
   if (route === '/api/animate' && req.method === 'POST') {
     const body = await readJsonBody(req);
-    const engine = ['h3', 'wan', 'wan-animate2', 'eros', 'scail', 'ltx-edit'].includes(body.engine) ? body.engine : 'ltx';
-    const wanAnimate2 = engine === 'wan-animate2';
-    const h3Mode = engine === 'h3' && ['reference', 'replace'].includes(body.h3Mode)
-      ? body.h3Mode
-      : 'frames';
-    const h3ReferenceBacked = engine === 'h3' && (h3Mode === 'reference' || h3Mode === 'replace');
-    const h3GraphMode = h3ReferenceBacked ? 'reference' : 'frames';
-    const h3SelectedModelVariant = engine === 'h3'
-      ? (h3ReferenceBacked ? h3ReferenceVariant(settings) : h3FrameVariant(settings))
-      : null;
-    const h3ReplaceKind = body.h3ReplaceKind === 'character' ? 'character' : 'object';
-    const h3ReplaceTarget = String(body.h3ReplaceTarget || '').trim().slice(0, 240);
-    const h3TurboRequested = engine === 'h3' && body.h3Turbo === true;
-    const h3Turbo = h3TurboRequested;
-    const h3LongContext = engine === 'h3' && body.h3LongContext === true;
+    const engine = ['h3', 'wan', 'eros', 'scail', 'ltx-edit'].includes(body.engine) ? body.engine : 'ltx';
+    const h3Mode = engine === 'h3' && body.h3Mode === 'reference' ? 'reference' : 'frames';
     const h3SageAttention = engine === 'h3' && body.sageAttention !== false;
     const h3References = normalizeH3References(body.h3References);
-    let h3TurboNativeSampler = false;
-    const h3AllowedReferenceTokens = h3ReferenceInputTokens(h3References);
     // Every video route except Wan Full Quality is fixed at CFG 1 (or
     // explicitly zeroes negative conditioning), so a negative prompt cannot
     // influence sampling there. Do not silently retain a placebo setting.
@@ -8170,79 +7178,6 @@ async function handleApi(req, res, url) {
           compatibility: h3Compatibility,
         });
       }
-      const selectedMode = h3ReferenceBacked ? 'reference' : 'frames';
-      const selectedVariant = h3SelectedModelVariant;
-      if (h3LongContext && h3Mode === 'replace') {
-        return json(res, 400, {
-          error: 'MiniMax H3 Long context supports Text + Frames and Reference modes. Replace remains a single-clip workflow.',
-          code: 'h3_long_context_mode_incompatible',
-        });
-      }
-      if (h3LongContext && selectedVariant.requiresPatch) {
-        return json(res, 409, {
-          error: 'MiniMax H3 Long context is not yet validated with DynTime. Choose Standard or Full BF16 for this generation.',
-          code: 'h3_long_context_model_incompatible',
-        });
-      }
-      if (h3LongContext) {
-        const missingContextNodes = REQUIRED_CLASSES.h3context.filter((className) => !info[className]);
-        if (missingContextNodes.length) {
-          return json(res, 409, {
-            error: 'MiniMax H3 Long context needs the reviewed Motion Context node. Install Long Context, restart ComfyUI, and try again.',
-            code: 'h3_long_context_unavailable',
-            component: 'h3context',
-            missingNodes: missingContextNodes,
-          });
-        }
-      }
-      if (selectedVariant.requiresPatch) {
-        const patchStatus = await dynTimePatchStatus(RUNTIME);
-        if (!patchStatus.ready) {
-          return json(res, 409, {
-            error: 'MiniMax H3 DynTime needs its reviewed ComfyUI compatibility patch. Open Preferences → Video Models and run DynTime setup.',
-            code: 'h3_dyntime_patch_required',
-            component: 'h3dyntime',
-            patch: patchStatus,
-          });
-        }
-      }
-      const selectedModel = diffusionModelStatus(info, h3EffectiveModelName(settings, selectedMode));
-      if (!selectedModel.ok) {
-        return json(res, 409, {
-          error: `MiniMax H3 needs this ${selectedVariant.label} model in ComfyUI: ${selectedModel.name}`,
-          code: 'h3_model_unavailable',
-          component: selectedVariant.requiresPatch ? 'h3dyntime' : (h3ReferenceBacked ? 'h3r2v' : 'h3'),
-          model: selectedModel,
-        });
-      }
-      if (h3Turbo) {
-        const turboCompatibility = h3TurboCompatibility(settings, selectedMode);
-        if (!turboCompatibility.supported) {
-          return json(res, 409, {
-            error: turboCompatibility.reason,
-            code: 'h3_turbo_model_incompatible',
-            modelVariant: turboCompatibility.variant,
-          });
-        }
-        h3TurboNativeSampler = minimaxH3NativeAudioSampling(info);
-        const referenceTurbo = h3ReferenceBacked;
-        const requiredTurboNodes = referenceTurbo
-          ? REQUIRED_CLASSES.h3turbor2v
-          : (h3TurboNativeSampler ? ['MiniMaxH3TurboLoRA'] : REQUIRED_CLASSES.h3turbo);
-        const missingTurboNodes = requiredTurboNodes.filter((className) => !info[className]);
-        const turboLora = configuredModelsStatus(info)[referenceTurbo ? 'h3RefTurbo' : 'h3Turbo'].lora;
-        if (missingTurboNodes.length || !turboLora.ok) {
-          return json(res, 409, {
-            error: missingTurboNodes.length
-              ? 'MiniMax H3 Turbo needs the current creator sampler workflow. Install or repair H3 Turbo, restart ComfyUI, and try again.'
-              : `MiniMax H3 ${referenceTurbo ? 'Reference ' : ''}Turbo needs this LoRA in ComfyUI: ${referenceTurbo ? settings.h3RefTurboLora : settings.h3TurboLora}`,
-            code: 'h3_turbo_unavailable',
-            component: referenceTurbo ? 'h3turbor2v' : 'h3turbo',
-            missingNodes: missingTurboNodes,
-            lora: turboLora,
-          });
-        }
-      }
       if (h3SageAttention) {
         const sageRuntime = await probeSageAttention(RUNTIME, { status: sam3InstallStatus(RUNTIME) });
         const nodeReady = !!info.PathchSageAttentionKJ;
@@ -8261,36 +7196,11 @@ async function handleApi(req, res, url) {
           });
         }
       }
-      if (h3ReferenceBacked
+      if (h3Mode === 'reference'
         && !h3References.images.length
         && !h3References.videos.length
         && !h3References.audios.length) {
         return json(res, 400, { error: 'MiniMax H3 Reference mode needs at least one image, video, or audio reference.' });
-      }
-      if (h3Mode === 'replace') {
-        if (!h3ReplaceTarget) {
-          return json(res, 400, { error: 'Describe the original character or object you want to replace.' });
-        }
-        if (h3References.videos.length !== 1 || h3References.images.length !== 1 || h3References.audios.length) {
-          return json(res, 400, { error: 'MiniMax H3 Replace mode needs exactly one master video and one replacement image.' });
-        }
-      }
-    }
-    if (wanAnimate2) {
-      const info = await getObjectInfo();
-      const missingNodes = REQUIRED_CLASSES.wananimate2.filter((className) => !info[className]);
-      const modelStatusValue = configuredModelsStatus(info).wanAnimate2;
-      const missingModels = Object.entries(modelStatusValue)
-        .filter(([key, value]) => key !== 'label' && value?.ok === false)
-        .map(([key]) => key);
-      if (missingNodes.length || missingModels.length) {
-        return json(res, 409, {
-          error: 'Wan Animate 2 needs the current ComfyUI core nodes and official model pack. Install or repair Wan Animate 2 in Generation Setup, restart ComfyUI, and try again.',
-          code: 'wan_animate2_unavailable',
-          component: 'wananimate2',
-          missingNodes,
-          missingModels,
-        });
       }
     }
     const requestedCameraMotions = normalizeCameraMotions(body.cameraMotions);
@@ -8308,19 +7218,17 @@ async function handleApi(req, res, url) {
     let suppliedMotionPrompt = ensureCameraMotionPrompt(suppliedPrompt, cameraMotions);
     const userMotionPrompt = suppliedMotionPrompt;
     const autoMotionRequested = body.autoMotionPrompt === true
-      && !h3ReferenceBacked;
+      && !(engine === 'h3' && h3Mode === 'reference');
     const preparedMotionPrompt = body.preparedMotionPrompt === true && !!suppliedMotionPrompt;
     // SCAIL follows its driving clip, so a motion sentence is an optional
     // creative nudge rather than a prerequisite for a faithful transfer.
-    if (!suppliedMotionPrompt && engine !== 'scail' && !autoMotionRequested) {
-      if (!wanAnimate2) return json(res, 400, { error: 'Describe the motion first' });
-    }
+    if (!suppliedMotionPrompt && engine !== 'scail' && !autoMotionRequested) return json(res, 400, { error: 'Describe the motion first' });
     let motionPrompt = suppliedMotionPrompt || 'preserve the movement from the driving video';
     const isLtxEdit = engine === 'ltx-edit';
     let item = body.id ? db.items.find((it) => it.id === body.id && it.profileId === req.profile.id) : null;
     if (body.id && !item) return json(res, 404, { error: 'Image not found' });
     // Video-tab jobs that started from a gallery image group under that item
-    if (!item && body.sourceItemId && !h3ReferenceBacked) {
+    if (!item && body.sourceItemId && !(engine === 'h3' && h3Mode === 'reference')) {
       item = db.items.find((it) => it.id === body.sourceItemId && it.profileId === req.profile.id) || null;
     }
 
@@ -8353,14 +7261,14 @@ async function handleApi(req, res, url) {
     }
 
     if (engine !== 'ltx' && engine !== 'h3' && bypass) {
-      const label = { wan: 'Wan 2.2', 'wan-animate2': 'Wan Animate 2', eros: '10Eros DMD', scail: 'SCAIL 2', 'ltx-edit': 'LTX Edit' }[engine];
+      const label = { wan: 'Wan 2.2', eros: '10Eros DMD', scail: 'SCAIL 2', 'ltx-edit': 'LTX Edit' }[engine];
       return json(res, 400, { error: `${label} needs a source image. Use LTX 2.3 for text-to-video.` });
     }
     if (autoMotionRequested && bypass) {
       return json(res, 400, { error: 'Automatic motion prompts need a first-frame image.' });
     }
     const faceImageName = engine === 'ltx' && body.faceImageName ? String(body.faceImageName) : null;
-    const driveVideoName = (engine === 'scail' || wanAnimate2 || isLtxEdit) && body.driveVideoName ? String(body.driveVideoName) : null;
+    const driveVideoName = (engine === 'scail' || isLtxEdit) && body.driveVideoName ? String(body.driveVideoName) : null;
     const cameraGuideVideoName = engine === 'ltx' && body.cameraGuideVideoName
       ? String(body.cameraGuideVideoName)
       : null;
@@ -8387,9 +7295,6 @@ async function handleApi(req, res, url) {
     if (engine === 'scail' && !driveVideoName) {
       return json(res, 400, { error: 'SCAIL 2 needs a driving motion video. Attach one with the 🎥 chip.' });
     }
-    if (wanAnimate2 && !driveVideoName) {
-      return json(res, 400, { error: 'Wan Animate 2 needs a performance video for motion and expression.' });
-    }
     if (isLtxEdit && !driveVideoName) {
       return json(res, 400, { error: 'LTX Edit needs the source video you want to edit.' });
     }
@@ -8401,16 +7306,9 @@ async function handleApi(req, res, url) {
 
     // Duration: prefer seconds; fall back to legacy frames (25 fps)
     let seconds = Number(body.seconds);
-    let h3LongContextPlan = [];
-    const h3LongContextTurboVideo = h3LongContext && h3Turbo && h3ReferenceBacked
-      && h3References.videos.length > 0;
     if (!Number.isFinite(seconds)) seconds = clampInt(body.frames, 25, 505, 121) / 25;
     seconds = engine === 'h3'
-      ? (h3LongContext
-        ? Math.max(H3_MIN_SECONDS, Math.min(H3_LONG_CONTEXT_MAX_SECONDS, seconds))
-        : h3DurationSeconds(seconds))
-      : wanAnimate2
-        ? WAN_ANIMATE_2_FRAMES / 24
+      ? h3DurationSeconds(seconds)
       : engine === 'scail'
       ? scailDurationSeconds(seconds, driveDur)
       : isLtxEdit && driveDur > 0
@@ -8420,19 +7318,10 @@ async function handleApi(req, res, url) {
             ? ltxCameraDurationSeconds(seconds, cameraGuideVideoName ? cameraGuideSourceDuration : 0, cameraGuideStart)
             : ltxDurationSeconds(seconds)
           : Math.max(1, Math.min(15, seconds));
-    let frames; let fps; let W; let H; let h3OutputAspectRatio;
+    let frames; let fps; let W; let H;
     if (engine === 'h3') {
       fps = H3_FPS;
-      if (h3LongContext) {
-        h3LongContextPlan = h3LongContextSegments(seconds, {
-          maxGenerationFrames: h3LongContextTurboVideo ? H3_TURBO_REFERENCE_CHUNK_FRAMES : undefined,
-        });
-        frames = h3LongContextPlan.reduce((total, segment) => total + segment.keepFrames, 0);
-        seconds = frames / H3_FPS;
-      } else {
-        frames = h3FramesForSeconds(seconds);
-        seconds = h3EffectiveDurationSeconds(seconds);
-      }
+      frames = h3FramesForSeconds(seconds);
       // H3's first frame supplies visual conditioning, not the output canvas.
       // Honor the aspect and S/M/L size captured by this submission so lower
       // memory tiers also work for image-to-video and gallery reuse.
@@ -8444,12 +7333,7 @@ async function handleApi(req, res, url) {
         4,
         requestedWidth / Math.max(1, requestedHeight)
       );
-      h3OutputAspectRatio = requestedAspectRatio;
       ({ W, H } = h3Dimensions(requestedAspectRatio, 1, body.h3ResolutionSize));
-    } else if (wanAnimate2) {
-      fps = 24;
-      frames = WAN_ANIMATE_2_FRAMES;
-      ({ W, H } = wanAnimate2Dimensions(srcW, srcH));
     } else if (engine === 'scail') {
       fps = selectedScailFps;
       frames = scailFramesForSeconds(seconds, fps);
@@ -8498,24 +7382,10 @@ async function handleApi(req, res, url) {
       : Math.floor(Math.random() * 2 ** 48);
     // Edit Anything expects concise, literal editing instructions. Its author
     // specifically advises against the LTX prompt rewriter for this workflow.
-    if (wanAnimate2) body.enhance = false;
     const enhance = isLtxEdit ? false : body.enhance !== false;
-    const h3PromptImageNames = engine !== 'h3'
-      ? []
-      : h3ReferenceBacked
-        ? [h3References.images[0]?.name].filter(Boolean)
-        : [!bypass ? comfyName : null, body.endImageName ? String(body.endImageName) : null].filter(Boolean);
     let autoGeneratedMotion = preparedMotionPrompt;
     if (autoMotionRequested) {
-      const suggested = await sharedMotionPrompt(comfyName, seed, req.profile.id, userMotionPrompt, {
-        engine,
-        seconds,
-        longContext: h3LongContext,
-        mode: h3GraphMode,
-        imageNames: engine === 'h3' ? h3PromptImageNames : undefined,
-        hasFirstFrame: engine === 'h3' && !bypass,
-        hasLastFrame: engine === 'h3' && !!body.endImageName,
-      });
+      const suggested = await sharedMotionPrompt(comfyName, seed, req.profile.id, userMotionPrompt, { engine, seconds });
       suppliedMotionPrompt = cleanEnhancedText(suggested, userMotionPrompt || 'subtle natural movement with a steady camera');
       suppliedMotionPrompt = ensureCameraMotionPrompt(suppliedMotionPrompt, cameraMotions);
       motionPrompt = suppliedMotionPrompt;
@@ -8524,40 +7394,19 @@ async function handleApi(req, res, url) {
     let prompt = motionPrompt;
     let refinedMotionPrompt = null;
     const frameAwareEnhance = !bypass && !faceImageName && !isLtxEdit && engine !== 'h3';
-    if (engine !== 'h3' && shouldUseExternalPrompt('video', 'enhance') && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
-      const externalImageNames = [faceImageName || (!bypass ? comfyName : undefined)].filter(Boolean);
-      const externalImageName = externalImageNames[0];
-      const parts = videoPromptEnhanceParts(motionPrompt, {
-        engine,
-        seconds,
-        mode: h3GraphMode,
-        hasImage: !!externalImageName,
-      });
-      const raw = await runConfiguredExternalPrompt(parts, 384, {
-        action: 'enhance',
-        imageName: externalImageName,
-        imageNames: externalImageNames,
-        profileId: req.profile.id,
-      });
-      refinedMotionPrompt = cleanEnhancedText(raw, motionPrompt);
-      refinedMotionPrompt = ensureCameraMotionPrompt(refinedMotionPrompt, cameraMotions);
-      prompt = refinedMotionPrompt;
-    } else if (engine === 'h3' && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
-      const h3EnhanceImageName = h3PromptImageNames[0];
+    if (engine === 'h3' && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
+      const h3EnhanceImageName = h3Mode === 'reference'
+        ? h3References.images[0]?.name
+        : (!bypass ? comfyName : undefined);
       const raw = await sharedH3PromptEnhancement(motionPrompt, seed, {
         profileId: req.profile.id,
         imageName: h3EnhanceImageName,
-        imageNames: h3PromptImageNames,
-        mode: h3GraphMode,
+        mode: h3Mode,
         seconds,
-        longContext: h3LongContext,
-        hasFirstFrame: h3Mode === 'frames' && !bypass,
-        hasLastFrame: h3Mode === 'frames' && !!body.endImageName,
-        allowedReferenceTokens: h3ReferenceBacked ? h3AllowedReferenceTokens : [],
       });
       refinedMotionPrompt = cleanEnhancedText(raw, motionPrompt);
       prompt = refinedMotionPrompt;
-    } else if (!wanAnimate2 && frameAwareEnhance && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
+    } else if (frameAwareEnhance && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
       // Every image-to-video enhancer sees both the actual first frame and
       // the user's initial motion idea before the generation graph is built.
       const raw = await wanEnhance(comfyName, motionPrompt, seed, req.profile.id);
@@ -8570,7 +7419,7 @@ async function handleApi(req, res, url) {
     }
     prompt = ensureCameraMotionPrompt(prompt, cameraMotions);
     const recordedMotionPrompt = promptTemplate || userMotionPrompt || suppliedMotionPrompt
-      || ((engine === 'scail' || wanAnimate2) ? 'Motion copied from performance video' : motionPrompt);
+      || (engine === 'scail' ? 'Motion copied from driving video' : motionPrompt);
     const recordedRefinedMotionPrompt = refinedMotionPrompt && refinedMotionPrompt !== recordedMotionPrompt
       ? refinedMotionPrompt
       : null;
@@ -8578,21 +7427,6 @@ async function handleApi(req, res, url) {
 
     const sigmaPreset = ['dmd', 'card', 'v5', 'custom'].includes(body.sigmaPreset) ? body.sigmaPreset : 'dmd';
     const sig = erosSigmas(sigmaPreset);
-    const videoSteps = engine === 'h3'
-      ? (h3Turbo
-        ? clampInt(body.steps, 4, 100, h3ReferenceBacked ? 6 : h3FramesTurboDefaultSteps(settings.h3TurboLora))
-        : clampInt(body.steps, 1, 100, 20))
-      : engine === 'wan'
-        ? (body.fast !== false ? 4 : 20)
-        : wanAnimate2
-          ? WAN_ANIMATE_2_STEPS
-        : engine === 'scail'
-          ? 6
-          : engine === 'eros'
-            ? manualSigmaStepCount(sig.first) + manualSigmaStepCount(sig.up)
-            : faceImageName
-              ? manualSigmaStepCount(LTX_SIGMAS_BASE)
-              : manualSigmaStepCount(LTX_SIGMAS_BASE) + manualSigmaStepCount(LTX_SIGMAS_REFINE);
     // RIFE frame interpolation for LTX, Wan, and SCAIL video outputs.
     const smooth = (engine === 'ltx' || isLtxEdit || engine === 'wan' || engine === 'scail') && [2, 3].includes(Number(body.smooth))
       ? Number(body.smooth) : 1;
@@ -8603,12 +7437,8 @@ async function handleApi(req, res, url) {
     const cameraMotionGuideNames = cameraReferenceGuided
       ? (cameraGuideVideoName ? [cameraGuideVideoName] : await uploadCameraMotionGuides(cameraMotions))
       : [];
-    const h3LongContextChainId = h3LongContextPlan.length ? uid() : '';
-    const firstH3LongContextSegment = h3LongContextPlan[0] || null;
     const opts = {
-      prompt: firstH3LongContextSegment
-        ? h3LongContextSegmentPrompt(prompt, firstH3LongContextSegment, h3LongContextPlan.length)
-        : prompt,
+      prompt,
       negativePrompt,
       cameraMotionPhrase: selectedCameraMotionPhrase,
       cameraMotionPromptBase,
@@ -8617,9 +7447,7 @@ async function handleApi(req, res, url) {
       // I2V was enhanced by the shared vision pass above. T2V and Face ID
       // retain their specialized in-graph prompt enhancement.
       enhance: isLtxLike ? enhance && !refinedMotionPrompt : false,
-      frames: firstH3LongContextSegment ? firstH3LongContextSegment.generationFrames : frames,
-      fps,
-      steps: videoSteps,
+      frames, fps,
       fourK: !!body.fourK,
       seed,
       W, H, bypass,
@@ -8627,7 +7455,7 @@ async function handleApi(req, res, url) {
       imgCompression: clampInt(body.motionFreedom, 0, 100, 35),
       fast: body.fast !== false,
       audioName,
-      endImageName: !firstH3LongContextSegment || h3LongContextPlan.length === 1 ? endImageName : null,
+      endImageName,
       sigmaFirst: sig.first,
       sigmaUp: sig.up,
       driveVideoName,
@@ -8643,79 +7471,25 @@ async function handleApi(req, res, url) {
       scailChunkFrames: selectedScailChunkOptions.chunkFrames,
       scailChunkOverlap: selectedScailChunkOptions.overlapFrames,
       driveAudio: engine === 'scail' && body.driveHasAudio === true,
-      identityStrength: clampNum(body.wanAnimate2IdentityStrength, 0, 2, 1),
-      motionStrength: clampNum(body.wanAnimate2MotionStrength, 0, 2, 1),
       smooth,
       loras: engine === 'h3' ? [] : (Array.isArray(body.loras) ? body.loras.filter((l) => l && l.on && l.name) : []),
-      mode: h3GraphMode,
-      turbo: h3Turbo,
-      turboStrength: clampNum(body.h3TurboStrength, 0.8, 1.2, 1),
-      turboLowVram: body.h3TurboLowVram === true,
-      turboNativeSampler: h3TurboNativeSampler,
+      mode: h3Mode,
       sageAttention: h3SageAttention,
       firstImageName: engine === 'h3' && !bypass && h3Mode === 'frames' ? comfyName : null,
       references: h3References,
       refImageSize: body.h3RefImageSize === 'max' ? 'max' : 'match',
-      longContext: firstH3LongContextSegment ? {
-        chainId: h3LongContextChainId,
-        clipIndex: 0,
-      } : null,
     };
-    if (h3LongContextTurboVideo && firstH3LongContextSegment) {
-      opts.turboReferenceSegment = firstH3LongContextSegment;
-    }
-    const h3TurboReferenceChunks = engine === 'h3' && h3ReferenceBacked && h3Turbo
-      && !h3LongContext && h3References.videos.length && frames > H3_TURBO_REFERENCE_CHUNK_FRAMES
-      ? h3TurboReferenceSegments(frames)
-      : [];
-    if (h3TurboReferenceChunks.length > 1) {
-      opts.turboReferenceSegment = h3TurboReferenceChunks[0];
-    }
     const graph = engine === 'h3' ? await buildMiniMaxH3Graph(opts, settings, {
       nodeFromOrdered, filterInputs, rtxVideoSuperResolutionNode,
     })
-      : wanAnimate2 ? await buildWanAnimate2Graph(comfyName, opts, settings, { nodeFromOrdered, filterInputs })
       : engine === 'scail' ? await buildAnimateScail(comfyName, opts)
       : engine === 'wan' ? await buildAnimateWan(comfyName, opts)
         : engine === 'eros' ? await buildAnimateEros(comfyName, opts)
           : faceImageName ? await buildAnimateFaceId(faceImageName, opts)
             : await buildAnimate(comfyName, opts);
     const pid = await queuePrompt(graph, { profileId: req.profile.id });
-    const h3ChunkSequenceId = h3LongContextPlan.length > 1
-      ? h3LongContextChainId
-      : (h3TurboReferenceChunks.length > 1 ? uid() : '');
-    const h3VideoChunkSequence = h3LongContextPlan.length > 1 ? {
-      type: 'long-context',
-      id: h3ChunkSequenceId,
-      chainId: h3LongContextChainId,
-      index: 0,
-      segments: h3LongContextPlan,
-      chunkBuffers: [],
-      posterBuffer: null,
-      startedAt: Date.now(),
-      opts: Object.assign({}, opts),
-      basePrompt: prompt,
-      finalEndImageName: endImageName,
-      turboReferenceVideo: h3LongContextTurboVideo,
-      fps: H3_FPS,
-      width: opts.fourK ? W * 2 : W,
-      height: opts.fourK ? H * 2 : H,
-    } : (h3TurboReferenceChunks.length > 1 ? {
-      type: 'turbo-reference',
-      id: h3ChunkSequenceId,
-      index: 0,
-      segments: h3TurboReferenceChunks,
-      chunkBuffers: [],
-      posterBuffer: null,
-      startedAt: Date.now(),
-      opts: Object.assign({}, opts),
-      fps: H3_FPS,
-      width: opts.fourK ? W * 2 : W,
-      height: opts.fourK ? H * 2 : H,
-    } : undefined);
     trackJob(pid, {
       kind: 'video', profileId: req.profile.id, itemId: item ? item.id : null, createItem: !item, graph,
-      videoChunkSequence: h3VideoChunkSequence,
       videoInfo: {
         engine,
         seconds: opts.seconds,
@@ -8725,15 +7499,15 @@ async function handleApi(req, res, url) {
         promptTemplate,
         promptPresets,
         enhance: enhance && !!suppliedMotionPrompt,
-        frames: h3LongContextPlan.length ? frames : (opts.frames - 1) * smooth + 1, fps: opts.fps * smooth,
+        frames: (opts.frames - 1) * smooth + 1, fps: opts.fps * smooth,
         exactFrameCount: true,
         smooth: smooth > 1 ? smooth : undefined,
         fourK: opts.fourK, width: opts.fourK ? W * 2 : W, height: opts.fourK ? H * 2 : H,
-        seed: opts.seed, steps: opts.steps, t2v: engine === 'h3' ? h3Mode === 'frames' && bypass : bypass,
+        seed: opts.seed, t2v: engine === 'h3' ? h3Mode === 'frames' && bypass : bypass,
         motionFreedom: isLtxLike ? opts.imgCompression : undefined,
         fast: engine === 'wan' ? opts.fast : undefined,
         sigmaPreset: engine === 'eros' ? sigmaPreset : undefined,
-        drivenAudio: engine === 'h3' ? true : (engine === 'scail' ? opts.driveAudio === true : (wanAnimate2 ? body.driveHasAudio === true : !!audioName)),
+        drivenAudio: engine === 'h3' ? true : (engine === 'scail' ? opts.driveAudio === true : !!audioName),
         endFrame: !!endImageName,
         motionVideo: !!driveVideoName,
         cameraMotions: cameraMotions.length ? cameraMotions : undefined,
@@ -8747,35 +7521,10 @@ async function handleApi(req, res, url) {
         scailStableTracking: engine === 'scail' ? selectedScailChunkOptions.stableTracking : undefined,
         scailChunkFrames: engine === 'scail' ? selectedScailChunkOptions.chunkFrames : undefined,
         scailChunkOverlap: engine === 'scail' ? selectedScailChunkOptions.overlapFrames : undefined,
-        wanAnimate2IdentityStrength: wanAnimate2 ? opts.identityStrength : undefined,
-        wanAnimate2MotionStrength: wanAnimate2 ? opts.motionStrength : undefined,
-        sourceFrameRate: wanAnimate2 || undefined,
         h3Mode: engine === 'h3' ? h3Mode : undefined,
-        h3Turbo: engine === 'h3' ? opts.turbo || undefined : undefined,
-        h3ModelVariant: engine === 'h3' ? h3SelectedModelVariant?.id : undefined,
-        h3ModelName: engine === 'h3' ? h3EffectiveModelName(settings, h3GraphMode) : undefined,
-        h3TurboLora: engine === 'h3' && opts.turbo
-          ? (h3ReferenceBacked ? settings.h3RefTurboLora : settings.h3TurboLora)
-          : undefined,
-        h3TurboStrength: engine === 'h3' && opts.turbo ? opts.turboStrength : undefined,
-        h3TurboLowVram: engine === 'h3' && opts.turbo ? opts.turboLowVram || undefined : undefined,
-        h3TurboSampler: engine === 'h3' && opts.turbo
-          ? (h3ReferenceBacked ? 'creator-reference' : (opts.turboNativeSampler ? 'native-euler' : 'creator-legacy'))
-          : undefined,
-        h3TurboChunks: h3TurboReferenceChunks.length > 1 ? h3TurboReferenceChunks.length : undefined,
-        h3LongContext: h3LongContextPlan.length > 1 || undefined,
-        h3LongContextClips: h3LongContextPlan.length > 1 ? h3LongContextPlan.length : undefined,
-        h3LongContextFrames: h3LongContextPlan.length > 1 ? 22 : undefined,
-        h3AspectRatio: engine === 'h3' ? h3OutputAspectRatio : undefined,
-        h3ResolutionSize: engine === 'h3' ? Number(body.h3ResolutionSize) || 1 : undefined,
-        h3MatchSource: engine === 'h3' && h3Mode === 'frames' ? body.h3MatchSource === true : undefined,
-        h3MatchReferenceVideo: engine === 'h3' && h3Mode === 'reference'
-          ? body.h3MatchReferenceVideo === true : undefined,
         attentionBackend: engine === 'h3' ? (opts.sageAttention ? 'sageattention' : 'standard') : undefined,
-        h3RefImageSize: h3ReferenceBacked ? opts.refImageSize : undefined,
-        h3References: h3ReferenceBacked ? h3References : undefined,
-        h3ReplaceKind: engine === 'h3' && h3Mode === 'replace' ? h3ReplaceKind : undefined,
-        h3ReplaceTarget: engine === 'h3' && h3Mode === 'replace' ? h3ReplaceTarget : undefined,
+        h3RefImageSize: engine === 'h3' && h3Mode === 'reference' ? opts.refImageSize : undefined,
+        h3References: engine === 'h3' && h3Mode === 'reference' ? h3References : undefined,
         // Asset names (ComfyUI input dir) so "Reuse" can restore them
         imageName: bypass ? undefined : comfyName,
         srcWidth: bypass ? undefined : srcW,
@@ -8783,13 +7532,11 @@ async function handleApi(req, res, url) {
         audioName: audioName || undefined,
         endImageName: endImageName || undefined,
         driveVideoName: driveVideoName || undefined,
-        driveHasAudio: (engine === 'scail' || wanAnimate2) ? body.driveHasAudio === true : undefined,
+        driveHasAudio: engine === 'scail' ? opts.driveAudio === true : undefined,
         faceId: !!faceImageName || undefined,
         faceImageName: faceImageName || undefined,
         driveStartSeconds: (engine === 'scail' || isLtxEdit) && driveStart > 0 ? driveStart : undefined,
-        driveDurSeconds: wanAnimate2
-          ? seconds
-          : ((engine === 'scail' || isLtxEdit) && driveDur > 0 ? driveDur : undefined),
+        driveDurSeconds: (engine === 'scail' || isLtxEdit) && driveDur > 0 ? driveDur : undefined,
         loras: opts.loras,
       },
     });
@@ -8798,10 +7545,6 @@ async function handleApi(req, res, url) {
       jobId: pid,
       frames,
       engine,
-      h3Turbo: engine === 'h3' ? opts.turbo : undefined,
-      h3TurboChunks: h3TurboReferenceChunks.length > 1 ? h3TurboReferenceChunks.length : undefined,
-      h3LongContextClips: h3LongContextPlan.length > 1 ? h3LongContextPlan.length : undefined,
-      sequenceId: h3ChunkSequenceId || undefined,
       attentionBackend: engine === 'h3' ? (opts.sageAttention ? 'sageattention' : 'standard') : undefined,
     });
   }
@@ -8834,35 +7577,8 @@ async function handleApi(req, res, url) {
     let videoInfo;
     if (route === '/api/video/upscale') {
       const scale = clampNum(body.scale, 1, 4, 2);
-      const upscaleEngine = body.engine === 'seedvr2' ? 'seedvr2' : 'rtx';
-      const objectInfo = await getObjectInfo();
-      if (upscaleEngine === 'seedvr2') {
-        const readiness = outpaintRefineReadiness(objectInfo);
-        if (!readiness.ready) {
-          return json(res, 409, {
-            error: 'SeedVR2 video upscale needs the SeedVR2 nodes and configured DiT/VAE models. Install the Upscale component in Generation setup.',
-            code: 'seedvr2_setup_required',
-          });
-        }
-      } else if (!objectInfo.RTXVideoSuperResolution) {
-        return json(res, 409, {
-          error: 'RTX video upscale needs the RTX Video Super Resolution node. Install the optional RTX 4K component in Generation setup.',
-          code: 'rtx_video_upscale_setup_required',
-        });
-      }
-      const sourceShortEdge = Math.min(
-        Number(baseInfo.width) || Number(dims.w) || 0,
-        Number(baseInfo.height) || Number(dims.h) || 0,
-      );
-      const resolution = sourceShortEdge > 0
-        ? clampInt(sourceShortEdge * scale, 512, 8192, 1080)
-        : 1080;
-      graph = await buildExistingVideoUpscale(comfyName, {
-        fps, frames, scale, hasAudio, engine: upscaleEngine, resolution,
-      });
-      videoInfo = videoProcessInfo(baseInfo, {
-        kind: 'upscale', scale, engine: upscaleEngine, parentVideoId: entry.id,
-      });
+      graph = await buildExistingVideoUpscale(comfyName, { fps, frames, scale, hasAudio });
+      videoInfo = videoProcessInfo(baseInfo, { kind: 'upscale', scale, parentVideoId: entry.id });
     } else {
       const multiplier = [2, 3, 4].includes(Number(body.multiplier)) ? Number(body.multiplier) : 2;
       graph = await buildExistingVideoInterpolate(comfyName, { fps, frames, smooth: multiplier, hasAudio });
@@ -8875,60 +7591,6 @@ async function handleApi(req, res, url) {
     trackJob(pid, { kind: 'video', profileId: req.profile.id, itemId: item.id, graph, videoInfo });
     ensureWs();
     return json(res, 200, { jobId: pid });
-  }
-
-  if (route === '/api/video/convert-mp4' && req.method === 'POST') {
-    const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-    if (!['video/webm', 'video/x-matroska', 'application/octet-stream'].includes(contentType)) {
-      req.resume();
-      return json(res, 415, { error: 'MP4 conversion accepts WebM video recordings only' });
-    }
-    const contentLength = Number(req.headers['content-length']);
-    if (Number.isFinite(contentLength) && contentLength > MAX_DOCUMENTATION_VIDEO_BYTES) {
-      req.resume();
-      return json(res, 413, { error: 'The documentation video is larger than the 256 MB conversion limit' });
-    }
-    if (!videoExtensionFfmpeg) videoExtensionFfmpeg = await resolveFfmpegExecutable(RUNTIME);
-    if (!videoExtensionFfmpeg) {
-      req.resume();
-      return json(res, 503, { error: 'MP4 conversion needs FFmpeg. Install FFmpeg or make the ComfyUI imageio-ffmpeg executable available.' });
-    }
-
-    let temporaryDirectory = '';
-    try {
-      temporaryDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'mixstudio-documentation-video-'));
-      const source = path.join(temporaryDirectory, 'recording.webm');
-      const output = path.join(temporaryDirectory, 'documentation.mp4');
-      const bytes = await receiveInputFile(req, source, MAX_DOCUMENTATION_VIDEO_BYTES);
-      if (!bytes) return json(res, 400, { error: 'No WebM recording received' });
-      await transcodeVideoFileToMp4({
-        sourcePath: source,
-        outputPath: output,
-        ffmpegPath: videoExtensionFfmpeg,
-      });
-      const stat = await fsp.stat(output);
-      res.writeHead(200, {
-        'Content-Type': 'video/mp4',
-        'Content-Length': stat.size,
-        'Content-Disposition': 'attachment; filename="mix-studio-documentation.mp4"',
-        'Cache-Control': 'no-store',
-        'X-Content-Type-Options': 'nosniff',
-      });
-      await pipeline(fs.createReadStream(output), res);
-    } catch (error) {
-      if (res.headersSent) {
-        if (!res.destroyed) res.destroy(error);
-        return;
-      }
-      const status = error?.code === 'INPUT_TOO_LARGE' ? 413
-        : error?.code === 'ffmpeg_unavailable' ? 503
-          : error?.code === 'video_transcode_failed' ? 422
-            : 500;
-      return json(res, status, { error: String(error.message || error) });
-    } finally {
-      if (temporaryDirectory) await fsp.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => {});
-    }
-    return;
   }
 
   // Side-by-side comparison: original motion video (left) + SCAIL result
@@ -9140,15 +7802,7 @@ async function handleApi(req, res, url) {
     const body = await readJsonBody(req);
     const initialPrompt = String(body.prompt || '').trim();
     const engine = body.engine === 'h3' ? 'h3' : '';
-    const h3LongContext = engine === 'h3' && body.h3LongContext === true;
-    const endImageName = engine === 'h3' ? String(body.endImageName || '').trim().slice(0, 500) : '';
-    const requestedSeconds = Number(body.seconds);
-    const seconds = engine === 'h3'
-      ? (h3LongContext
-        ? h3LongContextSegments(requestedSeconds)
-          .reduce((total, segment) => total + segment.keepFrames, 0) / H3_FPS
-        : h3EffectiveDurationSeconds(requestedSeconds))
-      : requestedSeconds;
+    const seconds = Number(body.seconds);
     let comfyName = '';
     if (body.id) {
       const item = db.items.find((it) => it.id === body.id && it.profileId === req.profile.id);
@@ -9160,27 +7814,10 @@ async function handleApi(req, res, url) {
       comfyName = String(body.imageName);
     }
     if (!comfyName) return json(res, 400, { error: 'Attach a start frame first' });
-    const imageNames = [comfyName, endImageName].filter(Boolean);
-    let raw = await sharedMotionPrompt(comfyName, Math.floor(Math.random() * 2 ** 31), req.profile.id, initialPrompt, {
-      engine,
-      seconds,
-      longContext: h3LongContext,
-      mode: 'frames',
-      imageNames,
-      hasFirstFrame: engine === 'h3',
-      hasLastFrame: engine === 'h3' && !!endImageName,
-    });
+    let raw = await sharedMotionPrompt(comfyName, Math.floor(Math.random() * 2 ** 31), req.profile.id, initialPrompt, { engine, seconds });
     let prompt = cleanEnhancedText(raw, initialPrompt);
     if (!prompt) {
-      raw = await sharedMotionPrompt(comfyName, Math.floor(Math.random() * 2 ** 31), req.profile.id, initialPrompt, {
-        engine,
-        seconds,
-        longContext: h3LongContext,
-        mode: 'frames',
-        imageNames,
-        hasFirstFrame: engine === 'h3',
-        hasLastFrame: engine === 'h3' && !!endImageName,
-      });
+      raw = await sharedMotionPrompt(comfyName, Math.floor(Math.random() * 2 ** 31), req.profile.id, initialPrompt, { engine, seconds });
       prompt = cleanEnhancedText(raw, initialPrompt);
     }
     if (!prompt) return json(res, 500, { error: 'Vision model returned no usable text' });
@@ -9205,245 +7842,26 @@ async function handleApi(req, res, url) {
     return json(res, 200, { prompt });
   }
 
-  if (route === '/api/prompt/revise/status' && req.method === 'GET') {
-    const requestId = promptRevisionRequestId(url.searchParams.get('requestId'));
-    const record = requestId && promptRevisionRequests.get(requestId);
-    if (!record || record.profileId !== req.profile.id) {
-      return json(res, 404, { error: 'Prompt revision status is no longer available' });
-    }
-    let stage = record.stage;
-    let position = null;
-    const job = record.jobId ? jobs.get(record.jobId) : null;
-    if (job) {
-      stage = job.startedAt ? 'running' : 'queued';
-      if (!job.startedAt) {
-        try {
-          const queue = await (await comfyFetch('/queue')).json();
-          const index = (queue.queue_pending || []).findIndex((entry) => String(entry?.[1] || '') === record.jobId);
-          if (index >= 0) position = index + 1;
-        } catch { /* retain generic waiting state while ComfyUI reconnects */ }
-      }
-    }
-    const message = stage === 'queued'
-      ? `Waiting for ComfyUI${position ? ` · queue position ${position}` : ''}`
-      : stage === 'running'
-        ? `Rewriting prompt · attempt ${record.attempt}/2`
-        : stage === 'validating'
-          ? 'Checking the revised prompt…'
-          : stage === 'cancelled'
-            ? 'Prompt revision cancelled'
-            : stage === 'error'
-              ? 'Prompt revision failed'
-              : stage === 'done'
-                ? 'Prompt revision ready'
-                : 'Preparing prompt revision…';
-    return json(res, 200, {
-      requestId,
-      stage,
-      message,
-      jobId: record.jobId || null,
-      attempt: record.attempt,
-      position,
-    });
-  }
-
-  if (route === '/api/prompt/revise/cancel' && req.method === 'POST') {
-    const body = await readJsonBody(req);
-    const requestId = promptRevisionRequestId(body.requestId);
-    const record = requestId && promptRevisionRequests.get(requestId);
-    if (!record || record.profileId !== req.profile.id) {
-      return json(res, 404, { error: 'This prompt revision is no longer available' });
-    }
-    record.cancelled = true;
-    updatePromptRevisionRequest(record, 'cancelled');
-    let running = false;
-    if (record.jobId) {
-      const job = jobs.get(record.jobId);
-      if (job) {
-        job.cancelRequested = true;
-        job.cancelMessage = 'Prompt revision cancelled';
-        running = await stopComfyPrompt(record.jobId);
-        cancelJob(record.jobId, job.cancelMessage);
-      }
-    }
-    return json(res, 200, { ok: true, running });
-  }
-
   if (route === '/api/prompt/revise' && req.method === 'POST') {
     const body = await readJsonBody(req);
-    const requestId = promptRevisionRequestId(body.requestId);
     const currentPrompt = String(body.currentPrompt || '').trim().slice(0, 12000);
     const changeRequest = String(body.changeRequest || '').trim().slice(0, 1200);
     const imageName = String(body.imageName || '').trim().slice(0, 500);
-    const endImageName = String(body.endImageName || '').trim().slice(0, 500);
     if (!changeRequest) return json(res, 400, { error: 'Describe what you want to change' });
-    const revisionRequest = startPromptRevisionRequest(requestId, req.profile.id);
     const videoRevision = body.kind === 'video';
-    const revisionMode = ['reference', 'replace'].includes(body.h3Mode) ? 'reference' : 'frames';
-    const revisionEngine = String(body.engine || '').trim().slice(0, 40);
-    const revisionH3LongContext = revisionEngine === 'h3' && body.h3LongContext === true;
-    const hasFirstFrame = body.hasFirstFrame === undefined
-      ? revisionMode === 'frames' && !!imageName
-      : body.hasFirstFrame === true;
-    const hasLastFrame = body.hasLastFrame === true;
-    const allowedReferenceTokens = revisionMode === 'reference'
-      ? h3PromptReferenceTokens(...(Array.isArray(body.allowedReferenceTokens) ? body.allowedReferenceTokens : []))
-      : [];
-    const revisionImageNames = videoRevision && revisionEngine === 'h3'
-      ? revisionMode === 'reference'
-        ? [imageName].filter(Boolean)
-        : [hasFirstFrame ? imageName : null, hasLastFrame ? (endImageName || (!hasFirstFrame ? imageName : '')) : null].filter(Boolean)
-      : [imageName].filter(Boolean);
-    const revisionWarnings = [];
     const revisionOptions = {
       imageName: imageName || undefined,
-      endImageName: endImageName || undefined,
-      imageNames: revisionImageNames,
       profileId: req.profile.id,
-      engine: revisionEngine,
-      seconds: revisionEngine === 'h3'
-        ? (revisionH3LongContext
-          ? h3LongContextSegments(body.seconds)
-            .reduce((total, segment) => total + segment.keepFrames, 0) / H3_FPS
-          : h3EffectiveDurationSeconds(body.seconds))
-        : clampNum(body.seconds, 1, 60, 5),
-      longContext: revisionH3LongContext,
-      mode: revisionMode,
-      // Clients predating explicit frame flags sent only imageName. Preserve
-      // their I2VA behavior while keeping Reference-mode vision distinct.
-      hasFirstFrame,
-      hasLastFrame,
-      allowedReferenceTokens,
-      preserveAuthoredText: body.preserveAuthoredText === true,
-      // Speaker-ID syntax improves H3 results but is never a hard gate for a
-      // user-authored revision. Reference-token integrity remains strict.
-      allowDialogueFormatFallback: true,
-      // The prompt-assistant sheet owns its own progress state. A generic
-      // pre-generation status would otherwise overwrite the completed media
-      // card and linger after this request resolves.
-      broadcastStatus: false,
-      onPromptJobQueued(pid) {
-        updatePromptRevisionRequest(revisionRequest, 'queued', { jobId: pid });
-      },
-      onPromptJobSettled(pid) {
-        if (!revisionRequest?.cancelled && revisionRequest?.jobId === pid) {
-          updatePromptRevisionRequest(revisionRequest, 'validating', { jobId: '' });
-        }
-      },
+      engine: String(body.engine || '').trim().slice(0, 40),
+      seconds: clampNum(body.seconds, 1, 60, 5),
+      mode: body.h3Mode === 'reference' ? 'reference' : 'frames',
     };
-    const revisionSeed = Math.floor(Math.random() * 2 ** 31);
-    try {
-      const raw = videoRevision && revisionEngine === 'h3'
-        ? await validatedH3Prompt(
-          (attempt, validationFeedback) => {
-            if (revisionRequest?.cancelled) throw promptRevisionCancellationError();
-            updatePromptRevisionRequest(revisionRequest, 'preparing', { attempt: attempt + 1, jobId: '' });
-            return reviseVideoPrompt(
-              currentPrompt,
-              changeRequest,
-              revisionSeed + attempt,
-              Object.assign({}, revisionOptions, { validationFeedback }),
-            );
-          },
-          currentPrompt || changeRequest,
-          Object.assign({}, revisionOptions, {
-            referenceSource: `${currentPrompt}\n${changeRequest}`,
-            authoredTextSource: currentPrompt,
-            // The official H3 guide is optional. A useful rewrite should not
-            // be discarded for cosmetic structure differences; only empty
-            // output and damaged reference contracts trigger a retry/error.
-            advisoryStructure: true,
-            useFallbackOnEmpty: false,
-            onAdvisoryResult(result) {
-              revisionWarnings.push(...result.audit.issues.map((issue) => ({
-                code: issue.code,
-                message: issue.message,
-              })));
-              if (revisionRequest) revisionRequest.warnings = revisionWarnings;
-            },
-          }),
-        )
-        : (videoRevision
-          ? await reviseVideoPrompt(currentPrompt, changeRequest, revisionSeed, revisionOptions)
-          : await reviseImagePrompt(currentPrompt, changeRequest, revisionSeed, revisionOptions));
-      if (revisionRequest?.cancelled) throw promptRevisionCancellationError();
-      const prompt = videoRevision && revisionEngine === 'h3'
-        ? String(raw || '').trim()
-        : cleanEnhancedText(raw, currentPrompt || changeRequest);
-      if (!prompt) {
-        const error = new Error('Prompt assistant returned no usable text');
-        error.code = 'prompt_empty';
-        throw error;
-      }
-      finishPromptRevisionRequest(revisionRequest, 'done');
-      return json(res, 200, { prompt, warnings: revisionWarnings });
-    } catch (error) {
-      const cancelled = error?.code === 'job_cancelled' || revisionRequest?.cancelled;
-      if (revisionRequest) {
-        revisionRequest.errorCode = cancelled ? 'job_cancelled' : (error?.code || 'prompt_revision_failed');
-        finishPromptRevisionRequest(revisionRequest, cancelled ? 'cancelled' : 'error');
-      }
-      const status = cancelled ? 409 : (error?.code === 'prompt_timeout' ? 504 : (error?.code === 'h3_prompt_format' ? 422 : 500));
-      return json(res, status, {
-        error: String(error?.message || error),
-        code: cancelled ? 'job_cancelled' : (error?.code || 'prompt_revision_failed'),
-        issues: Array.isArray(error?.issues) ? error.issues : undefined,
-      });
-    }
-  }
-
-  if (route === '/api/prompt/provider/test' && req.method === 'POST') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can test the shared external prompt provider' });
-    const provider = configuredExternalLlm();
-    const text = await externalLlmRequest({
-      provider: provider.provider,
-      model: provider.model,
-      apiKey: provider.apiKey,
-      baseUrl: provider.baseUrl,
-      instruction: 'You are checking a prompt-writing connection. Follow the user request exactly.',
-      userInput: 'Reply with exactly: Connection ready',
-      maxTokens: 64,
-    });
-    return json(res, 200, {
-      ok: true,
-      provider: provider.provider,
-      model: provider.model,
-      response: String(text).trim().slice(0, 120),
-    });
-  }
-
-  if (route === '/api/prompt/local-models' && req.method === 'GET') {
-    try {
-      const info = await getObjectInfo(url.searchParams.has('refresh'));
-      return json(res, 200, localPromptAiCatalog(info, settings));
-    } catch (error) {
-      return json(res, 503, {
-        error: String(error?.message || error || 'Could not read local prompt models from ComfyUI'),
-        code: error?.code || 'local_prompt_models_unavailable',
-      });
-    }
-  }
-
-  if (route === '/api/prompt/local-model/test' && req.method === 'POST') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can test the shared local prompt model' });
-    try {
-      const raw = await queueTextEnhancement({
-        instruction: 'Return exactly one <final_prompt> XML element containing the requested text and nothing else.',
-        userInput: 'Write exactly: Local prompt model ready',
-      }, Math.floor(Math.random() * 2 ** 31), '', 64, {
-        profileId: req.profile.id,
-        broadcastStatus: false,
-      });
-      const response = cleanEnhancedText(raw, '');
-      if (!response) throw new Error('The selected local model returned no usable text');
-      const active = localPromptAiConfig(settings);
-      return json(res, 200, { ok: true, model: active.model, type: active.type, response: response.slice(0, 120) });
-    } catch (error) {
-      return json(res, error?.code === 'prompt_timeout' ? 504 : 409, {
-        error: String(error?.message || error || 'The selected local prompt model could not run'),
-        code: error?.code || 'local_prompt_model_failed',
-      });
-    }
+    const raw = videoRevision
+      ? await reviseVideoPrompt(currentPrompt, changeRequest, Math.floor(Math.random() * 2 ** 31), revisionOptions)
+      : await reviseImagePrompt(currentPrompt, changeRequest, Math.floor(Math.random() * 2 ** 31), revisionOptions);
+    const prompt = cleanEnhancedText(raw, currentPrompt || changeRequest);
+    if (!prompt) return json(res, 500, { error: 'Prompt assistant returned no usable text' });
+    return json(res, 200, { prompt });
   }
 
   if (route === '/api/debug/models') {
@@ -9501,21 +7919,6 @@ async function handleApi(req, res, url) {
   }
 
   if (route === '/api/queue') {
-    const queueNow = Date.now();
-    const dependencyDownloadActive = dependencyInstallState.state === 'running'
-      && dependencyInstallState.phase === 'downloading-model';
-    const activeDownloads = dependencyDownloadActive ? [{
-      id: 'dependency-model-download',
-      label: dependencyInstallState.filename || dependencyInstallState.message || 'Model download',
-      message: dependencyInstallState.message || 'Downloading model',
-      filename: dependencyInstallState.filename || '',
-      downloaded: Math.max(0, Number(dependencyInstallState.downloaded || 0)),
-      downloadTotal: Math.max(0, Number(dependencyInstallState.downloadTotal || 0)),
-      downloadMethod: dependencyInstallState.downloadMethod || '',
-      downloadStartedAt: dependencyInstallState.downloadStartedAt || dependencyInstallState.updatedAt || queueNow,
-      updatedAt: dependencyInstallState.updatedAt || queueNow,
-      canCancel: isAdmin(),
-    }] : [];
     try {
       const q = await (await comfyFetch('/queue')).json();
       // Other profiles' jobs stay visible (shared GPU) but get redacted labels
@@ -9533,8 +7936,7 @@ async function handleApi(req, res, url) {
         return Object.assign({}, row, {
           owned,
           sequenceId: owned && job.params && job.params.editSequence
-            ? job.params.editSequence.id
-            : (owned && job.videoChunkSequence ? job.videoChunkSequence.id : undefined),
+            ? job.params.editSequence.id : undefined,
         });
       };
       const markReorderable = (row) => {
@@ -9566,7 +7968,6 @@ async function handleApi(req, res, url) {
         running,
         pending,
         finalizing,
-        downloads: activeDownloads,
         health: await queueHealth(running, pending),
         history: db.history.filter((h) => h.profileId === req.profile.id).slice(0, 20).map((entry) => {
           const item = entry.itemId && db.items.find((candidate) => candidate.id === entry.itemId && candidate.profileId === req.profile.id);
@@ -9574,7 +7975,7 @@ async function handleApi(req, res, url) {
         }),
       });
     } catch (e) {
-      return json(res, 200, { ok: false, error: String(e.message || e), running: [], pending: [], finalizing: [], downloads: activeDownloads });
+      return json(res, 200, { ok: false, error: String(e.message || e), running: [], pending: [], finalizing: [] });
     }
   }
 
@@ -9640,9 +8041,22 @@ async function handleApi(req, res, url) {
     if (job.completing) return json(res, 409, { error: 'This job is already finishing' });
     job.cancelRequested = true;
     job.cancelMessage = 'Cancelled by user';
+    // remove from pending first
+    await comfyFetch('/queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delete: [pid] }),
+    }).catch(() => { /* noop */ });
     // If it is already running, ComfyUI may emit execution_interrupted before
     // this request returns. The cancel marker keeps that event neutral.
-    const stillRunning = await stopComfyPrompt(pid);
+    let stillRunning = false;
+    try {
+      const q = await (await comfyFetch('/queue')).json();
+      stillRunning = (q.queue_running || []).some((e) => String(e[1] || '') === pid);
+    } catch { /* noop */ }
+    if (stillRunning) {
+      await comfyFetch('/interrupt', { method: 'POST' }).catch(() => { /* noop */ });
+    }
     // Remove tracking immediately as a polling fallback and to settle any
     // preprocessing request even when the ComfyUI websocket is unavailable.
     cancelJob(pid, job.cancelMessage);
@@ -9693,17 +8107,13 @@ async function handleApi(req, res, url) {
 
   if (route === '/api/gallery') {
     const unlocked = isPrivateUnlocked(req);
-    const revision = `${SERVER_INSTANCE_ID}.${dbRevision}`;
-    if (url.searchParams.get('revision') === revision) {
-      return json(res, 200, { unchanged: true, revision });
-    }
     const view = galleryView(db, unlocked);
     view.items = view.items.filter((it) => it.profileId === req.profile.id);
     view.folders = view.folders.filter((f) => f.profileId === req.profile.id);
     const uploadedAssets = db.uploadedAssets
       .filter((asset) => asset.profileId === req.profile.id && !asset.deletedAt)
       .map(publicUploadedAsset);
-    return json(res, 200, Object.assign({ unlocked, uploadedAssets, profile: publicProfile(req.profile, db), revision }, view));
+    return json(res, 200, Object.assign({ unlocked, uploadedAssets, profile: publicProfile(req.profile, db) }, view));
   }
 
   const uploadedAssetDelete = route.match(/^\/api\/uploaded-assets\/([\w]+)$/);
@@ -9794,7 +8204,7 @@ async function handleApi(req, res, url) {
   }
 
   if (route === '/api/export' && req.method === 'POST') {
-    if (!settings.exportDir) return json(res, 409, { error: 'Choose a default save folder in Preferences first' });
+    if (!settings.exportDir) return json(res, 409, { error: 'Choose a default save folder in Advanced Settings first' });
     const body = await readJsonBody(req);
     const unlocked = isPrivateUnlocked(req);
     const visible = galleryView(db, unlocked).items.filter((item) => item.profileId === req.profile.id);
@@ -9845,7 +8255,7 @@ async function handleApi(req, res, url) {
   }
 
   if (route === '/api/export-file' && req.method === 'POST') {
-    if (!settings.exportDir) return json(res, 409, { error: 'Choose a default save folder in Preferences first' });
+    if (!settings.exportDir) return json(res, 409, { error: 'Choose a default save folder in Advanced Settings first' });
     try {
       const buffer = await readBody(req, 64 * 1024 * 1024);
       if (!buffer.length) return json(res, 400, { error: 'No file received' });
@@ -10288,16 +8698,9 @@ function jobLabel(job) {
     return prefix + (job.params.prompt || '').slice(0, 70);
   }
   if (job.kind === 'upscale') return job.upscaleInfo && job.upscaleInfo.engine === 'ultimate' ? 'Upscale (Ultimate SD)' : 'Upscale (SeedVR2)';
-  if (job.kind === 'video' && job.videoInfo && job.videoInfo.processed === 'upscale') {
-    return `Video upscale (${job.videoInfo.upscaleEngine === 'seedvr2' ? 'SeedVR2' : 'RTX'})`;
-  }
+  if (job.kind === 'video' && job.videoInfo && job.videoInfo.processed === 'upscale') return 'Video upscale (RTX)';
   if (job.kind === 'video' && job.videoInfo && job.videoInfo.processed === 'interpolate') return 'Frame interpolation (RIFE)';
   if (job.kind === 'video' && job.videoInfo && job.videoInfo.processed === 'extend') return 'Video extension (LTX 2.3)';
-  if (job.kind === 'video' && job.videoChunkSequence) {
-    const label = job.videoChunkSequence.type === 'long-context' ? 'H3 Long context clip' : 'H3 Turbo chunk';
-    return `${label} ${job.videoChunkSequence.index + 1}/${job.videoChunkSequence.segments.length}: `
-      + ((job.videoInfo && job.videoInfo.motionPrompt) || '').slice(0, 58);
-  }
   if (job.kind === 'video') return 'Video: ' + ((job.videoInfo && job.videoInfo.motionPrompt) || '').slice(0, 70);
   if (job.kind === 'enhance') return 'Prompt enhance';
   if (job.kind === 'motionPrompt') return 'Motion prompt from first frame';
@@ -10340,211 +8743,6 @@ function normalizePromptPresets(value, prompt) {
     .filter((entry) => entry && entry.category);
 }
 
-const MCP_ASPECT_DIMENSIONS = Object.freeze({
-  square: [1024, 1024],
-  portrait: [832, 1216],
-  landscape: [1216, 832],
-  vertical: [768, 1344],
-  wide: [1344, 768],
-});
-
-function mcpArguments(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return value;
-}
-
-function mcpPrompt(value) {
-  const prompt = String(value || '').trim().slice(0, 8000);
-  if (!prompt) {
-    const error = new Error('A non-empty prompt is required.');
-    error.code = 'prompt_required';
-    throw error;
-  }
-  return prompt;
-}
-
-function mcpAspect(value, fallback) {
-  const key = String(value || fallback || 'square').toLowerCase();
-  return MCP_ASPECT_DIMENSIONS[key] ? key : fallback;
-}
-
-async function mcpOwnerApi(profile, route, body) {
-  const response = await fetch(`http://127.0.0.1:${PORT}${route}`, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: Object.assign({
-      Cookie: `${PROFILE_COOKIE}=${encodeURIComponent(signProfileId(profile.id, AUTH_SECRET))}`,
-      Accept: 'application/json',
-      Connection: 'close',
-    }, body === undefined ? {} : { 'Content-Type': 'application/json' }),
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text || '{}'); } catch { payload = { error: text || `HTTP ${response.status}` }; }
-  if (!response.ok) {
-    const error = new Error(String(payload.error || `Mix Studio returned HTTP ${response.status}`));
-    error.code = String(payload.code || `http_${response.status}`);
-    error.details = payload;
-    throw error;
-  }
-  return payload;
-}
-
-function mcpRecentGeneration(item) {
-  const videos = (item.videos || []).slice(-3).map((video) => ({
-    id: video.id,
-    createdAt: video.createdAt,
-    engine: video.info?.engine || '',
-    durationSeconds: Number(video.info?.frames) > 0 && Number(video.info?.fps) > 0
-      ? Number(video.info.frames) / Number(video.info.fps)
-      : undefined,
-    prompt: String(video.info?.refinedMotionPrompt || video.info?.motionPrompt || '').slice(0, 1200),
-  }));
-  return {
-    id: item.id,
-    mode: item.mode,
-    createdAt: item.createdAt,
-    prompt: String(item.refinedPrompt || item.prompt || '').slice(0, 1200),
-    width: item.width,
-    height: item.height,
-    videoCount: (item.videos || []).length,
-    videos,
-  };
-}
-
-async function callSparkMcpTool(name, rawArguments, profile) {
-  const args = mcpArguments(rawArguments);
-  if (name === 'mix_studio_status') {
-    const queue = await mcpOwnerApi(profile, '/api/queue');
-    return {
-      ok: queue.ok === true,
-      running: queue.running || [],
-      pending: queue.pending || [],
-      finalizing: queue.finalizing || [],
-      recentActivity: (queue.history || []).slice(0, 8).map((entry) => ({
-        ts: entry.ts, kind: entry.kind, itemId: entry.itemId, label: entry.label,
-      })),
-      error: queue.error || undefined,
-    };
-  }
-  if (name === 'mix_studio_recent_generations') {
-    const limit = clampInt(args.limit, 1, 20, 8);
-    const items = db.items
-      .filter((item) => item.profileId === profile.id)
-      .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0))
-      .slice(0, limit)
-      .map(mcpRecentGeneration);
-    return { count: items.length, items };
-  }
-  if (name === 'mix_studio_generate_image') {
-    const prompt = mcpPrompt(args.prompt);
-    const aspect = mcpAspect(args.aspect_ratio, 'square');
-    const [width, height] = MCP_ASPECT_DIMENSIONS[aspect];
-    const seed = Number(args.seed);
-    return mcpOwnerApi(profile, '/api/generate', {
-      mode: 't2i', prompt, width, height,
-      batch: clampInt(args.batch, 1, 4, 1),
-      enhance: args.enhance_prompt === true,
-      seed: Number.isSafeInteger(seed) && seed >= 0 ? seed : undefined,
-      steps: 8, cfg: 1, krea2Turbo: true, loras: [], regions: [], negativePrompt: '',
-    });
-  }
-  if (name === 'mix_studio_generate_video') {
-    const prompt = mcpPrompt(args.prompt);
-    const engine = args.engine === 'ltx' ? 'ltx' : 'h3';
-    const aspect = mcpAspect(args.aspect_ratio, 'landscape');
-    const [width, height] = MCP_ASPECT_DIMENSIONS[aspect];
-    const seed = Number(args.seed);
-    const turbo = engine === 'h3' && args.turbo === true;
-    return mcpOwnerApi(profile, '/api/animate', {
-      engine, prompt, width, height,
-      seconds: clampNum(args.seconds, 1, engine === 'h3' ? 10 : 20, 5),
-      enhance: args.enhance_prompt === true,
-      seed: Number.isSafeInteger(seed) && seed >= 0 ? seed : undefined,
-      h3Mode: engine === 'h3' ? 'frames' : undefined,
-      h3AspectRatio: engine === 'h3' ? width / height : undefined,
-      h3ResolutionSize: engine === 'h3' ? 768 : undefined,
-      h3Turbo: turbo,
-      h3TurboStrength: turbo ? 1 : undefined,
-      steps: engine === 'h3' ? (turbo ? h3FramesTurboDefaultSteps(settings.h3TurboLora) : 20) : undefined,
-      sageAttention: false,
-      fourK: false,
-    });
-  }
-  const error = new Error(`Unknown Mix Studio tool: ${name}`);
-  error.code = 'unknown_tool';
-  throw error;
-}
-
-function sparkTokenMatches(candidate) {
-  const expected = String(sparkAccess.token || '');
-  const supplied = String(candidate || '');
-  if (!sparkAccess.enabled || !expected || supplied.length !== expected.length) return false;
-  try {
-    return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
-  } catch { return false; }
-}
-
-async function handleSparkMcp(req, res, url) {
-  let candidate = '';
-  try {
-    candidate = decodeURIComponent(url.pathname.slice('/mcp/'.length));
-  } catch {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-    return res.end('not found');
-  }
-  if (candidate.includes('/') || !sparkTokenMatches(candidate)) {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-    return res.end('not found');
-  }
-  const origin = String(req.headers.origin || '');
-  if (origin && origin !== 'https://gemini.google.com') {
-    return json(res, 403, { error: 'Origin not allowed' });
-  }
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Vary', 'Origin');
-  if (origin === 'https://gemini.google.com') {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID');
-    res.setHeader('Access-Control-Expose-Headers', 'MCP-Session-Id');
-    res.setHeader('Access-Control-Max-Age', '600');
-  }
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    return res.end();
-  }
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return json(res, 405, { error: 'This MCP endpoint accepts JSON-RPC over POST.' });
-  }
-  const protocolVersion = String(req.headers['mcp-protocol-version'] || '');
-  if (protocolVersion && !SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion)) {
-    return json(res, 400, { error: `Unsupported MCP protocol version: ${protocolVersion}` });
-  }
-  const profile = db.profiles.find((entry) => entry.id === sparkAccess.profileId);
-  if (!profile || profile.id !== db.profiles[0]?.id) {
-    return json(res, 403, { error: 'The configured owner profile is unavailable.' });
-  }
-  let payload;
-  try {
-    const body = await readBody(req, 1024 * 1024);
-    payload = JSON.parse(body.toString('utf8') || 'null');
-  } catch (error) {
-    return json(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
-  }
-  const response = await handleMcpPayload(payload, {
-    version: readAppRelease(ROOT).version,
-    tools: mcpToolDefinitions(),
-    callTool: (name, args) => callSparkMcpTool(name, args, profile),
-  });
-  if (response === null) {
-    res.writeHead(202, { 'Cache-Control': 'no-store' });
-    return res.end();
-  }
-  return json(res, 200, response);
-}
-
 /* ------------------------------------------------------------------ */
 /* Server                                                              */
 /* ------------------------------------------------------------------ */
@@ -10552,7 +8750,6 @@ async function handleSparkMcp(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
-    if (url.pathname.startsWith('/mcp/')) return await handleSparkMcp(req, res, url);
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     if (url.pathname.startsWith('/images/')) {
       const profile = currentProfile(req);
@@ -10562,24 +8759,6 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(404); return res.end('not found');
       }
       return serveFile(res, media.file, req.headers.range);
-    }
-    if (url.pathname.startsWith('/video-previews/')) {
-      const profile = currentProfile(req);
-      if (!profile) return json(res, 401, { error: 'Sign in to view generated media', code: 'auth' });
-      const media = safeMediaPath(VIDEOS, url.pathname.slice('/video-previews/'.length));
-      if (!media || !canAccessProfileMedia(req, profile, 'video', media.name)) {
-        res.writeHead(404); return res.end('not found');
-      }
-      try {
-        const preview = await cachedVideoPreview(media, {
-          size: url.searchParams.get('size'),
-          fps: url.searchParams.get('fps'),
-        });
-        return serveFile(res, preview, req.headers.range);
-      } catch (error) {
-        const status = error?.code === 'ENOENT' ? 404 : error?.code === 'ffmpeg_unavailable' ? 503 : 422;
-        return json(res, status, { error: String(error?.message || 'Video preview unavailable'), code: error?.code || 'video_preview_failed' });
-      }
     }
     if (url.pathname.startsWith('/videos/')) {
       const profile = currentProfile(req);
@@ -10612,15 +8791,11 @@ const server = http.createServer(async (req, res) => {
     let p = url.pathname === '/' ? '/index.html' : url.pathname;
     const publicFile = safeMediaPath(PUBLIC, p.replace(/^\//, ''));
     if (!publicFile) { res.writeHead(404); return res.end('not found'); }
-    if (isCriticalPublicAsset(publicFile.name)) {
-      return await serveCriticalPublicAsset(res, publicFile.file, publicFile.name);
-    }
     return serveFile(res, publicFile.file);
   } catch (e) {
     const cancelled = e && e.code === 'job_cancelled';
     const setupRequired = e && e.code === 'comfy_krea2_update_required';
-    const loggedPath = url.pathname.startsWith('/mcp/') ? '/mcp/[redacted]' : url.pathname;
-    if (!cancelled) console.error('[error]', req.method, loggedPath, e.message);
+    if (!cancelled) console.error('[error]', req.method, url.pathname, e.message);
     if (!res.headersSent) {
       json(res, cancelled || setupRequired ? 409 : 500, {
         error: String(e.message || e),

@@ -11,6 +11,7 @@ const {
   seedVr2Profile,
   seedVr2DitInputs,
   seedVr2AttentionForVendor,
+  seedVr2DeviceForVendor,
   targetResolutionForUpscale,
   rtxVideoSuperResolutionNode,
   seedVr2UpscaleNodes,
@@ -38,6 +39,36 @@ test('uses 7B-friendly SeedVR2 loader settings', () => {
   assert.equal(inputs.swap_io_components, true);
   assert.equal(inputs.offload_device, 'cpu');
   assert.equal(inputs.attention_mode, 'sageattn_2');
+});
+
+test('SeedVR2 loader omits device for non-NVIDIA GPUs and uses cuda for NVIDIA', () => {
+  const nvidiaInputs = seedVr2DitInputs({
+    seedvr2Dit: DEFAULT_SEEDVR2_DIT,
+    seedvr2Attention: 'sdpa',
+    gpuVendor: 'nvidia',
+  });
+  assert.equal(nvidiaInputs.device, 'cuda:0');
+
+  const intelInputs = seedVr2DitInputs({
+    seedvr2Dit: DEFAULT_SEEDVR2_DIT,
+    seedvr2Attention: 'sdpa',
+    gpuVendor: 'intel',
+  });
+  assert.equal(intelInputs.device, undefined);
+
+  const noVendorInputs = seedVr2DitInputs({
+    seedvr2Dit: DEFAULT_SEEDVR2_DIT,
+    seedvr2Attention: 'sdpa',
+  });
+  assert.equal(noVendorInputs.device, undefined);
+});
+
+test('seedVr2DeviceForVendor returns correct device for each vendor', () => {
+  assert.equal(seedVr2DeviceForVendor('nvidia'), 'cuda:0');
+  assert.equal(seedVr2DeviceForVendor('Intel'), undefined);
+  assert.equal(seedVr2DeviceForVendor('amd'), undefined);
+  assert.equal(seedVr2DeviceForVendor(''), undefined);
+  assert.equal(seedVr2DeviceForVendor(undefined), undefined);
 });
 
 test('CUDA-only SeedVR2 attention falls back to SDPA on non-NVIDIA backends', () => {
