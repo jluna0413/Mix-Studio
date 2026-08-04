@@ -222,6 +222,8 @@ const { isWidgetSpec } = require('./lib/comfy-widget-spec');
 const { browseGenerationFolder } = require('./lib/folder-picker');
 const {
   appleGenerationProfile,
+  amdGenerationProfile,
+  intelGenerationProfile,
   configuredVideoEngineCapability,
   configuredVideoEngineCapabilities,
   dependencyComponentBlock,
@@ -494,6 +496,13 @@ function adoptDeviceCompatibleModelSettings(hardwareProfile = {}) {
     const configured = normalizeModelPath(settings.ltxCkpt).split('/').pop();
     if (!configured || configured === 'ltx-2.3-22b-dev-fp8.safetensors') {
       settings.ltxCkpt = 'ltx-2.3-22b-dev.safetensors';
+      changed = true;
+    }
+  }
+  if (intelGenerationProfile(hardwareProfile)) {
+    const configured = normalizeModelPath(settings.h3Clip).split('/').pop();
+    if (!configured || configured === 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors') {
+      settings.h3Clip = 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors';
       changed = true;
     }
   }
@@ -4087,7 +4096,7 @@ async function buildAnimate(imageName, opts) {
 
   let frameSource = ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-  if (opts.fourK) {
+  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
     graph.vsr = rtxVideoSuperResolutionNode(frameSource);
     frameSource = ['vsr', 0];
   }
@@ -4264,7 +4273,7 @@ async function buildAnimateFaceId(faceName, opts) {
 
   let frameSource = ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-  if (opts.fourK) {
+  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
     graph.vsr = rtxVideoSuperResolutionNode(frameSource);
     frameSource = ['vsr', 0];
   }
@@ -4531,7 +4540,7 @@ async function buildAnimateEros(imageName, opts) {
   };
 
   let frameSource = ['decode', 0];
-  if (opts.fourK) {
+  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
     graph.vsr = rtxVideoSuperResolutionNode(['decode', 0]);
     frameSource = ['vsr', 0];
   }
@@ -4624,7 +4633,7 @@ async function buildAnimateWan(imageName, opts) {
 
   let frameSource = ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-  if (opts.fourK) {
+  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
     graph.vsr = rtxVideoSuperResolutionNode(frameSource);
     frameSource = ['vsr', 0];
   }
@@ -4780,7 +4789,7 @@ async function buildAnimateScail(imageName, opts) {
 
     let frameSource = ['scail_infinity', 0];
     frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-    if (opts.fourK) {
+    if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
       graph.vsr = rtxVideoSuperResolutionNode(frameSource);
       frameSource = ['vsr', 0];
     }
@@ -4900,7 +4909,7 @@ async function buildAnimateScail(imageName, opts) {
 
   let frameSource = imageBatchChain(graph, frameRanges, 'join') || ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-  if (opts.fourK) {
+  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
     graph.vsr = rtxVideoSuperResolutionNode(frameSource);
     frameSource = ['vsr', 0];
   }
@@ -4951,13 +4960,39 @@ async function buildExistingVideoUpscale(videoName, opts) {
     select_every_nth: 1,
     format: 'None',
   });
-  graph.vsr = rtxVideoSuperResolutionNode(['src', 0], opts.scale || 2);
-  const videoInputs = { images: ['vsr', 0], fps: opts.fps || 16 };
+  const engine = opts.engine === 'seedvr2' ? 'seedvr2' : 'rtx';
+  let frameSource;
+  if (engine === 'seedvr2') {
+    const gpuVendor = opts.gpuVendor || setupHardwareProfile(await getSetupHardwareInfo()).gpuVendor;
+    const availableModels = installedSeedVr2Models(seedVr2ModelDirs());
+    const seedVr2 = seedVr2UpscaleNodes(['src', 0], {
+      settings,
+      availableModels,
+      gpuVendor,
+      profile: opts.profile || 'sharp',
+      noise: opts.noise || 'low',
+      resolution: opts.resolution || 1080,
+      batchSize: 5,
+      uniformBatchSize: true,
+      temporalOverlap: 2,
+    });
+    Object.assign(graph, seedVr2.nodes);
+    frameSource = seedVr2.output;
+  } else {
+    const isNvidia = /^nvidia$/i.test(opts.gpuVendor || '');
+    if (isNvidia) {
+      graph.vsr = rtxVideoSuperResolutionNode(['src', 0], opts.scale || 2);
+      frameSource = ['vsr', 0];
+    } else {
+      frameSource = ['src', 0];
+    }
+  }
+  const videoInputs = { images: frameSource, fps: opts.fps || 16 };
   if (opts.hasAudio) videoInputs.audio = ['src', 2];
   graph.video = { class_type: 'CreateVideo', inputs: videoInputs };
   graph.save = {
     class_type: 'SaveVideo',
-    inputs: { video: ['video', 0], filename_prefix: 'KreaStudio/video_upscale', format: 'auto', codec: 'auto' },
+    inputs: { video: ['video', 0], filename_prefix: `KreaStudio/video_upscale_${engine}`, format: 'auto', codec: 'auto' },
   };
   return filterInputs(graph);
 }
@@ -7449,6 +7484,7 @@ async function handleApi(req, res, url) {
       enhance: isLtxLike ? enhance && !refinedMotionPrompt : false,
       frames, fps,
       fourK: !!body.fourK,
+      gpuVendor: generationHardwareProfile.gpuVendor,
       seed,
       W, H, bypass,
       makePoster: !item,
@@ -7571,14 +7607,38 @@ async function handleApi(req, res, url) {
       ? `ks_vup_${entry.id}.mp4`
       : `ks_vfi_${entry.id}.mp4`);
 
-    const fps = clampNum(baseInfo.fps, 1, 120, 16);
+     const fps = clampNum(baseInfo.fps, 1, 120, 16);
     const frames = clampInt(baseInfo.frames, 0, 1000000, 0);
+    const vGpuVendor = setupHardwareProfile(await getSetupHardwareInfo().catch(() => ({}))).gpuVendor || '';
     let graph;
     let videoInfo;
     if (route === '/api/video/upscale') {
       const scale = clampNum(body.scale, 1, 4, 2);
-      graph = await buildExistingVideoUpscale(comfyName, { fps, frames, scale, hasAudio });
-      videoInfo = videoProcessInfo(baseInfo, { kind: 'upscale', scale, parentVideoId: entry.id });
+      const upscaleEngine = body.engine === 'seedvr2' ? 'seedvr2' : 'rtx';
+      const objectInfo = await getObjectInfo();
+      if (upscaleEngine === 'seedvr2') {
+        const readiness = outpaintRefineReadiness(objectInfo);
+        if (!readiness.ready) {
+          return json(res, 409, {
+            error: 'SeedVR2 video upscale needs the SeedVR2 nodes and configured DiT/VAE models. Install the Upscale component in Generation setup.',
+            code: 'seedvr2_setup_required',
+          });
+        }
+      } else if (!objectInfo.RTXVideoSuperResolution) {
+        return json(res, 409, {
+          error: 'RTX video upscale needs the RTX Video Super Resolution node. Install the optional RTX 4K component in Generation setup.',
+          code: 'rtx_video_upscale_setup_required',
+        });
+      }
+      const sourceShortEdge = Math.min(
+        Number(baseInfo.width) || Number(dims.w) || 0,
+        Number(baseInfo.height) || Number(dims.h) || 0,
+      );
+      const resolution = sourceShortEdge > 0
+        ? clampInt(sourceShortEdge * scale, 512, 8192, 1080)
+        : 1080;
+      graph = await buildExistingVideoUpscale(comfyName, { fps, frames, scale, hasAudio, engine: upscaleEngine, resolution, gpuVendor: vGpuVendor });
+      videoInfo = videoProcessInfo(baseInfo, { kind: 'upscale', scale, engine: upscaleEngine, parentVideoId: entry.id });
     } else {
       const multiplier = [2, 3, 4].includes(Number(body.multiplier)) ? Number(body.multiplier) : 2;
       graph = await buildExistingVideoInterpolate(comfyName, { fps, frames, smooth: multiplier, hasAudio });

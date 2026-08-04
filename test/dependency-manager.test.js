@@ -438,6 +438,39 @@ test('dependency planning adopts a compatible Krea text encoder already register
   assert.equal(plan.settingUpdates.clip, compatible);
 });
 
+test('Intel Arc H3 setup substitutes INT8 ConvRot for NVFP4 AWQ', () => {
+  const plan = dependencyModelPlan(['h3'], {}, { gpuVendor: 'intel' });
+  const clipAsset = plan.assets.find((asset) => asset[0] === 'h3Clip');
+  assert.ok(clipAsset);
+  assert.match(clipAsset[2], /int8_convrot/);
+  assert.doesNotMatch(clipAsset[2], /nvfp4_awq/);
+});
+
+test('Intel Arc respects explicit uncensored H3 text encoder selection', () => {
+  const plan = dependencyModelPlan(['h3'], {}, {
+    gpuVendor: 'intel',
+    modelVariants: { h3: 'int8-convrot-uncensored' },
+  });
+  const clipAsset = plan.assets.find((asset) => asset[0] === 'h3Clip');
+  assert.ok(clipAsset);
+  assert.match(clipAsset[2], /heretic/);
+});
+
+test('NVIDIA H3 keeps NVFP4 AWQ by default but supports uncensored override', () => {
+  const autoPlan = dependencyModelPlan(['h3'], {}, { gpuVendor: 'nvidia' });
+  const autoClip = autoPlan.assets.find((asset) => asset[0] === 'h3Clip');
+  assert.ok(autoClip);
+  assert.match(autoClip[2], /nvfp4_awq/);
+
+  const uncensoredPlan = dependencyModelPlan(['h3'], {}, {
+    gpuVendor: 'nvidia',
+    modelVariants: { h3: 'int8-convrot-uncensored' },
+  });
+  const uncensoredClip = uncensoredPlan.assets.find((asset) => asset[0] === 'h3Clip');
+  assert.ok(uncensoredClip);
+  assert.match(uncensoredClip[2], /heretic/);
+});
+
 test('large Hugging Face models use isolated Xet acceleration before the HTTP fallback', async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixbox-model-xet-'));
   const bytes = safetensorsFixture();

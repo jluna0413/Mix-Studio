@@ -230,6 +230,7 @@ test('Director graph keeps LoRAs, guide audio override, smoothing, 4K, and poste
   };
   const graph = await buildLtxDirectorGraph(normalized, {
     W: 1280, H: 720, seed: 99, smooth: 2, fourK: true, makePoster: true,
+    gpuVendor: 'nvidia',
     loras: [{ name: 'look.safetensors', strength: 0.8, on: true }], sigmasBase: '1,0', sigmasRefine: '0.5,0',
   }, {
     ltxCkpt: 'ltx.safetensors', ltxDistilledLora: 'distilled.safetensors', ltxTextEncoder: 'gemma.safetensors',

@@ -29381,7 +29381,7 @@ const SETTINGS_SERVER_CONTROL_IDS = new Set([
   'setLtxGemmaLora', 'setLtxUps', 'setFaceIdLora', 'setFaceIdDistilled',
   'setH3FrameModelVariant', 'setH3FramesTurboVariant', 'setH3ReferenceModelVariant',
   'setH3Unet', 'setH3RefUnet', 'setH3Bf16Unet', 'setH3Bf16RefUnet', 'setH3DynTimeRefUnet', 'setH3DynTimeRefHqUnet',
-  'setH3TurboLora', 'setH3RefTurboLora', 'setH3Clip', 'setH3VideoVae', 'setH3AudioVae',
+  'setH3TurboLora', 'setH3RefTurboLora', 'setH3Clip', 'setH3ClipVariant', 'setH3VideoVae', 'setH3AudioVae',
   'setWanHigh', 'setWanLow', 'setWanClip', 'setWanVae', 'setWanHighLora',
   'setWanLowLora', 'setErosCkpt', 'setErosTe', 'setErosDmd', 'setErosSigF',
   'setErosSigU', 'setScailUnet', 'setScailLora', 'setScailPusaLora',
@@ -29540,8 +29540,9 @@ function settingsPayload() {
     h3DynTimeRefHqUnet: $('#setH3DynTimeRefHqUnet').value,
     h3TurboLora: $('#setH3TurboLora').value.trim() || H3_FRAMES_TURBO_LORAS.v4,
     h3RefTurboLora: $('#setH3RefTurboLora').value,
-    h3Clip: $('#setH3Clip').value,
-    h3VideoVae: $('#setH3VideoVae').value,
+     h3Clip: $('#setH3Clip').value,
+     h3ClipVariant: $('#setH3ClipVariant').value,
+     h3VideoVae: $('#setH3VideoVae').value,
     h3AudioVae: $('#setH3AudioVae').value,
     wanHighUnet: $('#setWanHigh').value,
     wanLowUnet: $('#setWanLow').value,
@@ -33238,8 +33239,23 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setH3TurboLora').value = s.h3TurboLora || H3_FRAMES_TURBO_LORAS.v4;
     setConfiguredH3FramesTurboLora($('#setH3TurboLora').value);
     $('#setH3RefTurboLora').value = s.h3RefTurboLora || '';
-    $('#setH3Clip').value = s.h3Clip || '';
-    $('#setH3VideoVae').value = s.h3VideoVae || '';
+     $('#setH3Clip').value = s.h3Clip || '';
+     if ($('#setH3ClipVariant')) {
+       const configured = s.h3Clip || '';
+       const variant = s.h3ClipVariant || '';
+       if (variant) {
+         $('#setH3ClipVariant').value = variant;
+       } else if (configured) {
+         const name = configured.toLowerCase();
+         if (name.includes('heretic') || name.includes('uncensored')) $('#setH3ClipVariant').value = 'int8-convrot-uncensored';
+         else if (name.includes('nvfp4') || name.includes('awq')) $('#setH3ClipVariant').value = 'nvfp4-awq';
+         else if (name.includes('int8') || name.includes('convrot')) $('#setH3ClipVariant').value = 'int8-convrot';
+         else $('#setH3ClipVariant').value = 'auto';
+       } else {
+         $('#setH3ClipVariant').value = 'auto';
+       }
+     }
+     $('#setH3VideoVae').value = s.h3VideoVae || '';
     $('#setH3AudioVae').value = s.h3AudioVae || '';
     $('#setWanHigh').value = s.wanHighUnet || '';
     $('#setWanLow').value = s.wanLowUnet || '';
@@ -33320,6 +33336,32 @@ $('#setH3TurboLora').addEventListener('input', (event) => {
   renderH3TurboMode();
   renderVideoStepControl();
 });
+if ($('#setH3ClipVariant')) {
+  $('#setH3ClipVariant').addEventListener('change', () => {
+    const variant = $('#setH3ClipVariant').value;
+    const clipInput = $('#setH3Clip');
+    if (variant === 'auto') {
+      const configured = clipInput.value;
+      const name = (configured || '').toLowerCase();
+      if (name.includes('heretic') || name.includes('uncensored')) {
+        clipInput.value = 'qwen3vl_32b_minimax_h3_ultra_uncensored_heretic_int8_convrot.safetensors';
+      } else if (name.includes('nvfp4') || name.includes('awq')) {
+        clipInput.value = 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors';
+      } else if (name.includes('int8') || name.includes('convrot')) {
+        clipInput.value = 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors';
+      } else {
+        clipInput.value = '';
+      }
+    } else if (variant === 'int8-convrot') {
+      clipInput.value = 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors';
+    } else if (variant === 'int8-convrot-uncensored') {
+      clipInput.value = 'qwen3vl_32b_minimax_h3_ultra_uncensored_heretic_int8_convrot.safetensors';
+    } else if (variant === 'nvfp4-awq') {
+      clipInput.value = 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors';
+    }
+    saveForm();
+  });
+}
 $('#h3InstallFrameModel').addEventListener('click', () => installSelectedH3Model('frames'));
 $('#h3InstallReferenceModel').addEventListener('click', () => installSelectedH3Model('reference'));
 $('#h3RestoreDynTimePatch').addEventListener('click', restoreDynTimePatchFromSettings);
@@ -35137,7 +35179,10 @@ $('#dependencyInstallMissing').addEventListener('click', async () => {
     const result = await api('/api/dependencies/install', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         components,
-        modelVariants: { krea2: $('#setKrea2ModelVariant').value },
+        modelVariants: {
+          krea2: $('#setKrea2ModelVariant').value,
+          h3: $('#setH3ClipVariant')?.value || 'auto',
+        },
       }),
     });
     if (lastMeta && lastMeta.dependencies) lastMeta.dependencies.install = result.install;
@@ -35154,7 +35199,10 @@ $('#dependencyRepairMissing').addEventListener('click', async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         components,
         repair: true,
-        modelVariants: { krea2: $('#setKrea2ModelVariant').value },
+        modelVariants: {
+          krea2: $('#setKrea2ModelVariant').value,
+          h3: $('#setH3ClipVariant')?.value || 'auto',
+        },
       }),
     });
     if (lastMeta && lastMeta.dependencies) lastMeta.dependencies.install = result.install;
