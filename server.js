@@ -4418,12 +4418,17 @@ async function buildAnimate(imageName, opts) {
     ltxBaseModel = ['camera_motion_lora', 0];
   }
   const ltxModel = chainModelLoras(graph, ltxBaseModel, opts.loras, 'ulora');
-  graph.te = await nodeFromOrdered(
-    'LTXAVTextEncoderLoader',
-    [settings.ltxTextEncoder, settings.ltxCkpt, 'default'],
-    {},
-    { text_encoder: settings.ltxTextEncoder, ckpt_name: settings.ltxCkpt }
-  );
+  const ltxDevice = detectGpuDevice((await hardwareInfo({ exportPath: settings.exportDir || DATA })).gpu?.devices) || null;
+  const ltxIsCuda = ltxDevice && ltxDevice.startsWith('cuda');
+  const ltxTeInputs = {
+    text_encoder: settings.ltxTextEncoder,
+    ckpt_name: settings.ltxCkpt,
+    force_keep_on_gpu: true,
+  };
+  if (ltxIsCuda) {
+    ltxTeInputs.device = 'default';
+  }
+  graph.te = { class_type: 'LTXAVTextEncoderLoader', inputs: ltxTeInputs };
   graph.te_lora = {
     class_type: 'LoraLoader',
     inputs: {
@@ -4764,12 +4769,17 @@ async function buildAnimateFaceId(faceName, opts) {
     inputs: { model: ['model_lora', 0], lora_name: settings.ltxFaceIdLora, strength_model: 1 },
   };
   const ltxModel = chainModelLoras(graph, ['faceid_lora', 0], opts.loras, 'flora');
-  graph.te = await nodeFromOrdered(
-    'LTXAVTextEncoderLoader',
-    [settings.ltxTextEncoder, settings.ltxCkpt, 'default'],
-    {},
-    { text_encoder: settings.ltxTextEncoder, ckpt_name: settings.ltxCkpt }
-  );
+  const ltxDevice = detectGpuDevice((await hardwareInfo({ exportPath: settings.exportDir || DATA })).gpu?.devices) || null;
+  const ltxIsCuda = ltxDevice && ltxDevice.startsWith('cuda');
+  const ltxTeInputs = {
+    text_encoder: settings.ltxTextEncoder,
+    ckpt_name: settings.ltxCkpt,
+    force_keep_on_gpu: true,
+  };
+  if (ltxIsCuda) {
+    ltxTeInputs.device = 'default';
+  }
+  graph.te = { class_type: 'LTXAVTextEncoderLoader', inputs: ltxTeInputs };
   graph.te_lora = {
     class_type: 'LoraLoader',
     inputs: {
@@ -4957,15 +4967,21 @@ async function buildAnimateEros(imageName, opts) {
   const halfW = Math.max(64, Math.round(opts.W / 2 / 32) * 32);
   const halfH = Math.max(64, Math.round(opts.H / 2 / 32) * 32);
 
+  const ltxDevice = detectGpuDevice((await hardwareInfo({ exportPath: settings.exportDir || DATA })).gpu?.devices) || null;
+  const ltxIsCuda = ltxDevice && ltxDevice.startsWith('cuda');
+
   // Models (checkpoint provides transformer + video VAE + audio VAE)
   graph.ckpt = { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: settings.erosCkpt } };
   graph.audio_vae = { class_type: 'LTXVAudioVAELoader', inputs: { ckpt_name: settings.erosCkpt } };
-  graph.te = await nodeFromOrdered(
-    'LTXAVTextEncoderLoader',
-    [settings.erosTextEncoder, settings.erosCkpt, 'default'],
-    {},
-    { text_encoder: settings.erosTextEncoder, ckpt_name: settings.erosCkpt }
-  );
+  const ltxTeInputs = {
+    text_encoder: settings.erosTextEncoder,
+    ckpt_name: settings.erosCkpt,
+    force_keep_on_gpu: true,
+  };
+  if (ltxIsCuda) {
+    ltxTeInputs.device = 'default';
+  }
+  graph.te = { class_type: 'LTXAVTextEncoderLoader', inputs: ltxTeInputs };
 
   // Prompt (optional in-graph Gemma LTX2 enhancement, like the stock LTX path)
   let promptSource = opts.prompt;
