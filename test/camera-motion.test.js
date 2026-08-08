@@ -72,6 +72,28 @@ test('video UI exposes an ordered, animated camera motion picker', () => {
 
 test('standard LTX jobs can load Cameraman v2 and sequence video guides', () => {
   assert.match(server, /ltxCameramanLora: 'LTX2\.3-22B_IC-LoRA-Cameraman_v2_14000\.safetensors'/);
+  assert.match(server, /ltxMotionEnhancerLora: ''/);
+  assert.match(server, /ltxMotionTrackLora: ''/);
+  assert.match(server, /ltxCinemagraphLora: ''/);
+  assert.match(server, /ltxMsrLora: ''/);
+  assert.match(server, /ltxPixelUpscale2xLora: ''/);
+  assert.match(server, /ltxPixelUpscale4xLora: ''/);
+  assert.match(server, /ltxTextProjection: ''/);
+  assert.match(server, /ltxStoryboardLora: ''/);
+  assert.match(html, /id="setLtxMotionEnhancerLora"/);
+  assert.match(html, /id="setLtxMotionTrackLora"/);
+  assert.match(html, /id="setLtxCinemagraphLora"/);
+  assert.match(html, /id="setLtxMsrLora"/);
+  assert.match(html, /id="setLtxPixelUpscale2xLora"/);
+  assert.match(html, /id="setLtxPixelUpscale4xLora"/);
+  assert.match(html, /id="setLtxTextProjection"/);
+  assert.match(html, /id="setLtxStoryboardLora"/);
+  assert.match(app, /ltxMotionEnhancerLora: \$\('#setLtxMotionEnhancerLora'\)\.value/);
+  assert.match(app, /ltxCinemagraphLora: \$\('#setLtxCinemagraphLora'\)\.value/);
+  assert.match(app, /ltxTextProjection: \$\('#setLtxTextProjection'\)\.value/);
+  assert.match(app, /\$\('#setLtxMotionEnhancerLora'\)\.value = s\.ltxMotionEnhancerLora \|\| ''/);
+  assert.match(app, /\$\('#setLtxCinemagraphLora'\)\.value = s\.ltxCinemagraphLora \|\| ''/);
+  assert.match(app, /\$\('#setLtxTextProjection'\)\.value = s\.ltxTextProjection \|\| ''/);
   assert.match(server, /nodeFromOrdered\(\s*'LTXICLoRALoaderModelOnly'/);
   assert.match(server, /'LTXAddVideoICLoRAGuide'/);
   assert.match(server, /\[0, 1, 1, 'disabled', false, 256, 64\]/);

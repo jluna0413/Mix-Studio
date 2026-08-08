@@ -196,6 +196,8 @@ test('Director graph inserts prompt relay and guide nodes into the existing two-
     loras: [], sigmasBase: '1,0', sigmasRefine: '0.5,0',
   }, settings, helpers);
   assert.equal(graph.director.class_type, 'LTXDirector');
+  assert.equal(graph.te_lora.class_type, 'LoraLoader');
+  assert.deepEqual(graph.te_lora.inputs.clip, ['te', 0], 'Gemma LoRA must source its CLIP from the text encoder, not its own MODEL output');
   assert.equal(graph.director.inputs.timeline_data.includes('motionSegments'), true);
   assert.equal(graph.director.inputs.use_custom_audio, true);
   assert.equal(graph.director.inputs.inpaint_audio, true);

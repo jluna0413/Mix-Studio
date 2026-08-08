@@ -217,7 +217,9 @@ const {
   mobileAccessSummary,
   tailscaleHttpsStatus,
 } = require('./lib/mobile-access');
-const { hardwareInfo } = require('./lib/hardware-info');
+const { hardwareInfo, detectGpuDevice } = require('./lib/hardware-info');
+const { applyOffloadToGraph, getOffloadConfig } = require('./lib/offload-config');
+const { supportsImageInput, imageInputNotAcceptedMessage, isComfyImageInputError, nodeErrorsHasImageInput, matchesImageInputPattern } = require('./lib/edit-image-input');
 const { isWidgetSpec } = require('./lib/comfy-widget-spec');
 const { browseGenerationFolder } = require('./lib/folder-picker');
 const {
@@ -1757,7 +1759,12 @@ async function queuePrompt(graph, options = {}) {
   });
   const json = await res.json();
   if (json.node_errors && Object.keys(json.node_errors).length) {
-    throw new Error('ComfyUI validation: ' + JSON.stringify(json.node_errors).slice(0, 500));
+    const nodeErrorsStr = JSON.stringify(json.node_errors);
+    const validationError = new Error('ComfyUI validation: ' + nodeErrorsStr.slice(0, 500));
+    if (nodeErrorsHasImageInput(nodeErrorsStr)) {
+      validationError.code = 'comfy_image_input_not_supported';
+    }
+    throw validationError;
   }
   return json.prompt_id;
 }
@@ -1860,8 +1867,15 @@ function handleWsMessage(msg) {
       itemId: job.itemId || null,
       ...progressPhaseForJob(job, d.node),
     });
-  } else if (msg.type === 'execution_error' && pid && jobs.has(pid)) {
-    failJob(pid, (d.exception_message || 'execution error') + (d.node_type ? ` (${d.node_type})` : ''));
+   } else if (msg.type === 'execution_error' && pid && jobs.has(pid)) {
+    const job = jobs.get(pid);
+    const exceptionMessage = d.exception_message || 'execution error';
+    const refNames = (job && job.refImageNames) || [];
+    if (refNames.length && (matchesImageInputPattern(exceptionMessage) || matchesImageInputPattern(d.node_type || ''))) {
+      failJob(pid, imageInputNotAcceptedMessage(refNames[0]));
+    } else {
+      failJob(pid, exceptionMessage + (d.node_type ? ` (${d.node_type})` : ''));
+    }
   } else if (msg.type === 'execution_interrupted' && pid && jobs.has(pid)) {
     const job = jobs.get(pid);
     if (job.cancelRequested) cancelJob(pid, job.cancelMessage || 'Cancelled');
@@ -2553,7 +2567,16 @@ setInterval(async () => {
     try {
       const hist = (await (await comfyFetch(`/history/${pid}`)).json())[pid];
       if (hist && hist.status && hist.status.completed) await completeJob(pid);
-      else if (hist && hist.status && hist.status.status_str === 'error') failJob(pid, 'Execution error (see ComfyUI console)');
+      else if (hist && hist.status && hist.status.status_str === 'error') {
+        const job = jobs.get(pid);
+        const refNames = (job && job.refImageNames) || [];
+        const histError = JSON.stringify(hist.status.error || hist.status || '');
+        if (refNames.length && matchesImageInputPattern(histError)) {
+          failJob(pid, imageInputNotAcceptedMessage(refNames[0]));
+        } else {
+          failJob(pid, 'Execution error (see ComfyUI console)');
+        }
+      }
     } catch (error) {
       if (jobs.get(pid)?.completing) failJob(pid, error.message || 'Could not finalize ComfyUI output');
       // Otherwise ComfyUI is temporarily offline; retry on the next poll.
@@ -3470,6 +3493,7 @@ async function buildGenerationGraph(p, refNames) {
 
 async function queueGenerationJob(p, profileId, refNames, refinedPrompt = null) {
   const graph = await buildGenerationGraph(p, refNames);
+  applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb));
   const pid = await queuePrompt(graph, { profileId });
   trackJob(pid, { kind: 'gen', profileId, params: p, graph, refImageNames: refNames, refinedPrompt });
   ensureWs();
@@ -3489,6 +3513,7 @@ async function queueStrengthHuntJob(p, profileId, refNames, refinedPrompt = null
     }), refNames));
   }
   const graph = mergeStrengthHuntGraphs(graphs);
+  applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb));
   const pid = await queuePrompt(graph, { profileId });
   trackJob(pid, {
     kind: 'loraHunt', profileId, params: Object.assign({}, p, { batch: 1, postUpscale: undefined }),
@@ -3804,12 +3829,13 @@ async function buildAnimate(imageName, opts) {
   const ltxModel = chainModelLoras(graph, ltxBaseModel, opts.loras, 'ulora');
   const ltxDevice = detectGpuDevice((await hardwareInfo({ exportPath: settings.exportDir || DATA })).gpu?.devices) || null;
   const ltxIsCuda = ltxDevice && ltxDevice.startsWith('cuda');
+  const ltxHasXpu = ltxDevice && ltxDevice.startsWith('xpu');
   const ltxTeInputs = {
     text_encoder: settings.ltxTextEncoder,
     ckpt_name: settings.ltxCkpt,
     force_keep_on_gpu: true,
   };
-  if (ltxIsCuda) {
+  if (ltxIsCuda || ltxHasXpu) {
     ltxTeInputs.device = 'default';
   }
   graph.te = { class_type: 'LTXAVTextEncoderLoader', inputs: ltxTeInputs };
@@ -4155,12 +4181,13 @@ async function buildAnimateFaceId(faceName, opts) {
   const ltxModel = chainModelLoras(graph, ['faceid_lora', 0], opts.loras, 'flora');
   const ltxDevice = detectGpuDevice((await hardwareInfo({ exportPath: settings.exportDir || DATA })).gpu?.devices) || null;
   const ltxIsCuda = ltxDevice && ltxDevice.startsWith('cuda');
+  const ltxHasXpu = ltxDevice && ltxDevice.startsWith('xpu');
   const ltxTeInputs = {
     text_encoder: settings.ltxTextEncoder,
     ckpt_name: settings.ltxCkpt,
     force_keep_on_gpu: true,
   };
-  if (ltxIsCuda) {
+  if (ltxIsCuda || ltxHasXpu) {
     ltxTeInputs.device = 'default';
   }
   graph.te = { class_type: 'LTXAVTextEncoderLoader', inputs: ltxTeInputs };
@@ -4345,6 +4372,7 @@ async function buildAnimateEros(imageName, opts) {
 
   const ltxDevice = detectGpuDevice((await hardwareInfo({ exportPath: settings.exportDir || DATA })).gpu?.devices) || null;
   const ltxIsCuda = ltxDevice && ltxDevice.startsWith('cuda');
+  const ltxHasXpu = ltxDevice && ltxDevice.startsWith('xpu');
 
   // Models (checkpoint provides transformer + video VAE + audio VAE)
   graph.ckpt = { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: settings.erosCkpt } };
@@ -4354,7 +4382,9 @@ async function buildAnimateEros(imageName, opts) {
     ckpt_name: settings.erosCkpt,
     force_keep_on_gpu: true,
   };
-  if (ltxIsCuda) {
+  // LTXAVTextEncoderLoader on XPU backends only accepts 'default' or 'cpu', not 'xpu:0'
+  // ClipLoader similarly should use 'default' on XPU to avoid validation errors.
+  if (ltxIsCuda || ltxHasXpu) {
     ltxTeInputs.device = 'default';
   }
   graph.te = { class_type: 'LTXAVTextEncoderLoader', inputs: ltxTeInputs };
@@ -6618,6 +6648,9 @@ async function handleApi(req, res, url) {
     p.height = clampInt(p.height, 64, 4096, 1024);
     p.batch = clampInt(p.batch, 1, 8, 1);
     const vramProfile = await activeVramProfile();
+    const hardwareProfile = setupHardwareProfile(await getSetupHardwareInfo());
+    p.gpuVendor = hardwareProfile.gpuVendor || '';
+    p.vramGb = hardwareProfile.vramGb || 0;
     let vramAdjustments = [];
     if (vramProfile === 'low') {
       const guarded = applyLowVramImageLimits(p);
@@ -6746,8 +6779,14 @@ async function handleApi(req, res, url) {
       : (p.imageName ? [p.imageName] : []);
     if (p.mode !== 'edit') p.editSequence = undefined;
     if (p.mode === 'edit') {
-      if (settings.features[EDIT_FEATURES[p.editEngine]] === false) {
+       if (settings.features[EDIT_FEATURES[p.editEngine]] === false) {
         return json(res, 400, { error: 'This edit model was not installed on this machine.' });
+      }
+      if (refNames.length && !supportsImageInput(p.editEngine) && !p.editOutpaint && !p.maskImageName && !hasActiveRegions(p.regions)) {
+        return json(res, 400, {
+          error: imageInputNotAcceptedMessage(refNames[0]),
+          code: 'comfy_image_input_not_supported',
+        });
       }
       const sequenceRequested = !!p.editSequence;
       if (p.editOutpaint && sequenceRequested) {
@@ -7493,7 +7532,8 @@ async function handleApi(req, res, url) {
       enhance: isLtxLike ? enhance && !refinedMotionPrompt : false,
       frames, fps,
       fourK: !!body.fourK,
-      gpuVendor: generationHardwareProfile.gpuVendor,
+       gpuVendor: generationHardwareProfile.gpuVendor,
+       vramGb: generationHardwareProfile.vramGb,
       seed,
       W, H, bypass,
       makePoster: !item,
@@ -7532,6 +7572,7 @@ async function handleApi(req, res, url) {
         : engine === 'eros' ? await buildAnimateEros(comfyName, opts)
           : faceImageName ? await buildAnimateFaceId(faceImageName, opts)
             : await buildAnimate(comfyName, opts);
+    applyOffloadToGraph(graph, getOffloadConfig(opts.gpuVendor, opts.vramGb));
     const pid = await queuePrompt(graph, { profileId: req.profile.id });
     trackJob(pid, {
       kind: 'video', profileId: req.profile.id, itemId: item ? item.id : null, createItem: !item, graph,
@@ -7618,7 +7659,9 @@ async function handleApi(req, res, url) {
 
      const fps = clampNum(baseInfo.fps, 1, 120, 16);
     const frames = clampInt(baseInfo.frames, 0, 1000000, 0);
-    const vGpuVendor = setupHardwareProfile(await getSetupHardwareInfo().catch(() => ({}))).gpuVendor || '';
+    const hwProfile = setupHardwareProfile(await getSetupHardwareInfo().catch(() => ({})));
+    const vGpuVendor = hwProfile.gpuVendor || '';
+    const vGpuVramGb = hwProfile.vramGb || 0;
     let graph;
     let videoInfo;
     if (route === '/api/video/upscale') {
@@ -7646,7 +7689,8 @@ async function handleApi(req, res, url) {
       const resolution = sourceShortEdge > 0
         ? clampInt(sourceShortEdge * scale, 512, 8192, 1080)
         : 1080;
-      graph = await buildExistingVideoUpscale(comfyName, { fps, frames, scale, hasAudio, engine: upscaleEngine, resolution, gpuVendor: vGpuVendor });
+      graph = await buildExistingVideoUpscale(comfyName, { fps, frames, scale, hasAudio, fourK: !!body.fourK, engine: upscaleEngine, resolution, gpuVendor: vGpuVendor });
+      applyOffloadToGraph(graph, getOffloadConfig(vGpuVendor, vGpuVramGb));
       videoInfo = videoProcessInfo(baseInfo, { kind: 'upscale', scale, engine: upscaleEngine, parentVideoId: entry.id });
     } else {
       const multiplier = [2, 3, 4].includes(Number(body.multiplier)) ? Number(body.multiplier) : 2;
@@ -8942,5 +8986,47 @@ server.listen(PORT, '0.0.0.0', () => {
   if (typeof WebSocket === 'undefined') {
     console.log('    Note: Node < 22 detected - live progress disabled (polling fallback).');
   }
-  console.log('');
+   console.log('');
 });
+
+const DEVICE_LOST_PATTERN = /level_zero.*?UR_RESULT_ERROR_DEVICE_LOST|device.*?lost|GPU.*?reset/i;
+let comfyLogWatcherActive = false;
+let comfyLogWatchTimer = null;
+
+async function watchComfyLogForDeviceLost() {
+  if (comfyLogWatcherActive) return;
+  comfyLogWatcherActive = true;
+  try {
+    const response = await comfyFetch('/history?max_items=0', { signal: AbortSignal.timeout(5000) });
+    const data = await response.json();
+    if (data && data.status && data.status.messages) {
+      const recentErrors = data.status.messages.filter((msg) => DEVICE_LOST_PATTERN.test(String(msg)));
+      if (recentErrors.length > 0) {
+        console.error(`[Mix Studio] Detected ${recentErrors.length} device-lost error(s) in ComfyUI log. Restarting ComfyUI...`);
+        await restartComfy(RUNTIME, (phase, message) => {
+          console.log(`[Mix Studio] ComfyUI restart: ${phase} - ${message}`);
+        });
+        const reconnected = await waitForComfyReconnect(120_000);
+        if (reconnected) {
+          console.log('[Mix Studio] ComfyUI restarted successfully after device-lost error.');
+        } else {
+          console.error('[Mix Studio] ComfyUI did not reconnect after device-lost restart.');
+        }
+      }
+    }
+  } catch (e) {
+    // ComfyUI may be offline or unresponsive; retry on next cycle.
+  } finally {
+    comfyLogWatcherActive = false;
+  }
+}
+
+function startComfyLogWatcher() {
+  if (comfyLogWatchTimer) return;
+  comfyLogWatchTimer = setInterval(() => {
+    if (jobs.size > 0 && !comfyLogWatcherActive) {
+      watchComfyLogForDeviceLost().catch(() => {});
+    }
+  }, 30_000);
+}
+startComfyLogWatcher();

@@ -107,12 +107,21 @@ test('MiniMax H3 offers verified SageAttention with an explicit standard-attenti
   assert.match(app, /vidH3SageAttention: true/);
   assert.match(app, /function renderH3SageAttention\(\)/);
   assert.match(app, /sageAttention: state\.vidEngine === 'h3' \? state\.vidH3SageAttention !== false : undefined/);
-  assert.match(app, /if \(state\.vidEngine === 'h3' && state\.vidH3SageAttention !== false\) components\.add\('h3sage'\)/);
+  assert.match(app, /lastMeta\?.dependencies\?.sageAttention\?.installable !== false/);
   assert.match(app, /info\.attentionBackend === 'sageattention' \? 'SageAttention \(verified\)' : 'Standard PyTorch'/);
   assert.match(css, /\.h3-sage-toggle\[data-ready="false"\]\[aria-checked="true"\]/);
   assert.match(server, /const h3SageAttention = engine === 'h3' && body\.sageAttention !== false/);
+  assert.match(server, /\/\^nvidia\$\/i\.test\(gpuVendor\)/);
   assert.match(server, /code: 'h3_sage_attention_unavailable'/);
   assert.match(server, /attentionBackend: engine === 'h3' \? \(opts\.sageAttention \? 'sageattention' : 'standard'\)/);
+});
+
+test('MiniMax H3 SageAttention silently falls back to standard attention on non-NVIDIA GPUs', () => {
+  assert.match(server, /const h3SageAttention = engine === 'h3' && body\.sageAttention !== false/);
+  assert.match(server, /\/\^nvidia\$\/i\.test\(gpuVendor\)/);
+  assert.match(server, /capabilities\.sageAttention\?.installable !== true/);
+  assert.match(server, /capabilities\.sageAttention\?.ready !== true/);
+  assert.match(server, /ids\.add\('h3sage'\)/);
 });
 
 test('Video frame and media inputs use visual source cards', () => {

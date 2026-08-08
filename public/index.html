@@ -623,7 +623,7 @@
         <div class="model-order-hint" id="videoModelOrderHint">Hold models to reorder · first is default</div>
         <div class="chip-row video-choice-grid" id="vidEngineRow" aria-label="Video model" aria-describedby="videoModelOrderHint">
           <button class="chip active" data-engine="ltx" data-feature-engine="video.ltx" data-task-label="Cinematic Video" data-model-label="LTX 2.3"><b>LTX 2.3</b><small>Cinematic Video</small></button>
-          <button class="chip" data-engine="h3" data-feature-engine="video.h3" data-task-label="Omni Video" data-model-label="MiniMax H3"><b>MiniMax H3</b><small>Omni Video + Audio</small></button>
+          <button class="chip" data-engine="h3" data-feature-engine="video.h3" data-task-label="Omni Video" data-model-label="MiniMax H3"><b>MiniMax H3</b><small>Omni Video + Audio</small><span class="gpu-badge nvidia">NVIDIA/Intel</span></button>
           <button class="chip video-model-option" id="directorModelOption" type="button" data-director-entry data-feature-engine="video.ltx" aria-label="Open LTX Director for directed sequences"><b>LTX Director</b><small>Directed Sequences</small></button>
           <button class="chip" data-engine="ltx-edit" data-feature-engine="video.ltxEdit" data-task-label="Video Editing" data-model-label="LTX Edit" data-experimental="true"><b>LTX Edit <span class="model-status-badge">Experimental</span></b><small>Video Editing</small></button>
           <button class="chip" data-engine="eros" data-feature-engine="video.eros" data-task-label="Image Animation" data-model-label="10Eros DMD"><b>10Eros DMD</b><small>Image Animation</small></button>
@@ -2672,6 +2672,9 @@
             <div class="field"><label>LTX checkpoint</label><input id="setLtxCkpt" type="text" /></div>
             <div class="field"><label>Distilled LoRA</label><input id="setLtxLora" type="text" /></div>
             <div class="field"><label>Camera Motion IC-LoRA</label><input id="setLtxCameraLora" type="text" /></div>
+            <div class="field"><label>Motion Enhancer LoRA</label><input id="setLtxMotionEnhancerLora" type="text" /></div>
+            <div class="field"><label>Motion Track Control LoRA</label><input id="setLtxMotionTrackLora" type="text" /></div>
+            <div class="field"><label>Cinemagraph LoRA</label><input id="setLtxCinemagraphLora" type="text" /></div>
             <div class="field"><label>Edit Anything LoRA</label><input id="setLtxEditLora" type="text" /></div>
             <div class="field"><label>Director Ingredients IC-LoRA</label><input id="setLtxDirectorLora" type="text" /></div>
             <div class="field"><label>Gemma text encoder</label><input id="setLtxTe" type="text" /></div>
@@ -2679,6 +2682,13 @@
             <div class="field"><label>Spatial upscaler</label><input id="setLtxUps" type="text" /></div>
             <div class="field"><label>Face ID LoRA</label><input id="setFaceIdLora" type="text" /></div>
             <div class="field"><label>Face ID distilled LoRA</label><input id="setFaceIdDistilled" type="text" /></div>
+          </div>
+          <div class="settings-group"><h5>LTX 2.3 Research LoRAs</h5>
+            <div class="field"><label>Multiple Subject Reference LoRA</label><input id="setLtxMsrLora" type="text" /></div>
+            <div class="field"><label>Pixel Spatial Upscaler 2x LoRA</label><input id="setLtxPixelUpscale2xLora" type="text" /></div>
+            <div class="field"><label>Pixel Spatial Upscaler 4x LoRA</label><input id="setLtxPixelUpscale4xLora" type="text" /></div>
+            <div class="field"><label>Text Projection encoder</label><input id="setLtxTextProjection" type="text" /></div>
+            <div class="field"><label>Multi-ref Character Storyboard LoRA</label><input id="setLtxStoryboardLora" type="text" /></div>
           </div>
           <div class="settings-group"><h5>MiniMax H3</h5>
             <p class="settings-default-note">The standard pruned INT8 models remain the default. Full BF16 needs unusually large memory; DynTime modifies three ComfyUI core files only after explicit setup and keeps verified backups.</p>

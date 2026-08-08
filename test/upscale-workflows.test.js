@@ -39,9 +39,27 @@ test('uses 7B-friendly SeedVR2 loader settings', () => {
   assert.equal(inputs.swap_io_components, true);
   assert.equal(inputs.offload_device, 'cpu');
   assert.equal(inputs.attention_mode, 'sageattn_2');
+  // SeedVR2 nodes are CUDA-only and require device: 'cuda:0'
+  assert.equal(inputs.device, 'cuda:0');
 });
 
-test('SeedVR2 loader omits device for non-NVIDIA GPUs and uses cuda for NVIDIA', () => {
+test('uses 7B-friendly SeedVR2 loader settings with Intel offload', () => {
+  const inputs = seedVr2DitInputs({
+    seedvr2Dit: DEFAULT_SEEDVR2_DIT,
+    seedvr2Attention: 'sageattn_2',
+    gpuVendor: 'intel',
+  });
+
+  assert.equal(inputs.model, DEFAULT_SEEDVR2_DIT);
+  assert.equal(inputs.blocks_to_swap, 32);
+  assert.equal(inputs.swap_io_components, true);
+  assert.equal(inputs.offload_device, 'cpu');
+  assert.equal(inputs.attention_mode, 'sdpa');
+  // SeedVR2 nodes are CUDA-only and require device: 'cuda:0' regardless of vendor
+  assert.equal(inputs.device, 'cuda:0');
+});
+
+test('SeedVR2 loader uses cuda for all vendors', () => {
   const nvidiaInputs = seedVr2DitInputs({
     seedvr2Dit: DEFAULT_SEEDVR2_DIT,
     seedvr2Attention: 'sdpa',
@@ -54,32 +72,45 @@ test('SeedVR2 loader omits device for non-NVIDIA GPUs and uses cuda for NVIDIA',
     seedvr2Attention: 'sdpa',
     gpuVendor: 'intel',
   });
-  assert.equal(intelInputs.device, undefined);
+  assert.equal(intelInputs.attention_mode, 'sdpa');
+  // SeedVR2 nodes are CUDA-only and require device: 'cuda:0' regardless of vendor
+  assert.equal(intelInputs.device, 'cuda:0');
 
   const noVendorInputs = seedVr2DitInputs({
     seedvr2Dit: DEFAULT_SEEDVR2_DIT,
     seedvr2Attention: 'sdpa',
   });
-  assert.equal(noVendorInputs.device, undefined);
+  // SeedVR2 nodes are CUDA-only and require device: 'cuda:0' regardless of vendor
+  assert.equal(noVendorInputs.device, 'cuda:0');
 });
 
-test('seedVr2DeviceForVendor returns correct device for each vendor', () => {
+test('seedVr2DeviceForVendor returns cuda for all vendors', () => {
   assert.equal(seedVr2DeviceForVendor('nvidia'), 'cuda:0');
-  assert.equal(seedVr2DeviceForVendor('Intel'), undefined);
-  assert.equal(seedVr2DeviceForVendor('amd'), undefined);
-  assert.equal(seedVr2DeviceForVendor(''), undefined);
-  assert.equal(seedVr2DeviceForVendor(undefined), undefined);
+  assert.equal(seedVr2DeviceForVendor('Intel'), 'cuda:0');
+  assert.equal(seedVr2DeviceForVendor('intel'), 'cuda:0');
+  assert.equal(seedVr2DeviceForVendor('amd'), 'cuda:0');
+  assert.equal(seedVr2DeviceForVendor(''), 'cuda:0');
+  assert.equal(seedVr2DeviceForVendor(undefined), 'cuda:0');
 });
 
 test('CUDA-only SeedVR2 attention falls back to SDPA on non-NVIDIA backends', () => {
   assert.equal(seedVr2AttentionForVendor('sageattn_2', 'amd'), 'sdpa');
   assert.equal(seedVr2AttentionForVendor('flash_attn_3', 'apple'), 'sdpa');
   assert.equal(seedVr2AttentionForVendor('sageattn_2', 'nvidia'), 'sageattn_2');
+  assert.equal(seedVr2AttentionForVendor('sageattn_2', 'intel'), 'sdpa');
   assert.equal(seedVr2DitInputs({
     seedvr2Dit: DEFAULT_SEEDVR2_DIT,
     seedvr2Attention: 'flash_attn_2',
     gpuVendor: 'amd',
   }).attention_mode, 'sdpa');
+  
+  const intelInputs = seedVr2DitInputs({
+    seedvr2Dit: DEFAULT_SEEDVR2_DIT,
+    seedvr2Attention: 'sageattn_2',
+    gpuVendor: 'intel',
+  });
+  assert.equal(intelInputs.attention_mode, 'sdpa');
+  assert.equal(intelInputs.offload_device, 'cpu');
 });
 
 test('sharp SeedVR2 profile prefers the sharp 7B model and low detail noise by default', () => {
@@ -131,15 +162,15 @@ test('installed SeedVR2 model scan ignores partial downloads', () => {
   assert.deepEqual(models, [DEFAULT_SEEDVR2_DIT, 'ema_vae_fp16.safetensors']);
 });
 
-test('builds RTX 4K node with dynamic scale input and string quality', () => {
+test('builds RTX 4K node with dynamic multiplier, mode, and string quality', () => {
   const node = rtxVideoSuperResolutionNode(['decode', 0], 2, 'ULTRA');
 
   assert.deepEqual(node, {
     class_type: 'RTXVideoSuperResolution',
     inputs: {
       images: ['decode', 0],
-      resize_type: 'scale by multiplier',
-      'resize_type.scale': 2,
+      multiplier: 2,
+      mode: 'scale by multiplier',
       quality: 'ULTRA',
     },
   });

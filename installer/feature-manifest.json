@@ -71,7 +71,7 @@
       "id": "video.ltx",
       "label": "LTX 2.3 Video + Face ID",
       "default": false,
-      "variant": "LTX 2.3 22B FP8 on NVIDIA or experimental AMD ROCm, or official BF16 on Apple Silicon; 8 GB is an experimental tier with aggressive offload",
+      "variant": "LTX 2.3 22B FP8 on NVIDIA, Intel Arc XPU with dynamic VRAM offload, or experimental AMD ROCm, or official BF16 on Apple Silicon; 8 GB is an experimental tier with aggressive offload",
       "hardware": { "minimumVramGb": 8, "recommendedVramGb": 24, "autoSelect": "recommended" },
       "models": ["ltx-2.3", "ltx-distilled", "gemma-3", "ltx-spatial-upscaler", "ltx-face-id", "ltx-face-id-distilled"],
       "nodes": ["VideoHelperSuite", "LTXV", "BFS Nodes", "KJNodes"]
@@ -109,7 +109,7 @@
       "id": "video.eros",
       "label": "10Eros DMD",
       "default": false,
-      "variant": "10Eros FP8 mixed; 8 GB is an experimental tier with aggressive offload",
+      "variant": "10Eros FP8 on NVIDIA or Intel Arc XPU with dynamic VRAM offloading; 8 GB is an experimental tier with aggressive offload",
       "hardware": { "minimumVramGb": 8, "recommendedVramGb": 24, "autoSelect": "recommended", "unsupportedVendors": ["apple"], "unsupportedReason": "10Eros currently requires FP8 checkpoint and text-encoder operations that Apple Metal cannot execute." },
       "models": ["10eros", "ltx-dmd", "gemma-3"],
       "nodes": ["EchoDMDSampler", "10S-Comfy-nodes", "KJNodes"]
@@ -118,7 +118,7 @@
       "id": "video.wan",
       "label": "Wan 2.2 Video",
       "default": false,
-      "variant": "Wan 2.2 14B FP8; 8 GB is an experimental offload tier and configured GGUF pairs use the GGUF loader",
+      "variant": "Wan 2.2 14B FP8 on NVIDIA or Intel Arc XPU with dynamic VRAM offload; GGUF text encoder fallback (umt5-xxl Q8_0) on Intel; 8 GB is an experimental offload tier",
       "hardware": { "minimumVramGb": 8, "recommendedVramGb": 24, "autoSelect": "recommended", "unsupportedVendors": ["apple"], "unsupportedReason": "Wan 2.2 currently uses curated FP8 model and text-encoder files that Apple Metal cannot execute." },
       "models": ["wan2.2-high", "wan2.2-low", "umt5-xxl", "wan-vae", "wan-lightx2v"],
       "nodes": ["WanImageToVideo", "VideoHelperSuite", "ComfyUI-GGUF"]
@@ -134,15 +134,6 @@
       "nodes": ["WanSCAILToVideo", "SAM3_VideoTrack", "comfyui-scail2-infinity", "ComfyUI-GGUF"]
     },
     {
-      "id": "video.wanAnimate2",
-      "label": "Wan Animate 2 Character Animation",
-      "default": false,
-      "variant": "Official Wan Animate 2 INT8 ConvRot model with the 480p LightX2V adapter; preserves performance-video timing and audio",
-      "hardware": { "minimumVramGb": 12, "recommendedVramGb": 24, "autoSelect": "recommended", "unsupportedVendors": ["apple", "amd"], "unsupportedReason": "The official Wan Animate 2 workflow uses NVIDIA INT8 ConvRot kernels and is not currently compatible with Apple Metal or AMD ROCm." },
-      "models": ["wan-animate-2-int8-convrot", "wan-animate-2-lightx2v", "umt5-xxl", "clip-vision-h", "wan-vae-bf16"],
-      "nodes": ["WanAnimate2ToVideo", "WanAnimate2Cache", "LoadVideo", "GetVideoComponents"]
-    },
-    {
       "id": "video.rife",
       "label": "RIFE Frame Interpolation",
       "default": false,
@@ -150,6 +141,15 @@
       "hardware": { "minimumVramGb": 4, "recommendedVramGb": 8, "autoSelect": "supported" },
       "models": [],
       "nodes": ["ComfyUI-Frame-Interpolation", "RIFE VFI"]
+    },
+    {
+      "id": "video.4k",
+      "label": "RTX Video Super Resolution 4K (optional)",
+      "default": false,
+      "variant": "NVIDIA RTX Video Super Resolution up to 4K — a GPU driver feature, not a model download",
+      "hardware": { "minimumVramGb": 8, "recommendedVramGb": 16, "unsupportedVendors": ["apple", "amd", "intel"], "unsupportedReason": "RTX Video Super Resolution is an NVIDIA GPU driver feature. It requires a supported NVIDIA GeForce RTX GPU and is not available on Intel Arc, AMD, or Apple Silicon." },
+      "models": [],
+      "nodes": []
     }
   ]
 }

@@ -9,6 +9,7 @@ const {
   diffusionModelInput,
   diffusionModelLoader,
   isGgufModel,
+  isFp8Model,
   registeredModelNames,
   resolveRegisteredModelName,
 } = require('../lib/model-loader');
@@ -56,4 +57,24 @@ test('image and video graph builders route configured GGUF models through UnetLo
   assert.match(server, /graph\.unet = diffusionModelLoader\(settings\.qwenEditUnet\)/);
   assert.match(outpaint, /unet: diffusionModelLoader\(params\.unetName\)/);
   assert.match(installer, /https:\/\/github\.com\/city96\/ComfyUI-GGUF\.git/);
+});
+
+test('isFp8Model detects FP8 model names and rejects non-FP8 names', () => {
+  assert.equal(isFp8Model('umt5_xxl_fp8_e4m3fn_scaled.safetensors'), true);
+  assert.equal(isFp8Model('umt5_xxl_fp8e4m3fn_scaled.safetensors'), true);
+  assert.equal(isFp8Model('krea2_turbo_fp8_scaled.safetensors'), true);
+  assert.equal(isFp8Model('umt5_xxl_q8_0.gguf'), false);
+  assert.equal(isFp8Model('model.safetensors'), false);
+  assert.equal(isFp8Model('flux-dev-fp8-e4m3fn.safetensors'), true);
+  assert.equal(isFp8Model(''), false);
+  assert.equal(isFp8Model(null), false);
+  assert.equal(isFp8Model(undefined), false);
+});
+
+test('COMPATIBLE_MODEL_NAMES includes WAN GGUF fallback candidates', () => {
+  const { COMPATIBLE_MODEL_NAMES } = require('../lib/model-loader');
+  assert.ok(COMPATIBLE_MODEL_NAMES.wanClip, 'wanClip should be registered');
+  assert.ok(COMPATIBLE_MODEL_NAMES.wanClip.includes('umt5_xxl_fp8_e4m3fn_scaled.safetensors'));
+  assert.ok(COMPATIBLE_MODEL_NAMES.wanClip.includes('umt5_xxl_q8_0.gguf'));
+  assert.ok(COMPATIBLE_MODEL_NAMES.wanClip.includes('umt5-xxl-q8_0.gguf'));
 });

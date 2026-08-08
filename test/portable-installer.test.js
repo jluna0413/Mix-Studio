@@ -637,7 +637,7 @@ test('in-app setup installs official ComfyUI and curated dependency groups', () 
   assert.deepEqual(dependencyCli.selectedComponents(
     { features: [{ id: 'core.image', required: true }, { id: 'video.ltx' }, { id: 'video.wan' }, { id: 'video.scail' }] },
     { 'video.ltx': true, 'video.wan': true, 'video.scail': true },
-  ), ['image', 'krea2depth', 'krea2style', 'upscale', 'video', 'faceid', 'wan', 'scail', 'scailinfinity']);
+  ), ['image', 'krea2depth', 'krea2style', 'upscale', 'video', 'faceid', 'ltxcamera', 'ltxmultiref', 'ltxpixelupscale', 'ltxproject', 'ltxstoryboard', 'wan', 'scail', 'scailinfinity']);
   assert.deepEqual(dependencyCli.selectedComponents(
     { features: [{ id: 'core.image', required: true }, { id: 'edit.klein4' }, { id: 'edit.klein9' }, { id: 'edit.qwen' }, { id: 'edit.krea2' }, { id: 'edit.krea2ref' }, { id: 'edit.krea2remix' }] },
     { 'edit.klein4': true, 'edit.klein9': true, 'edit.qwen': true, 'edit.krea2': true, 'edit.krea2ref': true, 'edit.krea2remix': true },
@@ -741,6 +741,50 @@ test('hardware guidance blocks incompatible Apple FP8 video families while retai
     assert.equal(guidance[component].blocked, true);
     assert.match(guidance[component].detail, /Apple Metal/);
   }
+});
+
+test('hardware guidance blocks RTX 4K pass on non-NVIDIA GPUs', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'installer', 'feature-manifest.json'), 'utf8'));
+  const intelArc = {
+    gpu: { available: true, devices: [{ name: 'Intel Arc B770', vendor: 'intel', backend: 'xpu', memoryBytes: 16 * (1024 ** 3) }] },
+    memory: { totalBytes: 64 * (1024 ** 3) },
+    disk: { freeBytes: 500 * (1024 ** 3) },
+  };
+  const nvidia = {
+    gpu: { available: true, devices: [{ name: 'NVIDIA GeForce RTX 4070', vendor: 'nvidia', backend: 'cuda', memoryBytes: 16 * (1024 ** 3) }] },
+    memory: { totalBytes: 64 * (1024 ** 3) },
+    disk: { freeBytes: 500 * (1024 ** 3) },
+  };
+  const intelGuidance = componentHardwareGuidance(manifest, intelArc);
+  assert.equal(intelGuidance.video4k.blocked, true);
+  assert.match(intelGuidance.video4k.detail, /Intel Arc.*AMD.*Apple Silicon/);
+  const nvidiaGuidance = componentHardwareGuidance(manifest, nvidia);
+  assert.equal(nvidiaGuidance.video4k.blocked, undefined);
+});
+
+test('hardware-blocked components are excluded from missing setup requirements', () => {
+  const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+  assert.match(server, /hardwareBlockedComponents\.has\(id\)/);
+  assert.match(server, /availableMissingComponents/);
+  assert.match(server, /missingComponents: availableMissingComponents/);
+});
+
+test('hardware guidance marks RTX 4K as blocked only on non-NVIDIA vendors', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'installer', 'feature-manifest.json'), 'utf8'));
+  const intelArc = {
+    gpu: { available: true, devices: [{ name: 'Intel Arc B770', vendor: 'intel', backend: 'xpu', memoryBytes: 16 * (1024 ** 3) }] },
+    memory: { totalBytes: 64 * (1024 ** 3) },
+    disk: { freeBytes: 500 * (1024 ** 3) },
+  };
+  const nvidia = {
+    gpu: { available: true, devices: [{ name: 'NVIDIA GeForce RTX 4070', vendor: 'nvidia', backend: 'cuda', memoryBytes: 16 * (1024 ** 3) }] },
+    memory: { totalBytes: 64 * (1024 ** 3) },
+    disk: { freeBytes: 500 * (1024 ** 3) },
+  };
+  const intelFit = featureHardwareFit(manifest.features.find((f) => f.id === 'video.4k'), intelArc);
+  assert.equal(intelFit.blocked, true);
+  const nvidiaFit = featureHardwareFit(manifest.features.find((f) => f.id === 'video.4k'), nvidia);
+  assert.equal(nvidiaFit.blocked, undefined);
 });
 
 test('hardware guidance rates AMD by VRAM and labels ROCm support experimental', () => {

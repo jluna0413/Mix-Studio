@@ -2846,6 +2846,27 @@ html:-webkit-full-screen { background: #000; }
   text-transform: uppercase;
   white-space: nowrap;
 }
+.gpu-badge {
+  min-height: 14px;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border: 1px solid rgba(76,175,80,.32);
+  border-radius: 999px;
+  background: rgba(76,175,80,.08);
+  color: #66bb6a;
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: .07em;
+  line-height: 1.1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.gpu-badge.nvidia { 
+  border-color: rgba(76,175,80,.4);
+  background: rgba(76,175,80,.12);
+  color: #81c784;
+}
 .model-status-badge[hidden] { display: none; }
 .video-model-header > svg { justify-self: end; }
 @media (max-width: 420px) {

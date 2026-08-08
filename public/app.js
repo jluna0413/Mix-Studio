@@ -3,6 +3,16 @@
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
+
+/* Move focus out of a container that is about to be hidden with inert or
+   aria-hidden. Browsers ignore aria-hidden (and log a console warning) when a
+   focused descendant exists, so relocate focus first. */
+function moveFocusOutOf(root, fallback) {
+  if (!root || !root.contains(document.activeElement)) return;
+  const target = fallback && !fallback.hidden && !fallback.disabled ? fallback : null;
+  if (target) target.focus({ preventScroll: true });
+  else document.activeElement.blur();
+}
 const CameraSettings = window.KreaCameraSettings;
 const CameraMotion = window.KreaCameraMotion;
 const ProgressEta = window.KreaProgressEta;
@@ -2735,6 +2745,7 @@ function renderAppDrawerNavigation() {
   const expanded = createActive && appDrawerCreateExpanded;
   createButton.setAttribute('aria-expanded', String(expanded));
   const modes = $('#drawerCreateModes');
+  if (!expanded) moveFocusOutOf(modes, createButton);
   modes.classList.toggle('is-collapsed', !expanded);
   modes.setAttribute('aria-hidden', String(!expanded));
   modes.inert = !expanded;
@@ -4561,6 +4572,9 @@ function renderH3SageAttention() {
   if (!enabled) {
     status.textContent = 'Off · use standard PyTorch attention';
     toggle.title = 'H3 will use the standard attention backend.';
+  } else if (capability?.installable === false) {
+    status.textContent = 'Not available on this GPU · standard attention';
+    toggle.title = capability.reason || 'SageAttention requires an NVIDIA CUDA GPU.';
   } else if (capability?.ready === true) {
     status.textContent = `Verified in ComfyUI${capability.sageVersion ? ` · SageAttention ${capability.sageVersion}` : ''}`;
     toggle.title = 'The matching package, Triton runtime, CUDA kernel, and KJ graph patch are verified.';
@@ -4851,6 +4865,7 @@ function closeAssetPickerMenus(except = null) {
     const trigger = $(`#assetPicker${name[0].toUpperCase() + name.slice(1)}Trigger`);
     const menu = $(`#assetPicker${name[0].toUpperCase() + name.slice(1)}Menu`);
     if (!trigger || !menu) return;
+    moveFocusOutOf(menu, trigger);
     trigger.setAttribute('aria-expanded', 'false');
     menu.hidden = true;
     menu.inert = true;
@@ -6148,6 +6163,7 @@ $('#assetPickerFolderTrigger').addEventListener('click', () => {
   const open = trigger.getAttribute('aria-expanded') !== 'true';
   closeAssetPickerMenus(open ? 'folder' : null);
   trigger.setAttribute('aria-expanded', String(open));
+  if (!open) moveFocusOutOf(menu, trigger);
   menu.hidden = !open;
   menu.inert = !open;
 });
@@ -6158,6 +6174,7 @@ $('#assetPickerSortTrigger').addEventListener('click', () => {
   const open = trigger.getAttribute('aria-expanded') !== 'true';
   closeAssetPickerMenus(open ? 'sort' : null);
   trigger.setAttribute('aria-expanded', String(open));
+  if (!open) moveFocusOutOf(menu, trigger);
   menu.hidden = !open;
   menu.inert = !open;
 });
@@ -6831,6 +6848,7 @@ function renderCreateImageGuide() {
   const hasStoredImage = !!state.createRef;
   const hasActiveImage = hasStoredImage && state.createGuideActive;
   const open = visible && state.createImageGuideOpen;
+  if (!visible) moveFocusOutOf(section);
   chip.classList.toggle('has-image', hasActiveImage);
   toggle.classList.toggle('icon-chip', !hasActiveImage);
   toggle.classList.toggle('has-source', hasStoredImage);
@@ -6847,6 +6865,7 @@ function renderCreateImageGuide() {
   if (hasActiveImage) toggle.removeAttribute('title');
   else toggle.title = hasStoredImage ? 'Image tools · image loaded' : 'Add image · device or Library';
   markIconTooltip(toggle);
+  if (!open) moveFocusOutOf(section, toggle);
   section.classList.toggle('expanded', open);
   section.inert = !open;
   section.setAttribute('aria-hidden', String(!open));
@@ -7909,6 +7928,7 @@ function setRegionLoraExpanded(open) {
   const body = $('#regionLoraBody');
   disclosure.classList.toggle('expanded', expanded);
   $('#regionLoraHeader').setAttribute('aria-expanded', String(expanded));
+  moveFocusOutOf(body, $('#regionLoraHeader'));
   body.inert = !expanded;
   body.setAttribute('aria-hidden', String(!expanded));
 }
@@ -7924,6 +7944,7 @@ function syncRegionSettings(focusPrompt) {
   const settings = $('#regionSettings');
   const region = selectedRegion();
   const open = regionSettingsOpen && !!region;
+  if (!open) moveFocusOutOf(settings);
   const index = region ? state.regions.findIndex((item) => item.id === region.id) : -1;
   const selectedColor = region?.color || REGION_COLORS[(index < 0 ? 0 : index) % REGION_COLORS.length];
   settings.style.setProperty('--selected-region-color', selectedColor);
@@ -8137,6 +8158,7 @@ function setRegionResolutionExpanded(open) {
   if (!picker || !menu) return;
   picker.classList.toggle('expanded', expanded);
   $('#regionResolutionBtn').setAttribute('aria-expanded', String(expanded));
+  moveFocusOutOf(menu, $('#regionResolutionBtn'));
   menu.inert = !expanded;
   menu.setAttribute('aria-hidden', String(!expanded));
 }
@@ -10533,9 +10555,11 @@ function renderQwenAngleMode() {
   const inline = $('#qwenAnglesInline');
   const textPane = $('#qwenTextPromptPane');
   const promptBox = textPane.closest('.prompt-box');
+  if (!active) moveFocusOutOf(inline);
   inline.classList.toggle('is-active', active);
   inline.setAttribute('aria-hidden', String(!active));
   inline.inert = !active;
+  if (active) moveFocusOutOf(textPane);
   textPane.classList.toggle('is-collapsed', active);
   textPane.setAttribute('aria-hidden', String(active));
   textPane.inert = active;
@@ -12131,6 +12155,7 @@ function renderEditOutpaint() {
   const toggle = $('#editOutpaintToggle');
   toggle.setAttribute('aria-checked', String(enabled));
   const body = $('#editOutpaintBody');
+  if (!enabled) moveFocusOutOf(body);
   body.classList.toggle('expanded', enabled);
   body.setAttribute('aria-hidden', String(!enabled));
   body.inert = !enabled;
@@ -12340,6 +12365,7 @@ function renderEditUpscale() {
     ? `${expanded ? 'Hide' : 'Show'} upscale settings`
     : 'Enable Upscale from the switch to configure its settings');
   $('#editUpscaleSummary').textContent = enabled ? `SeedVR2 · ${settings.resolution === 3840 ? '4K' : `${settings.resolution}p`}` : 'Off';
+  if (!expanded) moveFocusOutOf(body, details);
   body.classList.toggle('expanded', expanded);
   body.inert = !expanded;
   body.setAttribute('aria-hidden', String(!expanded));
@@ -12382,6 +12408,7 @@ $$('#editUpscaleNoise .chip').forEach((button) => button.addEventListener('click
 }));
 $('#editAspectToggle').addEventListener('click', () => {
   const open = $('#editAspectToggle').getAttribute('aria-expanded') !== 'true';
+  if (!open) moveFocusOutOf($('#editAspectBody'), $('#editAspectToggle'));
   $('#editAspectToggle').setAttribute('aria-expanded', String(open));
   $('#editAspectBody').setAttribute('aria-hidden', String(!open));
   $('#editAspectBody').inert = !open;
@@ -13599,6 +13626,12 @@ function renderEngineInfoList(kind = 'video') {
       badge.textContent = 'Experimental';
       titleRow.appendChild(badge);
     }
+    if (capability.nvidiaOnly) {
+      const badge = document.createElement('span');
+      badge.className = 'gpu-badge nvidia';
+      badge.textContent = 'NVIDIA only';
+      titleRow.appendChild(badge);
+    }
     if (button.disabled) {
       const badge = document.createElement('span');
       badge.className = 'model-status-badge unsupported';
@@ -13646,6 +13679,7 @@ function collapseRes(open) {
   const expand = open === true;
   const body = $('#resBody');
   $('#resPanel').classList.toggle('expanded', expand);
+  if (!expand) moveFocusOutOf(body, $('#resHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#resHeader').setAttribute('aria-expanded', String(expand));
@@ -13662,6 +13696,7 @@ function setVideoOptionsExpanded(open) {
   const expand = open === true;
   const body = $('#vidOptsBody');
   $('#vidOptsPanel').classList.toggle('expanded', expand);
+  if (!expand) moveFocusOutOf(body, $('#vidOptsHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#vidOptsHeader').setAttribute('aria-expanded', String(expand));
@@ -13674,6 +13709,7 @@ function setVideoModelExpanded(open) {
   const expand = open === true;
   const body = $('#vidModelBody');
   $('#vidModelPanel').classList.toggle('expanded', expand);
+  if (!expand) moveFocusOutOf(body, $('#vidModelHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#vidModelHeader').setAttribute('aria-expanded', String(expand));
@@ -13688,6 +13724,7 @@ function setDirectorModelExpanded(open) {
   const body = $('#directorModelBody');
   if (!panel || !body) return;
   panel.classList.toggle('expanded', expand);
+  if (!expand) moveFocusOutOf(body, $('#directorModelHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#directorModelHeader').setAttribute('aria-expanded', String(expand));
@@ -14098,6 +14135,7 @@ function setDirectorResolutionExpanded(expanded) {
   if (!picker || !header || !body) return;
   picker.classList.toggle('expanded', expanded);
   header.setAttribute('aria-expanded', String(expanded));
+  if (!expanded) moveFocusOutOf(body, header);
   body.setAttribute('aria-hidden', String(!expanded));
   body.inert = !expanded;
 }
@@ -16113,6 +16151,7 @@ function setEditModelExpanded(open) {
   const expand = open === true;
   const body = $('#editModelBody');
   $('#editModelPanel').classList.toggle('expanded', expand);
+  if (!expand) moveFocusOutOf(body, $('#editModelHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#editModelHeader').setAttribute('aria-expanded', String(expand));
@@ -16556,6 +16595,7 @@ function setLorasExpanded(open) {
   const expand = open === true;
   const body = $('#loraBody');
   $('#loraPanel').classList.toggle('expanded', expand);
+  if (!expand) moveFocusOutOf(body, $('#loraHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#loraHeader').setAttribute('aria-expanded', String(expand));
@@ -16570,6 +16610,7 @@ function setAdvancedExpanded(open) {
   const expand = open === true;
   const body = $('#advBody');
   $('#advPanel').classList.toggle('expanded', expand);
+  if (!expand) moveFocusOutOf(body, $('#advHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#advHeader').setAttribute('aria-expanded', String(expand));
@@ -18892,6 +18933,12 @@ function wireEngineRow(rowId, noteWork) {
 wireEngineRow('vidEngineRow', (engine) => {
   const previousEngine = state.vidEngine;
   state.vidEngine = engine;
+  if (engine === 'h3') {
+    const sageCapable = lastMeta?.dependencies?.sageAttention?.installable !== false;
+    if (!sageCapable && state.vidH3SageAttention !== false) {
+      state.vidH3SageAttention = false;
+    }
+  }
   const h3 = engine === 'h3';
   const wan = engine === 'wan';
   const wanAnimate2 = engine === 'wan-animate2';
@@ -29523,6 +29570,14 @@ function settingsPayload() {
     ltxCkpt: $('#setLtxCkpt').value,
     ltxDistilledLora: $('#setLtxLora').value,
     ltxCameramanLora: $('#setLtxCameraLora').value,
+    ltxMotionEnhancerLora: $('#setLtxMotionEnhancerLora').value,
+    ltxMotionTrackLora: $('#setLtxMotionTrackLora').value,
+    ltxCinemagraphLora: $('#setLtxCinemagraphLora').value,
+    ltxMsrLora: $('#setLtxMsrLora').value,
+    ltxPixelUpscale2xLora: $('#setLtxPixelUpscale2xLora').value,
+    ltxPixelUpscale4xLora: $('#setLtxPixelUpscale4xLora').value,
+    ltxTextProjection: $('#setLtxTextProjection').value,
+    ltxStoryboardLora: $('#setLtxStoryboardLora').value,
     ltxEditLora: $('#setLtxEditLora').value,
     ltxDirectorIcLora: $('#setLtxDirectorLora').value,
     ltxTextEncoder: $('#setLtxTe').value,
@@ -29904,6 +29959,7 @@ function setSvAttnPickerOpen(open, focusOption = false) {
   const picker = $('#svAttnPicker');
   const list = $('#svAttnList');
   picker.classList.toggle('open', expand);
+  if (!expand) moveFocusOutOf(list, $('#svAttnTrigger'));
   list.inert = !expand;
   list.setAttribute('aria-hidden', String(!expand));
   $('#svAttnTrigger').setAttribute('aria-expanded', String(expand));
@@ -33221,6 +33277,14 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setLtxCkpt').value = s.ltxCkpt || '';
     $('#setLtxLora').value = s.ltxDistilledLora || '';
     $('#setLtxCameraLora').value = s.ltxCameramanLora || '';
+    $('#setLtxMotionEnhancerLora').value = s.ltxMotionEnhancerLora || '';
+    $('#setLtxMotionTrackLora').value = s.ltxMotionTrackLora || '';
+    $('#setLtxCinemagraphLora').value = s.ltxCinemagraphLora || '';
+    $('#setLtxMsrLora').value = s.ltxMsrLora || '';
+    $('#setLtxPixelUpscale2xLora').value = s.ltxPixelUpscale2xLora || '';
+    $('#setLtxPixelUpscale4xLora').value = s.ltxPixelUpscale4xLora || '';
+    $('#setLtxTextProjection').value = s.ltxTextProjection || '';
+    $('#setLtxStoryboardLora').value = s.ltxStoryboardLora || '';
     $('#setLtxEditLora').value = s.ltxEditLora || '';
     $('#setLtxDirectorLora').value = s.ltxDirectorIcLora || '';
     $('#setLtxTe').value = s.ltxTextEncoder || '';
@@ -33571,7 +33635,11 @@ function generationSetupComponents() {
     components.add(byEngine[state.vidEngine] || 'video');
     if (h3TurboActive()) components.add(h3ReferenceBackedMode() ? 'h3turbor2v' : 'h3turbo');
     if (h3LongContextActive()) components.add('h3context');
-    if (state.vidEngine === 'h3' && state.vidH3SageAttention !== false) components.add('h3sage');
+    if (state.vidEngine === 'h3'
+        && state.vidH3SageAttention !== false
+        && lastMeta?.dependencies?.sageAttention?.installable !== false) {
+      components.add('h3sage');
+    }
     if (state.vidEngine === 'h3' && h3ReferenceBackedMode()) components.add('h3r2v');
     if (state.directorOpen) components.add('ltxdirector');
     if (state.vidEngine === 'ltx-edit') components.add('video');
@@ -34226,7 +34294,9 @@ function renderInitialSetup() {
       const status = installed ? 'Installed' : (repairNeeded ? 'Update' : (coreUpdate ? 'Update ComfyUI' : (unavailable ? 'Manual' : (selected.has(entry.id) ? 'Selected' : (readinessKnown ? 'Not installed' : 'Not checked')))));
       const detail = entry.installReason || fit?.detail || entry.label;
       const readinessLabel = repairNeeded ? 'Reviewed custom-node update required' : (coreUpdate ? 'ComfyUI 0.26.0+ required' : (fit?.label || (unavailable ? 'Manual installation required' : 'Check requirements')));
-      return `<label class="setup-component-option${checked ? ' selected' : ''}${installed ? ' installed' : ''}${repairNeeded ? ' repair-needed' : ''}${unavailable ? ' unavailable' : ''}" data-fit="${escapeHtml(fit?.level || 'unknown')}" title="${escapeHtml(detail)}"><input type="checkbox" data-component="${escapeHtml(entry.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}><span class="setup-component-check" aria-hidden="true"></span><span class="setup-component-copy"><strong>${escapeHtml(entry.label)}</strong><small>${escapeHtml(readinessLabel)}</small></span><span class="setup-component-state">${status}</span></label>`;
+      const isNvidiaOnly = ['video4k'].includes(entry.id);
+      const nvidiaBadge = isNvidiaOnly ? '<span class="gpu-badge nvidia">NVIDIA only</span>' : '';
+      return `<label class="setup-component-option${checked ? ' selected' : ''}${installed ? ' installed' : ''}${repairNeeded ? ' repair-needed' : ''}${unavailable ? ' unavailable' : ''}" data-fit="${escapeHtml(fit?.level || 'unknown')}" title="${escapeHtml(detail)}"><input type="checkbox" data-component="${escapeHtml(entry.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}><span class="setup-component-check" aria-hidden="true"></span><span class="setup-component-copy"><strong>${escapeHtml(entry.label)}${nvidiaBadge}</strong><small>${escapeHtml(readinessLabel)}</small></span><span class="setup-component-state">${status}</span></label>'
     }).join('');
     const count = readinessKnown ? `${installedCount} of ${entries.length} installed` : `${entries.length} workflows`;
     const action = selectableEntries.length

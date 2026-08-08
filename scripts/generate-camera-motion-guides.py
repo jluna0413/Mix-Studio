@@ -16,7 +16,6 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-
 WIDTH = 960
 HEIGHT = 512
 FPS = 25
@@ -29,10 +28,20 @@ RED = (239, 75, 83)
 
 
 MOTIONS = (
-    "pan-left", "pan-right", "tilt-up", "tilt-down",
-    "dolly-in", "dolly-out", "truck-left", "truck-right",
-    "pedestal-up", "pedestal-down", "roll-cw", "roll-ccw",
-    "zoom-in", "zoom-out",
+    "pan-left",
+    "pan-right",
+    "tilt-up",
+    "tilt-down",
+    "dolly-in",
+    "dolly-out",
+    "truck-left",
+    "truck-right",
+    "pedestal-up",
+    "pedestal-down",
+    "roll-cw",
+    "roll-ccw",
+    "zoom-in",
+    "zoom-out",
 )
 
 
@@ -114,7 +123,10 @@ def line(draw: ImageDraw.ImageDraw, camera: Camera, a, b, color, width=1):
     if not pa or not pb:
         return
     margin = 1200
-    if all((p[0] < -margin or p[0] > WIDTH + margin or p[1] < -margin or p[1] > HEIGHT + margin) for p in (pa, pb)):
+    if all(
+        (p[0] < -margin or p[0] > WIDTH + margin or p[1] < -margin or p[1] > HEIGHT + margin)
+        for p in (pa, pb)
+    ):
         return
     draw.line((pa[0], pa[1], pb[0], pb[1]), fill=color, width=width)
 
@@ -124,10 +136,29 @@ def box_edges(center_x, base_y, center_z, sx, sy, sz):
     y0, y1 = base_y, base_y + sy
     z0, z1 = center_z - sz / 2, center_z + sz / 2
     p = [
-        (x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
-        (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1),
+        (x0, y0, z0),
+        (x1, y0, z0),
+        (x1, y1, z0),
+        (x0, y1, z0),
+        (x0, y0, z1),
+        (x1, y0, z1),
+        (x1, y1, z1),
+        (x0, y1, z1),
     ]
-    edges = ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7))
+    edges = (
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    )
     return p, edges
 
 
@@ -175,21 +206,50 @@ def render_frame(motion: str, index: int) -> Image.Image:
     # feel like camera movement instead of object animation.
     corner = 18
     inset = 20
-    for x, y, sx, sy in ((inset, inset, 1, 1), (WIDTH-inset, inset, -1, 1), (inset, HEIGHT-inset, 1, -1), (WIDTH-inset, HEIGHT-inset, -1, -1)):
+    for x, y, sx, sy in (
+        (inset, inset, 1, 1),
+        (WIDTH - inset, inset, -1, 1),
+        (inset, HEIGHT - inset, 1, -1),
+        (WIDTH - inset, HEIGHT - inset, -1, -1),
+    ):
         draw.line((x, y, x + sx * corner, y), fill=(93, 101, 117), width=2)
         draw.line((x, y, x, y + sy * corner), fill=(93, 101, 117), width=2)
-    draw.ellipse((WIDTH/2-3, HEIGHT/2-3, WIDTH/2+3, HEIGHT/2+3), outline=RED, width=1)
+    draw.ellipse(
+        (WIDTH / 2 - 3, HEIGHT / 2 - 3, WIDTH / 2 + 3, HEIGHT / 2 + 3), outline=RED, width=1
+    )
     return image
 
 
 def encode_motion(motion: str, output: Path, ffmpeg: str):
     output.parent.mkdir(parents=True, exist_ok=True)
     command = [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{WIDTH}x{HEIGHT}",
-        "-r", str(FPS), "-i", "-", "-an", "-c:v", "libx264",
-        "-preset", "veryfast", "-crf", "29", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", str(output),
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{WIDTH}x{HEIGHT}",
+        "-r",
+        str(FPS),
+        "-i",
+        "-",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "29",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(output),
     ]
     process = subprocess.Popen(command, stdin=subprocess.PIPE)
     assert process.stdin is not None

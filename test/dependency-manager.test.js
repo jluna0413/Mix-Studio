@@ -50,6 +50,7 @@ function safetensorsFixture() {
 }
 
 test('dependency catalog covers every enabled image and video family', () => {
+<<<<<<< HEAD
   for (const component of ['image', 'krea2raw', 'krea2depth', 'krea2style', 'krea2outpaint', 'editoutpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'video', 'h3', 'h3turbo', 'h3turbor2v', 'h3sage', 'h3r2v', 'h3dyntime', 'ltxcamera', 'ltxdirector', 'videoedit', 'faceid', 'wan', 'eros', 'rife', 'scail', 'scailinfinity', 'smartmask', 'regional']) {
     assert.ok(COMPONENTS[component], `${component} is installable`);
   }
@@ -100,6 +101,21 @@ test('dependency catalog covers every enabled image and video family', () => {
   assert.equal(NODE_PACKS.ltxvideo.folder, 'ComfyUI-LTXVideo');
   assert.match(NODE_PACKS.ltxvideo.repo, /Lightricks\/ComfyUI-LTXVideo/);
   assert.match(MODEL_ASSETS.ltxCamera[0][2], /Cseti\/LTX2\.3-22B_IC-LoRA-Cameraman_v2/);
+  assert.equal(MODEL_ASSETS.ltxCamera.length, 4, 'ltxCamera group has the Cameraman v2 LoRA plus three research adapters');
+  assert.match(MODEL_ASSETS.ltxCamera.find((asset) => asset[0] === 'ltxMotionEnhancerLora')[2], /rzgar\/LTX-2\.3-Motion-Enhancer-n4w\/resolve\/main\/LTX-2\.3-Motion-Enhancer-n4w\.safetensors/);
+  assert.match(MODEL_ASSETS.ltxCamera.find((asset) => asset[0] === 'ltxMotionTrackLora')[2], /Lightricks\/LTX-2\.3-22b-IC-LoRA-Motion-Track-Control\/resolve\/main\/ltx-2\.3-22b-ic-lora-motion-track-control-ref0\.5\.safetensors/);
+  assert.match(MODEL_ASSETS.ltxCamera.find((asset) => asset[0] === 'ltxCinemagraphLora')[2], /Lightricks\/LTX-2\.3-22b-LoRA-Cinemagraph\/resolve\/main\/ltx-2\.3-22b-lora-cinemagraph-0\.9\.safetensors/);
+  assert.match(MODEL_ASSETS.ltxMultipleSubject.find((asset) => asset[0] === 'ltxMsrLora')[2], /LiconStudio\/LTX-2\.3-Multiple-Subject-Reference\/resolve\/main\/LTX-2\.3-Licon-MSR-V2\.safetensors/);
+  assert.match(MODEL_ASSETS.ltxPixelUpscale.find((asset) => asset[0] === 'ltxPixelUpscale2xLora')[2], /Lightricks\/LTX-2\.3-22b-IC-LoRA-Pixel-Spatial-Upscaler\/resolve\/main\/ltx-2\.3-22b-ic-lora-pixel-spatial-upscaler-x2-0\.9\.safetensors/);
+  assert.match(MODEL_ASSETS.ltxPixelUpscale.find((asset) => asset[0] === 'ltxPixelUpscale4xLora')[2], /Lightricks\/LTX-2\.3-22b-IC-LoRA-Pixel-Spatial-Upscaler\/resolve\/main\/ltx-2\.3-22b-ic-lora-pixel-spatial-upscaler-x4-0\.9\.safetensors/);
+  assert.match(MODEL_ASSETS.ltxTextProjection.find((asset) => asset[0] === 'ltxTextProjection')[2], /onewayomni\/ltx-2\.3_text_projection_bf16\.safetensors\/resolve\/main\/ltx-2\.3_text_projection_bf16\.safetensors/);
+  assert.equal(MODEL_ASSETS.ltxStoryboard[0][1], 'loras');
+  assert.match(MODEL_ASSETS.ltxStoryboard.find((asset) => asset[0] === 'ltxStoryboardLora')[2], /Muapi\/ltx_2\.3_multi-ref-character_storyboard\/resolve\/main\/ltx_2\.3_multi-ref-character_storyboard\.safetensors/);
+  assert.deepEqual(COMPONENTS.ltxmultiref.models, ['ltxMultipleSubject']);
+  assert.deepEqual(COMPONENTS.ltxpixelupscale.models, ['ltxPixelUpscale']);
+  assert.deepEqual(COMPONENTS.ltxproject.models, ['ltxTextProjection']);
+  assert.deepEqual(COMPONENTS.ltxstoryboard.models, ['ltxStoryboard']);
+  assert.deepEqual(COMPONENTS.ltxcamera.nodes, ['ltxvideo', 'vhs']);
   assert.match(MODEL_ASSETS.upscale[0][2], /AInVFX\/SeedVR2_comfyUI/);
   assert.match(MODEL_ASSETS.upscale[1][2], /numz\/SeedVR2_comfyUI/);
   assert.match(MODEL_ASSETS.ltx.find((asset) => asset[0] === 'ltxTextEncoder')[2], /Comfy-Org\/ltx-2\/resolve\/main\/split_files\/text_encoders\/gemma_3_12B_it_fp4_mixed\.safetensors/);
