@@ -164,3 +164,33 @@ test('videoProcessInfo updates metadata for after-the-fact interpolation and ups
     kind: 'upscale', scale: 2, parentVideoId: 'v2',
   }).upscaleEngine, 'rtx');
 });
+
+test('H3 INT8 ConvRot models load with weight_dtype int8 to avoid BF16 OOM', async () => {
+  const { buildMiniMaxH3Graph } = require('../lib/video-workflows');
+
+  const int8Settings = {
+    h3Unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
+    h3RefUnet: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
+    h3Clip: 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors',
+    h3VideoVae: 'minimax_h3_video_vae_fp16.safetensors',
+    h3AudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
+  };
+
+  const fp16Settings = {
+    ...int8Settings,
+    h3Unet: 'minimax_h3_fl2va_pruned_fp16.safetensors',
+    h3RefUnet: 'minimax_h3_ref2va_pruned_fp16.safetensors',
+  };
+
+  const opts = {
+    mode: 'frames', prompt: 'a cat', negativePrompt: '', width: 768, height: 1344,
+    frames: 121, seed: 42, steps: 20, smooth: 1, fps: 24,
+    references: { images: [], videos: [], audios: [] },
+  };
+
+  const int8Graph = await buildMiniMaxH3Graph(opts, int8Settings);
+  assert.equal(int8Graph.model.inputs.weight_dtype, 'int8');
+
+  const fp16Graph = await buildMiniMaxH3Graph(opts, fp16Settings);
+  assert.equal(fp16Graph.model.inputs.weight_dtype, 'default');
+});

@@ -65,7 +65,7 @@ const { comfyResetRequests } = require('./lib/comfy-reset');
 const {
   assessQueueHealth,
   parseNvidiaSmiCsv,
-  parseRocmSmiUseJson,
+  parseRocmSmiCsv,
 } = require('./lib/queue-health');
 const { classifyLora } = require('./lib/lora-compat');
 const { buildLoraContext } = require('./lib/lora-context');
@@ -1164,6 +1164,7 @@ async function assertDesktopIsIdle() {
 }
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = pause;
 
 async function waitForComfyReconnect(timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
@@ -1213,8 +1214,15 @@ async function waitForStartedComfy(timeoutMs = 5 * 60_000, expectedBasePath = ''
   return { url: '', matches: [], ambiguous: false, checked: 0, timedOut: true };
 }
 
+const _slotTokens = new Map();
+
 function trackJob(pid, job) {
   const now = Date.now();
+  const slotToken = _slotTokens.get(pid);
+  if (slotToken) {
+    job = Object.assign({}, job, { _slotToken: slotToken });
+    _slotTokens.delete(pid);
+  }
   jobs.set(pid, Object.assign({ enqueuedAt: now, startedAt: null }, job));
 }
 
@@ -1438,6 +1446,35 @@ async function getObjectInfo(force, fetchOptions = {}) {
   objectInfoAt = Date.now();
   adoptRegisteredModelPaths(objectInfoCache);
   return objectInfoCache;
+}
+
+function isComfyConnectionError(error) {
+  if (!error) return false;
+  const message = String(error?.message || error?.cause?.message || '').toLowerCase();
+  return /ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|socket.*hang|network|aborted/.test(message);
+}
+
+async function getObjectInfoWithRetry(force = false, fetchOptions = {}, retries = 3) {
+  const backoffMs = 1000;
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await getObjectInfo(force, fetchOptions);
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries || !isComfyConnectionError(error)) {
+        if (error?.code === 'comfy_object_info_timeout') throw error;
+        const wrapped = new Error(
+          'ComfyUI is not accepting connections. It may still be starting up; wait for the ComfyUI console to settle, then Check again.'
+        );
+        wrapped.code = 'comfy_object_info_unavailable';
+        wrapped.cause = error;
+        throw wrapped;
+      }
+      await sleep(backoffMs * (attempt + 1));
+    }
+  }
+  throw lastError;
 }
 
 function adoptRegisteredModelPaths(info) {
@@ -1990,8 +2027,50 @@ async function uploadFileToComfyRaw(file, filename) {
   throw new Error(`Could not upload ${filename} to ComfyUI.`);
 }
 
+const MAX_CONCURRENT_PROMPTS = Math.max(1, Math.min(4, Number(process.env.MIX_CONCURRENT_PROMPTS) || 1));
+
+let _activePromptCount = 0;
+let _promptSlotWaiters = [];
+
+function _pumpPromptSlots() {
+  if (_activePromptCount < MAX_CONCURRENT_PROMPTS && _promptSlotWaiters.length > 0) {
+    const waiter = _promptSlotWaiters.shift();
+    _activePromptCount += 1;
+    waiter.resolve();
+  }
+}
+
+function _acquirePromptSlot() {
+  return new Promise((resolve) => {
+    if (_activePromptCount < MAX_CONCURRENT_PROMPTS) {
+      _activePromptCount += 1;
+      resolve();
+      return;
+    }
+    _promptSlotWaiters.push({ resolve });
+  }).then(() => ({
+    release() {
+      _activePromptCount = Math.max(0, _activePromptCount - 1);
+      _pumpPromptSlots();
+    },
+  }));
+}
+
+function _releasePromptSlot() {
+  _activePromptCount = Math.max(0, _activePromptCount - 1);
+  _pumpPromptSlots();
+}
+
+function removeJob(pid) {
+  const job = jobs.get(pid);
+  if (job && job._slotToken) {
+    job._slotToken.release();
+  }
+  jobs.delete(pid);
+}
+
 /**
- * Serialized prompt submission. Every ComfyUI prompt funnels through the
+ * Serialized prompt submission.
  * FIFO gate and waits for ComfyUI to be idle before being admitted. This
  * is the core of strict sequential execution: the next job's reference
  * preparation and graph build never overlap the previous job's execution,
@@ -2002,9 +2081,12 @@ async function uploadFileToComfyRaw(file, filename) {
  * lightweight, so this only delays them by the running job's remaining time.
  */
 async function queuePrompt(graph, options = {}) {
+  const slotToken = await _acquirePromptSlot();
   return runSerialized(async () => {
     await waitForComfyIdle();
-    return queuePromptRaw(graph, options);
+    const pid = await queuePromptRaw(graph, options);
+    _slotTokens.set(pid, slotToken);
+    return pid;
   }, { priority: options.front === true });
 }
 
@@ -2224,6 +2306,9 @@ function cancelJob(pid, message = 'Cancelled') {
 
 function failJob(pid, message) {
   const job = jobs.get(pid);
+  if (job && job._slotToken) {
+    job._slotToken.release();
+  }
   const durationMs = job ? jobDurationMs(job) : undefined;
   jobs.delete(pid);
   if (job && (job.kind === 'enhance' || job.kind === 'motionPrompt' || job.kind === 'smartMask')) {
@@ -2456,6 +2541,9 @@ async function completeStrengthHuntJob(pid, job, outputFiles, durationMs, textOu
 async function completeJob(pid) {
   const job = jobs.get(pid);
   if (!job) return;
+  if (job._slotToken) {
+    job._slotToken.release();
+  }
   if (job.kind === 'smartMask') {
     // Keep this job in the Map until its output has been verified. The old
     // lifecycle removed it before checking /history, so a missing or delayed
@@ -3884,7 +3972,7 @@ async function buildGenerationGraph(p, refNames) {
 
 async function queueGenerationJob(p, profileId, refNames, refinedPrompt = null) {
   const graph = await buildGenerationGraph(p, refNames);
-  applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb));
+   applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb, p.vramFreeGb));
   const pid = await queuePrompt(graph, { profileId });
   trackJob(pid, { kind: 'gen', profileId, params: p, graph, refImageNames: refNames, refinedPrompt });
   ensureWs();
@@ -3904,7 +3992,7 @@ async function queueStrengthHuntJob(p, profileId, refNames, refinedPrompt = null
     }), refNames));
   }
   const graph = mergeStrengthHuntGraphs(graphs);
-  applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb));
+   applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb, p.vramFreeGb));
   const pid = await queuePrompt(graph, { profileId });
   trackJob(pid, {
     kind: 'loraHunt', profileId, params: Object.assign({}, p, { batch: 1, postUpscale: undefined }),
@@ -7120,6 +7208,7 @@ async function handleApi(req, res, url) {
     const hardwareProfile = setupHardwareProfile(await getSetupHardwareInfo());
     p.gpuVendor = hardwareProfile.gpuVendor || '';
     p.vramGb = hardwareProfile.vramGb || 0;
+    p.vramFreeGb = hardwareProfile.vramFreeGb || 0;
     let vramAdjustments = [];
     if (vramProfile === 'low') {
       const guarded = applyLowVramImageLimits(p);
@@ -8225,19 +8314,42 @@ async function handleApi(req, res, url) {
       ? `ks_vup_${entry.id}.mp4`
       : `ks_vfi_${entry.id}.mp4`);
 
-const fps = clampNum(baseInfo.fps, 1, 120, 16);
-    const frames = clampInt(baseInfo.frames, 0, 1000000, 0);
-    const hwProfile = setupHardwareProfile(await getSetupHardwareInfo().catch(() => ({})));
-    const vGpuVendor = hwProfile.gpuVendor || '';
-    const vGpuVramGb = hwProfile.vramGb || 0;
-    let graph;
-    let videoInfo;
-    if (route === '/api/video/upscale') {
-      const scale = clampNum(body.scale, 1, 4, 2);
-       graph = await buildExistingVideoUpscale(comfyName, { fps, frames, scale, hasAudio, fourK: !!body.fourK, gpuVendor: vGpuVendor });
-        applyOffloadToGraph(graph, getOffloadConfig(vGpuVendor, vGpuVramGb));
-        videoInfo = videoProcessInfo(baseInfo, { kind: 'upscale', scale, parentVideoId: entry.id });
-    } else {
+     const fps = clampNum(baseInfo.fps, 1, 120, 16);
+     const frames = clampInt(baseInfo.frames, 0, 1000000, 0);
+     const hwProfile = setupHardwareProfile(await getSetupHardwareInfo().catch(() => ({})));
+     const vGpuVendor = hwProfile.gpuVendor || '';
+     const vGpuVramGb = hwProfile.vramGb || 0;
+     let graph;
+     let videoInfo;
+     if (route === '/api/video/upscale') {
+       const scale = clampNum(body.scale, 1, 4, 2);
+       const upscaleEngine = body.engine === 'seedvr2' ? 'seedvr2' : 'rtx';
+       const objectInfo = await getObjectInfo();
+       if (upscaleEngine === 'seedvr2') {
+         const readiness = outpaintRefineReadiness(objectInfo);
+         if (!readiness.ready) {
+           return json(res, 409, {
+             error: 'SeedVR2 video upscale needs the SeedVR2 nodes and configured DiT/VAE models. Install the Upscale component in Generation setup.',
+             code: 'seedvr2_setup_required',
+           });
+         }
+       } else if (!objectInfo.RTXVideoSuperResolution) {
+         return json(res, 409, {
+           error: 'RTX video upscale needs the RTX Video Super Resolution node. Install the optional RTX 4K component in Generation setup.',
+           code: 'rtx_video_upscale_setup_required',
+         });
+       }
+       const sourceShortEdge = Math.min(
+         Number(baseInfo.width) || Number(dims.w) || 0,
+         Number(baseInfo.height) || Number(dims.h) || 0,
+       );
+       const resolution = sourceShortEdge > 0
+         ? clampInt(sourceShortEdge * scale, 512, 8192, 1080)
+         : 1080;
+       graph = await buildExistingVideoUpscale(comfyName, { fps, frames, scale, hasAudio, fourK: !!body.fourK, engine: upscaleEngine, resolution, gpuVendor: vGpuVendor });
+         applyOffloadToGraph(graph, getOffloadConfig(vGpuVendor, vGpuVramGb));
+         videoInfo = videoProcessInfo(baseInfo, { kind: 'upscale', scale, engine: upscaleEngine, parentVideoId: entry.id });
+     } else {
       const multiplier = [2, 3, 4].includes(Number(body.multiplier)) ? Number(body.multiplier) : 2;
       graph = await buildExistingVideoInterpolate(comfyName, { fps, frames, smooth: multiplier, hasAudio });
       videoInfo = videoProcessInfo(baseInfo, { kind: 'interpolate', multiplier, parentVideoId: entry.id });

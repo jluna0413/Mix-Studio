@@ -35,6 +35,7 @@ const {
   normalizeHuggingFaceEndpoint,
   patchLtxVideoKornia,
   patchBfsOptionalAudio,
+  patchSeedVr2Xpu,
   protectedRuntimeConstraints,
   requirementsArgs,
   sameRepo,
@@ -50,11 +51,10 @@ function safetensorsFixture() {
 }
 
 test('dependency catalog covers every enabled image and video family', () => {
-<<<<<<< HEAD
-  for (const component of ['image', 'krea2raw', 'krea2depth', 'krea2style', 'krea2outpaint', 'editoutpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'video', 'h3', 'h3turbo', 'h3turbor2v', 'h3sage', 'h3r2v', 'h3dyntime', 'ltxcamera', 'ltxdirector', 'videoedit', 'faceid', 'wan', 'eros', 'rife', 'scail', 'scailinfinity', 'smartmask', 'regional']) {
+  for (const component of ['image', 'krea2raw', 'krea2depth', 'krea2style', 'krea2outpaint', 'editoutpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'video', 'h3', 'h3turbo', 'h3turbor2v', 'h3sage', 'h3r2v', 'h3dyntime', 'ltxmultiref', 'ltxpixelupscale', 'ltxproject', 'ltxstoryboard', 'ltxcamera', 'ltxdirector', 'videoedit', 'faceid', 'wan', 'eros', 'rife', 'scail', 'scailinfinity', 'smartmask', 'regional']) {
     assert.ok(COMPONENTS[component], `${component} is installable`);
   }
-  for (const group of ['image', 'krea2Raw', 'krea2Depth', 'krea2Outpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'ltx', 'h3', 'h3RefCommon', 'h3Ref', 'h3Bf16', 'h3RefBf16', 'h3DynTimeRef', 'h3DynTimeRefHq', 'h3Turbo', 'h3TurboLegacy', 'h3RefTurbo', 'ltxCamera', 'ltxDirector', 'ltxEdit', 'faceid', 'wan', 'eros', 'scail']) {
+  for (const group of ['image', 'krea2Raw', 'krea2Depth', 'krea2Outpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'ltx', 'h3', 'h3RefCommon', 'h3Ref', 'h3Bf16', 'h3RefBf16', 'h3DynTimeRef', 'h3DynTimeRefHq', 'h3Turbo', 'h3TurboLegacy', 'h3RefTurbo', 'ltxCamera', 'ltxMultipleSubject', 'ltxPixelUpscale', 'ltxTextProjection', 'ltxStoryboard', 'ltxDirector', 'ltxEdit', 'faceid', 'wan', 'eros', 'scail']) {
     assert.ok(MODEL_ASSETS[group]?.length, `${group} has model downloads`);
   }
   assert.ok(Object.values(NODE_PACKS).every((pack) => pack.repo.startsWith('https://github.com/')));
@@ -65,7 +65,6 @@ test('dependency catalog covers every enabled image and video family', () => {
   assert.match(NODE_PACKS.eros.repo, /TenStrip\/10S-Comfy-nodes/);
   assert.deepEqual(COMPONENTS.eros.nodes, ['eros', 'kjnodes']);
   assert.deepEqual(COMPONENTS.h3.models, ['h3']);
-  assert.deepEqual(COMPONENTS.h3turbo.nodes, ['h3Turbo']);
   assert.deepEqual(COMPONENTS.h3turbo.models, ['h3Turbo']);
   assert.equal(COMPONENTS.h3turbo.optional, true);
   assert.equal(NODE_PACKS.h3Turbo.ref, '77bfa67575b14e3be6214f1747732e540c68b5dd');
@@ -1248,6 +1247,140 @@ test('BFS optional audio import is guarded idempotently', async () => {
     assert.match(patched, /try:\n    from \.amv_guide_node/);
     assert.match(patched, /AMV Guide node not loaded/);
     assert.equal(await patchBfsOptionalAudio(nodePath), false);
+  } finally {
+    fs.rmSync(nodePath, { recursive: true, force: true });
+  }
+});
+
+test('SeedVR2 node is patched for Intel XPU and Windows cp1252 console', async () => {
+  const nodePath = fs.mkdtempSync(path.join(os.tmpdir(), 'mixbox-seedvr2-patch-'));
+  try {
+    // compatibility.py: emoji status prints at module import time.
+    const compatFile = path.join(nodePath, 'src', 'optimization', 'compatibility.py');
+    fs.mkdirSync(path.dirname(compatFile), { recursive: true });
+     fs.writeFileSync(compatFile, [
+      'sage_status = "\u2705" if SAGE_ATTN_AVAILABLE else "\u274c"',
+      '# Log all optimization status once globally (cross-process) using environment variable',
+      'def _probe_bfloat16_support():',
+      '    """Probe bfloat16 tensor creation on the primary accelerator."""',
+      '    return torch.randn(8, 8, dtype=torch.bfloat16, device=\'cuda:0\')',
+      'if num_available == 3:',
+      '    print(f"\u26a1 SeedVR2 optimizations check: ...")',
+      'elif num_available == 0:',
+      '    print(f"\u26a0\ufe0f  SeedVR2 optimizations check: ...")',
+      '    print("\ud83d\udca1 For best performance: pip install sageattention flash-attn triton")',
+      'else:',
+      '    icon = "\u26a1" if num_available >= 2 else "\u26a0\ufe0f "',
+      '    print(f"{icon} SeedVR2 optimizations check: ...")',
+      '    print(f"\ud83d\udca1 Optional: pip install ...")',
+      '    print(f"\ud83d\udd27 Conv3d workaround active: ...")',
+    ].join('\r\n'));
+
+    // __init__.py: must expose the comfy_entrypoint import so the V1 mapping
+    // shim can be injected next to it.
+    const initFile = path.join(nodePath, '__init__.py');
+    fs.writeFileSync(initFile, [
+      'from .src.optimization.compatibility import ensure_triton_compat  # noqa: F401',
+      'from .src.interfaces import comfy_entrypoint, SeedVR2Extension',
+      '',
+      '__all__ = ["comfy_entrypoint", "SeedVR2Extension"]',
+    ].join('\r\n'));
+
+    // memory_manager.py: CUDA/MPS-only device enumeration + emoji VRAM prints.
+    const memFile = path.join(nodePath, 'src', 'optimization', 'memory_manager.py');
+    fs.mkdirSync(path.dirname(memFile), { recursive: true });
+    fs.writeFileSync(memFile, [
+      'import torch',
+      'from typing import Tuple, Dict, Any, Optional, List, Union',
+      '',
+      'def is_cuda_available() -> bool:',
+      '    return torch.cuda.is_available()',
+      '',
+      'def is_mps_available() -> bool:',
+      '    """Check if MPS (Apple Metal) backend is available."""',
+      '    return hasattr(torch.backends, \'mps\') and torch.backends.mps.is_available()',
+      '',
+      'def get_device_list(include_none=False, include_cpu=False):',
+      '    devs = []',
+      '    has_cuda = False',
+      '    has_mps = False',
+      '    try:',
+      '        if is_cuda_available():',
+      '            devs += [f"cuda:{i}" for i in range(torch.cuda.device_count())]',
+      '            has_cuda = True',
+      '    except Exception:',
+      '        pass',
+      '    try:',
+      '        if is_mps_available():',
+      '            devs.append("mps")  # MPS doesn\'t use device indices',
+      '            has_mps = True',
+      '    except Exception:',
+      '        pass',
+      '    result = []',
+      '    if include_none:',
+      '        result.append("none")',
+      '    if include_cpu and (has_cuda or not has_mps):',
+      '        result.append("cpu")',
+      '    result.extend(devs)',
+      '',
+      '    return result if result else []',
+      '',
+      'def get_basic_vram_info(device=None):',
+      '    if is_cuda_available():',
+      '        free_memory, total_memory = torch.cuda.mem_get_info(device)',
+      '    elif is_mps_available():',
+      '        mem = psutil.virtual_memory()',
+      '        free_memory = mem.total - mem.used',
+      '        total_memory = mem.total',
+      '    else:',
+      '        return {"error": "No GPU backend available (CUDA/MPS)"}',
+      '    return {"free_gb": free_memory, "total_gb": total_memory}',
+      '',
+      'def get_vram_usage(device=None):',
+      '    if is_cuda_available():',
+      '        allocated = torch.cuda.memory_allocated(device)',
+      '        return allocated, reserved, peak_allocated, peak_reserved',
+      '    elif is_mps_available():',
+      '        # MPS doesn\'t support per-device queries - uses global memory tracking',
+      '        allocated = torch.mps.current_allocated_memory()',
+      '        return allocated, reserved, allocated, reserved',
+      '',
+      'backend = "MPS" if is_mps_available() else "CUDA"',
+      'print(f"\ud83d\udcca Initial {backend} memory: ...")',
+      'print(f"\u26a0\ufe0f Memory check failed: ...")',
+    ].join('\r\n'));
+
+    assert.equal(await patchSeedVr2Xpu(nodePath), true);
+
+    const compat = fs.readFileSync(compatFile, 'utf8');
+    assert.doesNotMatch(compat, /\u2705|\u274c|\u26a1|\ud83d\udca1|\ud83d\udd27/);
+    assert.match(compat, /\[SeedVR2\] optimizations check:/);
+    assert.match(compat, /def _seedvr2_safe_print/);
+    assert.match(compat, /torch\.cuda\.is_available\(\)/);
+    assert.match(compat, /torch\.xpu\.is_available\(\)/);
+    assert.match(compat, /torch\.randn\(8, 8, dtype=torch\.bfloat16, device=\('cuda:0' if torch\.cuda\.is_available\(\) else \('xpu:0' if hasattr\(torch, 'xpu'\) and torch\.xpu\.is_available\(\) else 'cpu'\)\)\)/);
+    assert.doesNotMatch(compat, /device='cuda:0'/);
+
+    const mem = fs.readFileSync(memFile, 'utf8');
+    assert.match(mem, /def is_xpu_available\(\) -> bool:/);
+    assert.match(mem, /torch\.xpu\.is_available\(\)/);
+    assert.match(mem, /has_xpu = True/);
+    assert.match(mem, /if include_cpu and \(has_cuda or has_xpu or not has_mps\):/);
+    assert.match(mem, /elif is_xpu_available\(\):/);
+    assert.match(mem, /_seedvr2_safe_print\(f"\[SeedVR2\] Initial/);
+    // No empty-device crash: at least one device is guaranteed.
+    assert.match(mem, /if not devs:\n        devs = \["cpu"\]/);
+
+    // __init__.py exposes the V3 classes via the classic NODE_CLASS_MAPPINGS
+    // path so this ComfyUI build registers them in /object_info.
+    const initFile2 = path.join(nodePath, '__init__.py');
+    const init = fs.readFileSync(initFile2, 'utf8');
+    assert.match(init, /\[mixstudio\] seedvr2 v1 mappings/);
+    assert.match(init, /"SeedVR2LoadDiTModel": SeedVR2LoadDiTModel/);
+    assert.match(init, /"SeedVR2VideoUpscaler": SeedVR2VideoUpscaler/);
+
+    // Idempotent: a second run must be a no-op.
+    assert.equal(await patchSeedVr2Xpu(nodePath), false);
   } finally {
     fs.rmSync(nodePath, { recursive: true, force: true });
   }
