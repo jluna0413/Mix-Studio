@@ -1,0 +1,1052 @@
+function normalizeEngineOrder(order, engines) {
+function promoteEngineDefault(order, preferred, engines) {
+function featureEnabled(key) { return state.features[key] !== false; }
+function enabledEditEngines() { return normalizeEngineOrder(state.editEngineOrder, EDIT_ENGINES).filter((engine) => featureEnabled(EDIT_FEATURES[engine])); }
+function enabledVideoEngines() { return normalizeEngineOrder(state.videoEngineOrder, VIDEO_ENGINES).filter((engine) => featureEnabled(VIDEO_FEATURES[engine])); }
+function supportsCurrentEditAngles() { return state.view === 'edit' && ANGLE_EDIT_ENGINES.has(state.editEngine); }
+function renderFeatureVisibility() {
+function editEngineId(engine) {
+function rememberEditLoras() {
+function switchEditEngine(engine) {
+function toast(msg, isError) {
+function closeErrorDetail() {
+function showErrorDetail(message, title = 'Generation error') {
+function isJobCancellation(error) {
+function promptDraft() {
+function loraTriggerToken(name) {
+function loraNameFromTriggerToken(token) {
+function promptLoraTriggerTokens(value) {
+function promptHasLoraTriggerToken(value, name) {
+function expandPromptLoraTriggers(value) {
+function promptForGeneration() {
+function rehydratePromptReferences(value, references = []) {
+function reusableItemPrompt(item, useEnhanced = false) {
+function refForPromptToken(index) {
+function makePromptReferenceToken(index) {
+function makePromptLoraTriggerToken(name) {
+function renderPromptComposer() {
+function composerNodeText(node, root) {
+function promptDraftFromComposer() {
+function setPromptDraft(value, { render = true } = {}) {
+function syncPromptDraftFromComposer() {
+function capturePromptSelection() {
+function placePromptCaretAfter(node) {
+function promptComposerRange(preferredRange = null, { preferLive = false } = {}) {
+function insertPromptPlainText(text, preferredRange = null) {
+function promptRangeNeedsSeparator(range, composer) {
+function insertPromptReference(index, preferredRange = null, options = {}) {
+function renderPromptMentionPicker() {
+function openPromptMentionPicker() {
+function closeAppDialog(value = null) {
+function openAppDialog(options = {}) {
+function askText(options = {}) {
+function avatarHtml(p, cls, idx) {
+function closeProfileCreate() {
+function openProfileCreate() {
+function renderGateTiles() {
+function renderProfileChip() {
+function openProfileEdit() {
+function updateSeenKey() {
+function updateAlertsKey() {
+function latestOfficialRelease() {
+function officialReleaseId(release = latestOfficialRelease()) {
+function seenUpdateId() {
+function updateAlertsEnabled() {
+function formatUpdateDate(value) {
+function officialReleaseSummary(release) {
+function renderUpdateNotificationPreference() {
+function renderOfficialRelease() {
+function markLatestReleaseSeen() {
+function showOfficialReleaseNotice(release) {
+function showSystemUpdateNotification(release) {
+function receiveOfficialRelease(result, options = {}) {
+function actionIconMarkup(icon) {
+function closeActionMenu() {
+function openActionMenu(anchor, items, options = {}) {
+function syncSheetScrollLock() {
+function syncAppDrawerScrollFades() {
+function activeFullscreenElement() {
+function runningStandalone() {
+function syncFullscreenControl() {
+function scheduleFullscreenControlSync() {
+function renderAppDrawerNavigation() {
+function openAppDrawer() {
+function closeAppDrawer() {
+function setAppUpdateStatus(message, tone) {
+function formatAppUpdateError(error) {
+function formatAppVersion(version, revision = '') {
+function renderAppRelease(release = {}) {
+function renderAppUpdateAccess() {
+function round32(n) { return Math.max(64, Math.round(n / 32) * 32); }
+function computeDims() {
+function profileStorageKey(prefix, profileId = workspaceSessionProfileId) {
+function formKey() {
+function mediaPreferencesKey() {
+function loadMediaPreferences() {
+function saveMediaPreferences(next) {
+function serializeWorkspaceAsset(asset) {
+function restoreWorkspaceAsset(asset) {
+function serializeWorkspaceAudio(audio) {
+function saveForm() {
+function loadForm() {
+function workspaceLibraryKey() {
+function savedWorkspaces() {
+function writeSavedWorkspaces(entries) {
+function workspaceModeLabel(snapshot) {
+function renderSavedWorkspaces() {
+function openWorkspaces() {
+function reloadWithoutWorkspaceAutosave() {
+function desktopWorkspaceActive() {
+function desktopLayoutStorageKey() {
+function clampDesktopPanel(value, min, max) {
+function normalizedDesktopPanelLayout(activeSide = null) {
+function updateDesktopResizerAria(side, value, otherValue) {
+function applyDesktopPanelLayout({ activeSide = null, persist = false } = {}) {
+function restoreDesktopPanelLayout() {
+function setDesktopPanelWidth(side, value, { persist = false } = {}) {
+function finishDesktopPanelResize({ persist = true } = {}) {
+function beginDesktopPanelResize(event, side, resizer) {
+function wireDesktopPanelResizers() {
+function pinDesktopViewport() {
+function captureDesktopSharedFocusSource(card) {
+function cancelDesktopSharedFocusTransition() {
+function cascadeFocusedLibraryRail() {
+function waitForDesktopFocusedMedia(maxWait = 120) {
+function startDesktopSharedFocusTransition(source) {
+function galleryElementContentTop(element, panel) {
+function captureDesktopGalleryScrollAnchor() {
+function continuousDesktopGalleryScrollAnchor() {
+function restoreDesktopGalleryScrollAnchor(anchor) {
+function desktopGalleryColumnCount(grid = $('#galleryGrid')) {
+function captureDesktopGalleryLayoutTransition() {
+function stopDesktopGalleryLayoutTransition() {
+function startDesktopGalleryLayoutTransition(snapshot) {
+function galleryLayoutStorageKey() {
+function normalizeGalleryZoom(value) {
+function galleryColumnsForZoom(zoom = state.galleryZoom) {
+function galleryZoomValueText(zoom = state.galleryZoom) {
+function applyGalleryZoom(value, { animate = false, persist = false } = {}) {
+function restoreGalleryZoom() {
+function syncNavigation() {
+function setView(view, opts = {}) {
+function setCreateMode(mode, openEditor) {
+function genLabel() {
+function updateVideoPanels() {
+function assetPickerKind(accept) {
+function formatAssetBytes(bytes) {
+function uploadedAssetPickerAssets(accept) {
+function previousGenerationAssets(accept) {
+function assetPickerImageUrl(asset) {
+function assetPickerMediaUrl(asset) {
+function assetMatchesQuery(asset, query) {
+function assetPickerVisibleAssets() {
+function closeAssetPickerMenus(except = null) {
+function renderAssetPickerFilters() {
+function renderAssetPickerMultiBar() {
+function renderAssetPickerList() {
+function openAssetPickerPreview(asset) {
+function closeAssetPickerPreview() {
+function animateAssetPickerEntrance(panel, trigger) {
+function openAssetPicker(accept, callback, title, options = {}) {
+function closeAssetPicker() {
+function formatUploadBytes(bytes) {
+function uploadInputAsset(blob, filename) {
+function pickDeviceUpload(accept, cb, options = {}) {
+function clipboardImageType(file) {
+function clipboardImageFiles(clipboardData) {
+function clipboardHasImageLikeData(clipboardData) {
+function clipboardImageFilename(file, index = 0, now = Date.now()) {
+function clipboardImageCaption(clipboardData) {
+function clipboardPasteContext() {
+function currentClipboardPasteContextKey() {
+function assertClipboardPasteContext(request) {
+function clipboardPasteEventDestination(context) {
+function assertClipboardPasteEventDestination(request) {
+function rememberClipboardDestinationCommit(request) {
+function announceClipboardImagePaste(message, isError = false) {
+function flashClipboardPasteDestination(element) {
+function releaseClipboardAssetUrl(asset, replacement = null) {
+function insertClipboardPasteAnchor(range, caption = '') {
+function clipboardPasteAnchorRange(anchor) {
+function snapshotClipboardImageDestination(context, destination) {
+function assertClipboardImageDestination(request, destination) {
+function promptHasReferenceToken(index) {
+function handlePromptClipboardImagePaste(event) {
+function pickUpload(accept, cb, title, options) {
+function imageAssetSnapshot(asset) {
+function originalImageAsset(asset) {
+function cropAspectRatio() {
+function layoutInputCrop() {
+function openInputImageCrop(asset, onApply, title = 'Crop input image') {
+function closeInputImageCrop() {
+function createDenoiseFromInfluence(influence = state.createInfluence) {
+function assetNameKey(name) {
+function krea2TurboLoraName() {
+function ensureKrea2RawTurboLora() {
+function detachKrea2RawTurboLora() {
+function renderKrea2Mode() {
+function krea2ManagedLoraChanged(lora) {
+function kleinOutpaintConsistencySpec(engine = state.editEngine) {
+function detachKleinOutpaintConsistencyLora(engine, stack) {
+function syncKleinOutpaintConsistencyLora() {
+function activeEditAutomaticLoraSpec() {
+function syncEditAutomaticLora() {
+function managedLoraChanged(lora) {
+function createInfluenceFromDenoise(denoise) {
+function generationSafeCreateDimensions(ref = state.createRef, megapixels = state.mp) {
+function derivedAspectLabel(width, height) {
+function createSizeLabel(megapixels = state.mp) {
+function normalizeResolutionMegapixels(value, fallback = 1) {
+function nearestResolutionMegapixels(width, height) {
+function dimensionsForMegapixels(ratio, megapixels) {
+function resolutionPresetForDimensions(width, height) {
+function restoreCreateResolution(width, height) {
+function editResolutionSizeLabel(width = state.editWidth, height = state.editHeight) {
+function nativeCreateOutputDimensions(ref = state.createRef) {
+function matchedCreateOutputDimensions(ref = state.createRef, native = state.createMatchNative) {
+function createGuideInput(ref = state.createRef) {
+function applyCreateMatchedDimensions(options = {}) {
+function renderCreateImageGuide() {
+function clearCreateDepthPreview() {
+function renderPromptAssistantSource() {
+function setPromptAssistantBusy(busy, message = '') {
+function openPromptAssistant() {
+function closePromptAssistant() {
+function pickCreateImageGuide() {
+function clearCreateImageGuide() {
+function invalidateProcessedMask() {
+function clamp01(v, fallback) {
+function clampRegionBox(region) {
+function selectedRegion() {
+function normalizeRegionStrength(value) {
+function loraStrengthHoldDelay(pointerType) {
+function createRegion() {
+function activeRegionsForRequest() {
+function regionLoraOptions(selected) {
+function setRegionLoraExpanded(open) {
+function syncRegionLoraDisclosure(region) {
+function syncRegionSettings(focusPrompt) {
+function selectRegion(region, focusPrompt) {
+function regionsAtPoint(clientX, clientY) {
+function selectRegionUnderneath(clientX, clientY, currentRegion) {
+function openRegionLoraPicker(region) {
+function renderRegionLoraCard(region) {
+function setRegionResolutionExpanded(open) {
+function renderRegionResolutionPicker() {
+function syncRegionStageAspect() {
+function renderRegionEditor() {
+function startRegionDrag(e, region, resize) {
+function moveRegionDrag(e) {
+function endRegionDrag() {
+function openRegionEditor() {
+function setRegionReference(asset, { announce = true } = {}) {
+function clearKreaMask(silent) {
+function supportsCurrentEditMask() {
+function hasEditMask() {
+function syncEditAreaChrome() {
+function renderKreaMaskTools() {
+function renderEditMaskAdvanced() {
+function renderKreaMaskMode() {
+function setupMaskCanvasFromImage() {
+function syncKreaMaskCanvasFromState() {
+function openKreaMaskPainter() {
+function maskContentRect() {
+function maskPoint(e) {
+function normalizeKreaMaskBoxes() {
+function activeKreaMaskBox() {
+function maskBoxElement(id) {
+function announceKreaMaskBox(message) {
+function renderKreaMaskBoxControls() {
+function renderKreaMaskBoxes() {
+function updateKreaMaskBoxElement(box) {
+function discardEditableMaskBoxes() {
+function rasterizeKreaMaskBoxes({ persist = false } = {}) {
+function prepareNewMaskBoxSet() {
+function addKreaMaskBox() {
+function deleteActiveKreaMaskBox() {
+function cycleKreaMaskBox(direction) {
+function beginKreaMaskBoxCreate(event) {
+function pointerMaskBoxHandle(event, element) {
+function beginKreaMaskBoxInteraction(event) {
+function moveKreaMaskBoxInteraction(event) {
+function finishKreaMaskBoxInteraction(event, cancelled = false) {
+function cancelKreaMaskBoxInteraction() {
+function cancelKreaMaskBrushDrawing(pointerId = null) {
+function keyboardKreaMaskBox(event) {
+function drawKreaMask(e) {
+function maskExtremaPass(source, output, lineCount, lineLength, lineStride, itemStride, radius, expand) {
+function offsetMaskValues(values, width, height, radius, expand) {
+function processedMaskCanvas() {
+function previewMaskCanvas() {
+function renderMaskOverlay() {
+function invertKreaMask() {
+function maskAlphaCanvas(mask) {
+function refreshMaskCutoutPreview() {
+function scheduleMaskedRefPreview() {
+function scheduleMaskExpansionPreview() {
+function renderMaskAdjustments() {
+function renderSmartPointMode() {
+function renderSmartMaskPoints() {
+function rerunSmartMaskFromPoints() {
+function beginSmartMaskPointDrag(event) {
+function moveSmartMaskPointDrag(event) {
+function finishSmartMaskPointDrag(event) {
+function cancelSmartMaskPointDrag() {
+function setSmartMaskLoading(message) {
+function cancelSmartMaskRequest() {
+function setMaskGestureValues(brush, feather, { announce = false } = {}) {
+function finishMaskGesture() {
+function beginMaskGesture(event) {
+function moveMaskGesture(event) {
+function keyboardMaskGesture(event) {
+function updateMaskedRefPreview() {
+function wireEndFrame(prefix, stateKey) {
+function updateSwapChip() {
+function swapVideoFrames(message = 'First and last frames swapped') {
+function clearVideoFrameDrag() {
+function wireVideoFrameDrag(slot, role) {
+function setTrimPlaybackIcon(button, playing) {
+function stopPreview() {
+function fmtT(s) {
+function encodeWavSlice(buffer, start, end) {
+function wireAudioChip(prefix, stateKey, durInputId) {
+function setAudioChipVisual(chip, active) {
+function restorePersistedWorkspaceControls() {
+function renderScailFpsControls() {
+function renderScailChunkControls() {
+function wireSigmaRow(rowId, key) {
+function closeEngineInfo({ restoreFocus = true } = {}) {
+function openEngineInfo(kind = 'video') {
+function renderQwenQuality() {
+function syncEditSamplingRow() {
+function selectedQwenAngleViews() {
+function createAngleGroupId() {
+function renderQwenAngleTool() {
+function renderQwenAngleMode() {
+function renderQwenAnglePicker() {
+function openQwenAngles() {
+function closeQwenAngles() {
+function renderEnhance() {
+function sequentialEditPrompts(value = promptForGeneration()) {
+function renderEditSequence() {
+function updatePromptClear() {
+function clearCameraWheelScrollTimers() {
+function setCameraSetting(key, value) {
+function updateCameraPreview() {
+function cameraMatchesSettings(settings) {
+function applyCameraCombo(comboId) {
+function renderCameraCombos() {
+function updateCameraWheelActiveState(key) {
+function cameraWheelOptions(key) {
+function selectCameraWheelFromScroll(list) {
+function commitCameraWheelScroll(key, list) {
+function centerCameraWheels() {
+function renderCameraWheel(key) {
+function renderCameraPicker() {
+function openCameraPicker() {
+function applyCameraPrompt() {
+function cameraMotionReferenceActive() {
+function cameraMotionReferenceSelected() {
+function cameraMotionAvailableForEngine(engine = state.vidEngine) {
+function cameraMotionsForEngine(engine = state.vidEngine) {
+function cameraMotionPromptForEngine(prompt, engine = state.vidEngine) {
+function cameraMotionGuideAvailableSeconds(guide = state.videoCameraGuide) {
+function cameraMotionGuideLimit(guide = state.videoCameraGuide) {
+function cameraMotionEngineLabel() {
+function cameraMotionModeText(guide = state.videoCameraGuide, motions = state.videoCameraMotions) {
+function syncCameraMotionTool() {
+function stopCameraMotionPreviews() {
+function observeCameraMotionPreview(video) {
+function cameraMotionPreviewWindow(guide = cameraMotionGuideDraft) {
+function renderCameraMotionCustom() {
+function chooseCustomCameraMotion() {
+function renderCameraMotionSequence() {
+function buildCameraMotionCards() {
+function renderCameraMotionPicker() {
+function openCameraMotionPicker() {
+function applyCameraMotionSelection() {
+function renderAspects() {
+function renderDims() {
+function renderEditAspects() {
+function matchedEditOutputDimensions(ref, megapixels = 1) {
+function optionalUnitOffset(value) {
+function editOutpaintGeometry() {
+function editOutpaintActive() {
+function defaultEditOutpaintAspect(ref) {
+function applyEditOutpaintAspect(label) {
+function syncEditOutpaintPlacement(geometry = editOutpaintGeometry()) {
+function renderEditOutpaint() {
+function upscaleFinishSettings() {
+function positionUpscaleFinish() {
+function renderEditUpscale() {
+function curLoras() {
+function loraCategory(name) {
+function compatibleLoraCategories() {
+function loraOptionsFor(selected) {
+function incompatibleSelectedLoras() {
+function loraContextProfile(name) {
+function normalizeLoraTriggerPhrase(value) {
+function loraTriggerPhrase(lora) {
+function loraTriggerColor(name) {
+function syncPromptLoraTokenColors() {
+function promptHasLoraTrigger(prompt, phrase) {
+function loraTriggerLiteralPattern(phrase) {
+function promoteLoraTriggerInPrompt(lora) {
+function demoteLoraTriggerInPrompt(lora) {
+function ensureLoraTriggerInPrompt(lora) {
+function applyContextLoraDefault(lora) {
+function generationDefaultsFromControls() {
+function generationTuningMode(view = state.view) {
+function negativePromptAvailability(view = state.view) {
+function renderNegativePromptControl() {
+function negativePromptForGeneration() {
+function defaultGenerationTuning(mode) {
+function normalizeGenerationTuning(mode, value) {
+function captureGenerationTuning(mode = generationTuningMode()) {
+function restoreGenerationTuning(mode = generationTuningMode()) {
+function resetGenerationControl(control) {
+function renderGenerationDefaults() {
+function applyGenerationDefaults() {
+function applyCurrentGenerationDefaults() {
+function renderContextPreferences() {
+function selectedPromptSuggestions() {
+function appendPromptSuggestion(phrase, loraName) {
+function renderPromptSuggestions() {
+function renderLoraCompatibility() {
+function loraThumbHtml(name, cls) {
+function renderLoras() {
+function wireLoraCard(card, l, idx, arr) {
+function setLoraThumb(name) {
+function openLoraPicker(onPick, opts) {
+function closeLoraPicker() {
+function commitLoraPick(name) {
+function renderLoraPicker(query) {
+function prettyLora(name) { return name.replace(/\.safetensors$/i, '').split(/[\\/]/).pop(); }
+function editEngineLabel(engine) {
+function engineTaskDefinition(kind, engine) {
+function createEngineInfoPreview(definition) {
+function renderEngineInfoList(kind = 'video') {
+function renderEditModelSummary() {
+function collapseRes(open) {
+function setVideoOptionsExpanded(open) {
+function setVideoModelExpanded(open) {
+function setDirectorModelExpanded(open) {
+function renderDirectorModelChoices() {
+function directorStorageKey() { return profileStorageKey('ks-director'); }
+function directorModeStorageKey() { return profileStorageKey('ks-director-mode'); }
+function savedDirectorComposerMode() {
+function directorId(prefix = 'segment') {
+function directorClamp(value, min, max) { return Math.max(min, Math.min(max, Number(value) || 0)); }
+function directorFramesToSeconds(frames) {
+function directorSecondsToFrames(seconds, { minimum = 0 } = {}) {
+function directorToggleValue(id) {
+function setDirectorToggleValue(id, value) {
+function wireDirectorToggle(id, onChange) {
+function directorUsesPartialRange(project = state.directorProject) {
+function directorAutoFitTimeline(project = state.directorProject) {
+function directorCompact() {
+function directorComfortableTimelineScale() {
+function directorUseComfortableTimelineScale() {
+function directorSegmentVisualWidth(segment, ppf) {
+function directorAssetName(segment) { return segment.imageFile || segment.audioFile || segment.videoFile || ''; }
+function directorTrackFor(segment) {
+function directorTrackSegments(track, project = state.directorProject) {
+function directorSelected() {
+function directorAssets(project = state.directorProject) {
+function directorExtensionKeyframe(project = state.directorProject) {
+function directorPlaceExtensionKeyframe(project = state.directorProject) {
+function directorExtensionIsUpload(source = state.directorProject?.extensionSource) {
+function directorExtensionVideo(source = state.directorProject?.extensionSource) {
+function directorExtensionSeconds(source = state.directorProject?.extensionSource, span = false) {
+function directorExtensionUses4K(source = state.directorProject?.extensionSource) {
+function directorSerializableProject(project = state.directorProject) {
+function directorSeedProject() {
+function directorNormalizeClientProject(value) {
+function directorOverlapError(project = state.directorProject) {
+function saveDirectorProject() {
+function setDirectorResolutionExpanded(expanded) {
+function renderDirectorResolutionPicker() {
+function renderDirectorDurationControl() {
+function directorSetFormValues() {
+function directorLoras() {
+function renderDirectorLoras() {
+function openDirectorLoraPicker() {
+function directorSegmentLabel(segment) {
+function renderDirectorSegment(track, segment, ppf) {
+function directorKeyframes(project = state.directorProject) {
+function directorStoryItems(project = state.directorProject) {
+function directorRedistributeStoryItems(ordered = directorStoryItems()) {
+function directorRedistributeKeyframes(ordered = directorKeyframes()) {
+function directorMoveKeyframe(id, direction) {
+function directorRemoveKeyframe(id) {
+function directorRefreshKeyframeDomOrder(list) {
+function directorCommitKeyframeDomOrder(list) {
+function wireDirectorKeyframeDrag(card, list) {
+function directorRefreshGenerationValidation() {
+function renderDirectorKeyframePreset() {
+function renderDirectorPreset() {
+function renderDirectorSelectionControls() {
+function directorRevealSelection() {
+function renderDirectorRuler(ppf) {
+function directorOpenSheet(id) {
+function directorCloseSheet(id) {
+function directorOpenInspector() {
+function directorCloseInspector() {
+function directorDeselect() {
+function renderDirectorInspector() {
+function renderDirectorPlayhead() {
+function renderDirectorZoomFill() {
+function renderDirector() {
+function openDirectorWorkflowChooser() {
+function openDirectorMode(project, options = {}) {
+function startDirectorWorkflow(mode) {
+function switchDirectorWorkflow(mode) {
+function directorProbeVideo(url) {
+function directorChooseExtensionSource() {
+function directorChooseExtensionKeyframe() {
+function directorRemoveExtensionKeyframe() {
+function openDirectorExtension(item, video) {
+function closeDirectorMode() {
+function directorFindPlacement(track, desiredStart, length, excludeId) {
+function directorFindPlacementBefore(track, beforeFrame, length, excludeId) {
+function directorInsertRelative(track, anchor, side, length) {
+function directorTimingOverlaps(track, start, length, excludeId) {
+function directorSelect(track, id, { openInspector = true, reveal = true } = {}) {
+function directorOpenAddRelative(side) {
+function directorConfigureAddSheet(storyOnly) {
+function directorOpenStoryboardAdd(index) {
+function directorAddSegment(track, segment, options = {}) {
+function directorApplyTiming() {
+function directorApplySecondsTiming() {
+function directorUpdateProjectFields() {
+function directorUpdatePresetDuration(input) {
+function directorDeleteSelected() {
+function directorDuplicateSelected() {
+function directorSplitSelected() {
+function stopDirectorPlayback() {
+function toggleDirectorPlayback() {
+function directorSnapFrame(frame, event) {
+function startDirectorDrag(event) {
+function setDirectorProgressLocation(inDirector) {
+function setDirectorDisclosure(buttonId, panelId, open) {
+function directorOpenMediaPicker(kind) {
+function setEditModelExpanded(open) {
+function videoDurationMax(engine) {
+function clampVideoDurationInput(input, engine, { preserveRange = false } = {}) {
+function formatVideoDuration(value) {
+function videoDurationTickIncrement(min, max) {
+function renderVideoDurationSlider() {
+function syncVideoDurationLimit() {
+function clearVideoDurationHold() {
+function clearVideoDurationZoomTransition() {
+function clearVideoDurationSnapTransition() {
+function clearVideoDurationScaleTransition() {
+function activateFineVideoDuration() {
+function enterFineVideoDuration() {
+function exitFineVideoDuration({ immediate = false } = {}) {
+function updateVideoDurationFromControl() {
+function animateVideoDurationSnap() {
+function syncAnimateDurationLimit() {
+function updateVideoTuningSummary() {
+function renderVideoValueWheel(inputId, wheelId) {
+function centerVideoValueWheel(wheelId) {
+function syncVideoValueWheelFromScroll(inputId, wheelId) {
+function wireVideoValueWheel(inputId, wheelId) {
+function openMotionPicker() {
+function setVideoScrubValue(input, value) {
+function wireVideoScrubber(buttonId, inputId, onTap) {
+function setLorasExpanded(open) {
+function setAdvancedExpanded(open) {
+function closeLoraPresetSaveSheet() {
+function openLoraPresetSaveSheet() {
+function renderRefs({ preservePromptComposer = false } = {}) {
+function clearRefReorder() {
+function wireRefReorder(slot, index, maxSlots) {
+function pickRef(idx) {
+function openAnimateRouteSheet(item) {
+function closeAnimateRouteSheet() {
+function galleryImageDestinationActions(item, { includeReuse = true } = {}) {
+function resetLivePreviewMotion() {
+function dismissLivePreview(direction = 1) {
+function settleLivePreviewSwipe() {
+function renderVidAttach() {
+function syncVideoAutoMotionUi() {
+function renderVidFace() {
+function renderVideoFpsChoices() {
+function renderFaceGrid() {
+function pickVidRef() {
+function scheduleVideoDurationFineHold(event) {
+function finishVideoDurationPointer(event) {
+function syncManualVideoDuration() {
+function renderVidDrive() {
+function driveLayout() {
+function modelOrderButtons(rowId, visibleOnly = false) {
+function firstEnabledModel(config) {
+function syncModelOrderDefault(rowId) {
+function applyEngineOrder(rowId, order) {
+function applySavedEngineOrders() {
+function animateModelOrderLayout(row, mutate) {
+function preventModelOrderTouchScroll(event) {
+function beginModelOrderDrag(gesture) {
+function cleanupModelOrderDrag(gesture) {
+function modelOrderSlotIndex(slots, clientX, clientY, currentIndex, hysteresis = 14) {
+function updateModelOrderDrag(gesture, event) {
+function persistModelOrder(rowId, announce = true) {
+function finishModelOrderDrag(gesture) {
+function cancelModelOrderDrag(gesture) {
+function moveModelWithKeyboard(rowId, button, direction) {
+function wireModelOrder(rowId) {
+function markEngineRow(rowId, engine) {
+function wireEngineRow(rowId, noteWork) {
+function setGenerating(on, statusText) {
+function queueRefreshSoon() {
+function agoStr(ts) {
+function formatDuration(ms) {
+function renderQueueHealth(health) {
+function openFromQueue(itemId, videoId) {
+function queueReorderRows() {
+function clearQueueDragClasses() {
+function preventQueueDragTouchScroll(event) {
+function setQueueDragScrollLock(gesture, locked) {
+function cancelQueueDrag(gesture) {
+function updateQueueDragTarget(gesture, clientY) {
+function beginQueueDrag(gesture) {
+function finishQueueDrag(gesture, clientY) {
+function attachQueueDrag(row, job) {
+function applyQueueJobMapping(mapping) {
+function reconcileGenerationState(queue) {
+function reconcileGenerationAfterResume() {
+function queueThumbnail(entry) {
+function renderQueue(q) {
+function generationPhaseText(d) {
+function renderGenerationProgress(d) {
+function renderGenerationStatus(d) {
+function connectEvents() {
+function isUpscaleJob() { return state.upscaling.size > 0; }
+function updatePrivacyButton() {
+function closePrivateUnlockSheet(password = null) {
+function openPrivateUnlockSheet(error = '') {
+function renderFolders() {
+function folderActionHelpText() {
+function closeFolderPicker() {
+function closeFolderActionsSheet() {
+function itemActivity(it) {
+function videoEngineLabel(engine, info) {
+function galleryImageModelLabel(item) {
+function galleryCardModelLabel(item) {
+function itemHasLike(item) {
+function latestGalleryVideo(item) {
+function latestDesktopStageItem() {
+function focusCompletedDesktopOutput(itemId, media = 'image') {
+function setDesktopStageMedia({ image = '', video = '', poster = '' } = {}) {
+function desktopStageSelection() {
+function syncDesktopGallerySelection() {
+function desktopStageChoices(item) {
+function revealHorizontalSelection(scroller, selected, previousScrollLeft = null, preservePosition = false) {
+function wireHorizontalScroller(scroller) {
+function renderDesktopStagePicker(item, media = 'image') {
+function renderDesktopStage(item, mediaSel) {
+function renderDesktopStageGenerating(statusText = 'Working…') {
+function renderDesktopStageActions(item, video) {
+function activeDesktopStageMedia() {
+function cloneGenerationSetup(value) {
+function captureDesktopInputSetup() {
+function updateDesktopInputHistoryButtons() {
+function checkpointDesktopInputSetup() {
+function appendDesktopInputSetup() {
+function restoreDesktopInputSetup(snapshot) {
+function moveDesktopInputHistory(direction) {
+function resetActiveGenerationForm() {
+function clearDesktopStageSelection() {
+function desktopStageSaveMenuItems(item, video) {
+function generationMediaFilename(item, media = null) {
+function generationDisplayName(item, media = null) {
+function generationDownloadStem(item, fallback = 'generation') {
+function setGenerationNameInput(item, media = null) {
+function setGalleryGroupNameInput(input, item, group = activeGalleryGroup(item)) {
+function setLightboxGroupNameInput(item) {
+function galleryGroupNameEditToken(input) {
+function queueGalleryGroupNameSave(groupType, groupId, action) {
+function setSavedGalleryGroupNameInput(input, name) {
+function applyGalleryGroupName(groupType, groupId, name) {
+function syncGalleryGroupNameInputs(groupType, groupId, name, source) {
+function wireInlineNameInput(input, save) {
+function librarySearchText(it) {
+function libraryGroupNameIndex(items = state.items) {
+function librarySearchTextWithGroups(it, groupNames = null) {
+function matchesLibrarySearch(it, query, groupNames = null) {
+function visibleItems() {
+function syncLibraryCollectionControls() {
+function visibleUploadedAssets() {
+function renderUploadedAssetsLibrary() {
+function galleryEntries(items) {
+function angleGroupItems(item) {
+function generationGroupItems(item) {
+function activeGalleryGroup(item) {
+function resolvedLibraryGroupFocus() {
+function orderedLibraryGroupFocusItems(group) {
+function stopDesktopLibraryGroupExpansion() {
+function startDesktopLibraryGroupExpansion(source) {
+function openDesktopLibraryGroup(group, sourceCard = null) {
+function closeDesktopLibraryGroup() {
+function strengthHuntStrengthLabel(value) {
+function strengthHuntValues(maximum) {
+function strengthHuntItemLabel(item) {
+function preloadLightboxGroupThumbnails(items, activeId = '') {
+function lightboxGroupThumbnailMarkup(item, index, active = false) {
+function lightboxGroupMediaCounts(item) {
+function lightboxGroupMediaDescription(item) {
+function lightboxGroupMediaSummaryMarkup(item) {
+function angleViewLabel(item) {
+function angleViewGlyph(item) {
+function galleryEntryNavigationItems(entry) {
+function galleryNavigationTarget(item, direction) {
+function focusedGalleryItemMedia(item, media) {
+function openFocusedGalleryItem(item, media, options = {}) {
+function navigateFocusedGallery(direction) {
+function galleryDateKey(timestamp) {
+function galleryDateLabel(timestamp) {
+function galleryItemDurationMs(item) {
+function addGalleryDuration(badge, durationMs, standalone = false) {
+function previewCacheAvailable() {
+function previewCacheName() {
+function galleryImageSource(item) {
+function galleryCacheSources(items = visibleItems()) {
+function renderPreviewCacheStatus() {
+function releasePreviewCacheObjectUrls() {
+function schedulePreviewCacheStep(run, delay = 120) {
+function stopPreviewCacheWarmup() {
+function useCachedGalleryImage(target, source, property = 'src') {
+function galleryPreviewMotionAllowed() {
+function pauseGalleryPreview(video, unloadDelay = 2800) {
+function playGalleryPreview(video) {
+function centeredGalleryPreviewRow(candidates, center) {
+function settleGalleryPreviewPlayback() {
+function scheduleGalleryPreviewPlayback(delay = 140) {
+function ensureGalleryPreviewObserver() {
+function resetGalleryPreviewObservation() {
+function galleryDateScrubberGroups() {
+function galleryScrollPanel() {
+function galleryScrollTop() {
+function setGalleryScrollTop(top, behavior = 'auto') {
+function galleryScrollViewportHeight() {
+function galleryScrollContentHeight() {
+function setGalleryDateScrubberRatio(ratio, haptic = false) {
+function galleryDateLayoutTop(element) {
+function scrollGalleryToDate(index, behavior = 'smooth') {
+function galleryDateScrollTarget(ratio) {
+function galleryDateRatioForScroll(scrollY = galleryScrollTop()) {
+function runGalleryDatePreviewScroll() {
+function previewGalleryDateScroll(ratio) {
+function settleGalleryToDate(index) {
+function setGalleryDateScrubberIndex(index, scroll = false, haptic = false, behavior = 'smooth') {
+function currentGalleryDateIndex() {
+function resetGalleryDateScrubGesture() {
+function positionGalleryDateScrubber() {
+function resumeGalleryDateMedia(delay = 0) {
+function syncGalleryDateScrubber() {
+function scrubGalleryDateAt(clientY, haptic = true) {
+function finishGalleryDateScrub(event) {
+function beginGalleryDateScrub() {
+function syncGalleryDateScrubberFromScroll() {
+function selectGalleryCardAtPoint(clientX, clientY) {
+function gallerySelectionScrollSpeed(clientY) {
+function runGallerySelectionAutoScroll() {
+function beginGallerySelectionDrag(card, pointerId, clientX, clientY) {
+function updateGallerySelectionDrag(event) {
+function stopGallerySelectionDrag(event) {
+function renderGrid() {
+function setDesktopLibraryStageSelection(item, media = 'image') {
+function handleDesktopGalleryTap(item, card, galleryGroup = null) {
+function directorGalleryDropTargetAllowed(target, drag) {
+function directorTimelineFrameAtClientX(clientX, event = {}) {
+function clearDirectorGalleryDropIndicator() {
+function updateDirectorGalleryDropIndicator(target, drag, event) {
+function directorGalleryDropDescription(target, drag, event) {
+function desktopGalleryDropTarget(node) {
+function desktopGalleryDropTargets(drag = desktopGalleryDrag) {
+function clearDesktopGalleryDropTargets() {
+function activateDesktopGalleryDrag(item, media, card) {
+function beginDesktopGalleryPointerDrag(candidate, event) {
+function updateDesktopGalleryPointerDrag(event) {
+function cancelDesktopGalleryPointerDrag() {
+function endDesktopGalleryDrag() {
+function lightboxContainedContent(image) {
+function lightboxZoomOrigin(image, clientX, clientY) {
+function renderLightboxZoom() {
+function cancelLightboxPan() {
+function resetLightboxZoom() {
+function lightboxPanBounds(image = $('#lbImg')) {
+function setLightboxPan(x, y) {
+function panLightboxBy(deltaX, deltaY) {
+function setLightboxZoom(scale, clientX, clientY) {
+function adjustLightboxZoom(deltaY, clientX, clientY, deltaMode = 0) {
+function lightboxWheelMode(event) {
+function handleLightboxZoomWheel(event) {
+function handleLightboxPanPointerDown(event) {
+function handleLightboxPanPointerMove(event) {
+function finishLightboxPan(event, cancelled = false) {
+function clearLightboxTap() {
+function loadLikeAnimationData() {
+function loadLikeAnimationRuntime() {
+function warmLikeAnimation() {
+function cloneLikeAnimationData(data) {
+function recolorStaticLottie(data, darkColor, lightColor) {
+function whiteLikeAnimationData(data) {
+function outlinedProgressAnimationData(data, outline) {
+function imageProgressAnimationData(data) {
+function videoProgressAnimationData(data) {
+function loadProgressAnimationData(kind) {
+function stopLivePreviewSimulation() {
+function showLivePreviewImage(source) {
+function playCssLikeBurst(burst, target, mode) {
+function playLikeBurst(target, mode = 'like') {
+function syncLightboxLikeButton(liked, label) {
+function toggleItemLike(item, burstTarget) {
+function handleGalleryTap(item, card) {
+function handleLightboxTap(event) {
+function lightboxVideoTapUsesControls(event) {
+function handleLightboxVideoPointerDown(event) {
+function handleLightboxVideoPointerUp(event) {
+function updateLibrarySearch() {
+function enterSelectWith(id) {
+function selectedGalleryItems() {
+function selectedUngroupableGenerationGroupIds() {
+function expandedGallerySelection(ids = [...state.selected]) {
+function syncSelectionVisuals() {
+function toggleBulkSelection(ids) {
+function toggleSelect(id) {
+function setSelectionUiActive(active) {
+function exitSelect() {
+function updateSelectBar() {
+function formatSelectionBytes(bytes) {
+function selectionDateRange(earliest, latest) {
+function scheduleSelectionInsightsRefresh(delay = 120) {
+function restoreSelectionActions() {
+function populateSelectionExpandedActions() {
+function openSelectionInsights() {
+function dockSelectionConsole() {
+function selectionConsoleHeight() {
+function finishSelectBarSwipe(event) {
+function lockScroll() {
+function unlockScroll() {
+function existingImageComposite(item, type) {
+function lightboxMetaStorageKey() {
+function lightboxMetaMaxHeight() {
+function clampLightboxMetaHeight(value) {
+function applyLightboxMetaHeight(value = lightboxMetaLayout.height, { persist = false, remember = true } = {}) {
+function restoreLightboxMetaLayout() {
+function setLightboxMetaHeight(value, { persist = false, remember = true } = {}) {
+function finishLightboxMetaResize(event = null) {
+function wireLightboxMetaResizer() {
+function preloadLightboxNeighbors(item) {
+function openLightbox(id, mediaSel, options = {}) {
+function closeLightbox(fromPop) {
+function openAnimateSheet(it, selVideo) {
+function closeGallerySort() {
+function syncGallerySortControl() {
+function restoredLoraList(loras) {
+function restoredEditEngine(engine) {
+function restoredEditAspect(width, height) {
+function imageDimensions(url) {
+function reuseRequestCurrent(options = {}) {
+function hasDocumentationValue(value) {
+function documentationAnglePrompt(item) {
+function documentationMetadata(item) {
+function selectedDocumentationMetadata() {
+function setDocumentationFont(ctx, weight, size) {
+function setDocumentationMonoFont(ctx, weight, size) {
+function truncateCanvasText(ctx, text, maxWidth) {
+function wrapCanvasText(ctx, text, maxWidth, maxLines = Infinity) {
+function drawDocumentationLines(ctx, lines, x, y, lineHeight) {
+function renderDocumentationContactCard(canvas, ctx, image, metadata) {
+function renderDocumentationOverlay(canvas, ctx, image, metadata) {
+function renderDocumentationCanvas() {
+function syncDocumentationControls() {
+function renderDocumentationFieldControls() {
+function openDocumentationBuilder(item) {
+function saveDocumentationImage() {
+function documentationVideoMimeType() {
+function documentationVideoDimensions(width, height) {
+function drawContainedMedia(ctx, media, x, y, width, height) {
+function drawCoveredMedia(ctx, media, x, y, width, height) {
+function documentationVideoStoryboardSegments(video, limit = 8) {
+function documentationVideoInputSpecs(item, video) {
+function loadDocumentationMedia(spec, src = spec.src) {
+function documentationVideoDetails(item, video, inputMedia = [], resultMedia = null) {
+function documentationVideoInputBoxes(area, count, gap) {
+function documentationVideoLayout(width, height, mediaRatio = width / height, inputCount = 1, storyboardCount = 0) {
+function drawDocumentationVideoMedia(ctx, media, box, label, accent, { quiet = false } = {}) {
+function drawDocumentationVideoStoryboard(ctx, inputMedia, box) {
+function drawDocumentationVideoDetails(ctx, box, item, video, inputMedia, resultMedia) {
+function syncDocumentationVideoInputs(inputMedia, resultTime) {
+function drawDocumentationVideoFrame(ctx, canvas, inputMedia, item, video, resultMedia) {
+function updateDocumentationVideoProgress(progress, label) {
+function documentationResultAudioStream(result) {
+function cleanupDocumentationVideoRun(run) {
+function closeDocumentationVideoExport() {
+function downloadItem(it, variant) {
+function downloadStrengthHuntLayout(it, layoutName) {
+function downloadComposite(it, composite) {
+function escapeHtml(s) {
+function compareFitSize() {
+function clampComparePan() {
+function renderCompareTransform() {
+function setCompare(pct) {
+function setCompareMode(mode) {
+function setCompareZoom(value, clientX, clientY) {
+function fitCompare() {
+function actualSizeCompare() {
+function updateCompareDimensions() {
+function openCompare(it) {
+function openUpscaleSheet(it) {
+function renderUpscaleMode() {
+function openMoveSheet(target) {
+function setMediaPreferenceControl(id, enabled) {
+function mediaPreferenceControlValue(id) {
+function settingsPayload() {
+function renderSettingsRestartAction() {
+function setSettingsSaveStatus(text = '', tone = '') {
+function hasPendingSettingsAutosave() {
+function scheduleSettingsAutosave(kind, delay = 480) {
+function flushSettingsAutosave() {
+function setSvAttnValue(value) {
+function setSvAttnPickerOpen(open, focusOption = false) {
+function renderExportLocation(directory = defaultExportDirectory) {
+function formatHardwareBytes(value) {
+function setHardwareRow(valueId, detailId, value, detail = '') {
+function renderHardwareInfo(info) {
+function conciseIconTooltipLabel(value) {
+function iconButtonVisibleText(button) {
+function buttonIsIconOnly(button) {
+function iconTooltipLabel(button) {
+function markIconTooltip(button) {
+function scanIconTooltips(root = document) {
+function requestIconTooltipScan() {
+function restoreIconTooltipDescription(button) {
+function positionIconTooltip(button) {
+function revealIconTooltip(button) {
+function showIconTooltip(button, immediate = false) {
+function hideIconTooltip(button = null) {
+function focusIconControlSilently(button) {
+function initIconTooltips() {
+function firstRunTutorialStorageKey() {
+function firstImageTutorialIsTerminal(value = localStorage.getItem(firstRunTutorialStorageKey())) {
+function freshFirstRunWorkspacePending() {
+function firstImageTutorialBlocksContextualGuides() {
+function hideFirstRunTutorial() {
+function showFirstRunTutorial() {
+function maybeShowFirstRunTutorial() {
+function firstImageTutorialReady() {
+function applyFirstImageTutorialPreset(options = {}) {
+function beginFirstImageTutorialWalkthrough() {
+function finishFirstImageTutorial({ pause = false } = {}) {
+function typeFirstImageTutorialPrompt() {
+function advanceFirstImageTutorialFromAction(guide, action) {
+function retryFirstImageTutorialGeneration(message = '') {
+function prepareGuidedTourImage(expandLoras = false) {
+function prepareGuidedTourLoras() {
+function prepareGuidedTourEdit() {
+function prepareGuidedTourLibrary() {
+function normalizedIntentPrompt() {
+function promptUsesUnattachedVisual(prompt) {
+function promptRequestsSourceEdit(prompt) {
+function promptRequestsOutpaint(prompt) {
+function promptRequestsLocalEdit(prompt) {
+function promptRequestsMotionTransfer(prompt) {
+function currentPromptIntent() {
+function renderPromptIntentHint() {
+function schedulePromptIntentHint(delay = 360) {
+function offerPromptIntentGuide(intent, { explicit = false } = {}) {
+function contextualGuideValue(value) {
+function contextualGuideTarget(guide = contextualGuide) {
+function guidedTourTargetUsable(target) {
+function guidedTourPrefersReducedMotion() {
+function guidedTourSimulationMotion(guide) {
+function guidedTourSimulationTarget(guide, target) {
+function guidedTourSimulationChoices(guide, target) {
+function positionGuidedTargetSimulation(guide, target) {
+function pauseGuidedTargetSimulation() {
+function stopGuidedTargetSimulation() {
+function startGuidedTargetSimulation(guide, target) {
+function stopGuidedTourTargetObservation() {
+function requestGuidedTourPosition() {
+function observeGuidedTourTarget(target) {
+function renderGuidedTourMedia(definition) {
+function guidedTourStorageKey() {
+function guidedTourCompletionValue() {
+function guidedTipsStorageKey() {
+function contextualGuideSeenKey(id) {
+function contextualGuidesEnabled() {
+function renderGuidedTourSetting() {
+function activeGuidedTourDefinition() {
+function guidedTourActions(definition = activeGuidedTourDefinition(), target = guidedTourTarget(definition)) {
+function guidedTourActionAtPoint(definition, target, clientX, clientY) {
+function guidedTourTarget(definition = activeGuidedTourDefinition()) {
+function positionGuidedTour() {
+function scheduleContextualGuide(id, delay = 560) {
+function schedulePrimaryOrSidePanelGuide(primaryId, delay) {
+function showContextualGuide(id, { repeat = false, ignoreEnabled = false, intentKey = '' } = {}) {
+function hideContextualGuide({ keepSequence = false, restoreFocus = true } = {}) {
+function dismissContextualGuide() {
+function acknowledgeContextualGuide() {
+function cancelContextualGuide(id) {
+function completeContextualGuide(id) {
+function showNextContextualGuide(id, intentKey = '', attempt = 0) {
+function contextualGuideActionSatisfied(guide, action) {
+function signalContextualGuideTarget() {
+function contextualGuideActionAtPoint(guide, target, clientX, clientY) {
+function contextualGuideActions(guide = contextualGuide, target = contextualGuideTarget(guide)) {
+function focusContextualGuideAction(guide = contextualGuide) {
+function advanceContextualGuideFromAction(guide, action) {
+function advanceFullGuidedTourFromAction(step, action) {
+function setContextualGuidesEnabled(enabled) {
+function resetTipsAndGuides() {
+function renderGuidedTourStep({ focus = true } = {}) {
+function startGuidedTour() {
+function finishGuidedTour(completed = false) {
+function advanceGuidedTour(direction) {
+function setSettingsTab(name, focus = false) {
+function settingsAutosaveKindForControl(control) {
+function formatDependencyBytes(value) {
+function dependencyProgressMetrics(installState) {
+function dependencyMissingLabels() {
+function syncDependencySelection(missing) {
+function selectedDependencyIds() {
+function setupSelectedKrea2Variant() {
+function setupNeedsNativeInt8(components) {
+function setupNativeInt8Blocked(components) {
+function setupKrea2CoreBlocked(components) {
+function setupKrea2CoreMessage() {
+function setupNativeInt8Message() {
+function generationSetupComponents() {
+function missingSetupComponents(required) {
+function imageGenerationReady() {
+function currentGenerationSetupAction() {
+function setSetupGuideExpanded(expanded) {
+function setSetupCustomExpanded(expanded) {
+function setPhoneAccessExpanded(expanded) {
+function setSetupStep(step, options = {}) {
+function closeGenerationSetup(options = {}) {
+function setupGenerationReady() {
+function renderSetupFooter() {
+function setupComponentLabelMap() {
+function setupComponentFitMap() {
+function setupMissingComponentIds() {
+function syncSetupComponentSelection(components, missingIds) {
+function selectedSetupDependencyIds() {
+function setupFitForComponents(components) {
+function conciseSetupError(value) {
+function dependencyAccessUrl(installState) {
+function renderDependencyAccess(containerSelector, linkSelector, installState) {
+function renderSetupEndpointChoices(matches = []) {
+function createPhoneAccessQrSvg(url) {
+function renderPhoneAccessQr(url) {
+function renderPhoneAccess() {
+function renderInitialSetup() {
+function scheduleSetupPoll() {
+function renderGenerationSetupEntry() {
+function renderDependencyManager() {
+function scheduleDependencyPoll() {
+function renderSam3Dependency() {
+function renderHealth() {

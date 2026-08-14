@@ -35,10 +35,10 @@ const {
   normalizeHuggingFaceEndpoint,
   patchLtxVideoKornia,
   patchBfsOptionalAudio,
-  patchSeedVr2Xpu,
   protectedRuntimeConstraints,
   requirementsArgs,
   sameRepo,
+  uvRequirementsArgs,
   validateModelFile,
 } = require('../lib/dependency-installer');
 const { comfyPort, restartStatus } = require('../lib/comfy-restart');
@@ -51,10 +51,10 @@ function safetensorsFixture() {
 }
 
 test('dependency catalog covers every enabled image and video family', () => {
-  for (const component of ['image', 'krea2raw', 'krea2depth', 'krea2style', 'krea2outpaint', 'editoutpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'video', 'h3', 'h3turbo', 'h3turbor2v', 'h3sage', 'h3r2v', 'h3dyntime', 'ltxmultiref', 'ltxpixelupscale', 'ltxproject', 'ltxstoryboard', 'ltxcamera', 'ltxdirector', 'videoedit', 'faceid', 'wan', 'eros', 'rife', 'scail', 'scailinfinity', 'smartmask', 'regional']) {
+  for (const component of ['image', 'krea2raw', 'krea2depth', 'krea2style', 'krea2outpaint', 'editoutpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'video', 'ltx25', 'ltx25quality', 'h3', 'h3turbo', 'h3turbor2v', 'h3sage', 'h3r2v', 'h3dyntime', 'ltxcamera', 'ltxdirector', 'videoedit', 'faceid', 'wan', 'eros', 'rife', 'scail', 'scailinfinity', 'smartmask', 'regional']) {
     assert.ok(COMPONENTS[component], `${component} is installable`);
   }
-  for (const group of ['image', 'krea2Raw', 'krea2Depth', 'krea2Outpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'ltx', 'h3', 'h3RefCommon', 'h3Ref', 'h3Bf16', 'h3RefBf16', 'h3DynTimeRef', 'h3DynTimeRefHq', 'h3Turbo', 'h3TurboLegacy', 'h3RefTurbo', 'ltxCamera', 'ltxMultipleSubject', 'ltxPixelUpscale', 'ltxTextProjection', 'ltxStoryboard', 'ltxDirector', 'ltxEdit', 'faceid', 'wan', 'eros', 'scail']) {
+  for (const group of ['image', 'krea2Raw', 'krea2Depth', 'krea2Outpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'ltx', 'ltx25', 'ltx25Quality', 'h3', 'h3RefCommon', 'h3Ref', 'h3Bf16', 'h3RefBf16', 'h3DynTimeRef', 'h3DynTimeRefHq', 'h3Turbo', 'h3TurboLegacy', 'h3TurboLightx8', 'h3TurboLightx4_768p', 'h3RefTurbo', 'h3RefTurboLightx8', 'h3RefTurboLightx4_768p', 'ltxCamera', 'ltxDirector', 'ltxEdit', 'faceid', 'wan', 'eros', 'scail']) {
     assert.ok(MODEL_ASSETS[group]?.length, `${group} has model downloads`);
   }
   assert.ok(Object.values(NODE_PACKS).every((pack) => pack.repo.startsWith('https://github.com/')));
@@ -64,7 +64,13 @@ test('dependency catalog covers every enabled image and video family', () => {
   assert.equal(NODE_PACKS.regional.allowCompatibleMirror, true);
   assert.match(NODE_PACKS.eros.repo, /TenStrip\/10S-Comfy-nodes/);
   assert.deepEqual(COMPONENTS.eros.nodes, ['eros', 'kjnodes']);
+  assert.deepEqual(COMPONENTS.scail.nodes, ['sam3', 'vhs', 'gguf', 'kjnodes']);
+  assert.deepEqual(COMPONENTS.video4k.nodes, ['rtx']);
+  assert.equal(NODE_PACKS.rtx.folder, 'Nvidia_RTX_Nodes_ComfyUI');
+  assert.equal(NODE_PACKS.rtx.repo, 'https://github.com/Comfy-Org/Nvidia_RTX_Nodes_ComfyUI.git');
+  assert.equal(NODE_PACKS.rtx.ref, '892515e3eb9a4920a131a502a047e47adca9eb0d');
   assert.deepEqual(COMPONENTS.h3.models, ['h3']);
+  assert.deepEqual(COMPONENTS.h3turbo.nodes, ['h3Turbo']);
   assert.deepEqual(COMPONENTS.h3turbo.models, ['h3Turbo']);
   assert.equal(COMPONENTS.h3turbo.optional, true);
   assert.equal(NODE_PACKS.h3Turbo.ref, '77bfa67575b14e3be6214f1747732e540c68b5dd');
@@ -82,6 +88,10 @@ test('dependency catalog covers every enabled image and video family', () => {
   assert.match(MODEL_ASSETS.h3Turbo[0][2], /larryvrh\/MiniMax-H3-Turbo-Lora.*minimax_h3_turbo_v4_step600_ema/);
   assert.match(MODEL_ASSETS.h3TurboLegacy[0][2], /larryvrh\/MiniMax-H3-Turbo-Lora.*minimax_h3_turbo_4step_ema_ckpt850/);
   assert.match(MODEL_ASSETS.h3RefTurbo[0][2], /Kijai\/MiniMax-H3_comfy.*minimax_h3_fl2v_lightx2v_turbo_4step_v0\.1_comfy_resized_avg_rank_21_bf16/);
+  assert.match(MODEL_ASSETS.h3TurboLightx8[0][2], /lightx2v\/Minimax-h3-Turbo\/resolve\/[a-f0-9]{40}\/minimax_h3_fl2v_turbo_8step_v1\.0_comfyui_bf16/);
+  assert.match(MODEL_ASSETS.h3RefTurboLightx8[0][2], /lightx2v\/Minimax-h3-Turbo/);
+  assert.match(MODEL_ASSETS.h3TurboLightx4_768p[0][2], /lightx2v\/Minimax-h3-Turbo\/resolve\/56961dfe1e808ff02cbda58e61157141bff3938d\/minimax_h3_fl2v_turbo_4step_v1\.0_768p_comfyui_bf16/);
+  assert.match(MODEL_ASSETS.h3RefTurboLightx4_768p[0][2], /lightx2v\/Minimax-h3-Turbo/);
   assert.deepEqual(COMPONENTS.rife.nodes, ['rife']);
   assert.ok(availableComponents().includes('smartmask'));
   assert.equal(COMPONENTS.krea2raw.optional, true);
@@ -100,25 +110,20 @@ test('dependency catalog covers every enabled image and video family', () => {
   assert.equal(NODE_PACKS.ltxvideo.folder, 'ComfyUI-LTXVideo');
   assert.match(NODE_PACKS.ltxvideo.repo, /Lightricks\/ComfyUI-LTXVideo/);
   assert.match(MODEL_ASSETS.ltxCamera[0][2], /Cseti\/LTX2\.3-22B_IC-LoRA-Cameraman_v2/);
-  assert.equal(MODEL_ASSETS.ltxCamera.length, 4, 'ltxCamera group has the Cameraman v2 LoRA plus three research adapters');
-  assert.match(MODEL_ASSETS.ltxCamera.find((asset) => asset[0] === 'ltxMotionEnhancerLora')[2], /rzgar\/LTX-2\.3-Motion-Enhancer-n4w\/resolve\/main\/LTX-2\.3-Motion-Enhancer-n4w\.safetensors/);
-  assert.match(MODEL_ASSETS.ltxCamera.find((asset) => asset[0] === 'ltxMotionTrackLora')[2], /Lightricks\/LTX-2\.3-22b-IC-LoRA-Motion-Track-Control\/resolve\/main\/ltx-2\.3-22b-ic-lora-motion-track-control-ref0\.5\.safetensors/);
-  assert.match(MODEL_ASSETS.ltxCamera.find((asset) => asset[0] === 'ltxCinemagraphLora')[2], /Lightricks\/LTX-2\.3-22b-LoRA-Cinemagraph\/resolve\/main\/ltx-2\.3-22b-lora-cinemagraph-0\.9\.safetensors/);
-  assert.match(MODEL_ASSETS.ltxMultipleSubject.find((asset) => asset[0] === 'ltxMsrLora')[2], /LiconStudio\/LTX-2\.3-Multiple-Subject-Reference\/resolve\/main\/LTX-2\.3-Licon-MSR-V2\.safetensors/);
-  assert.match(MODEL_ASSETS.ltxPixelUpscale.find((asset) => asset[0] === 'ltxPixelUpscale2xLora')[2], /Lightricks\/LTX-2\.3-22b-IC-LoRA-Pixel-Spatial-Upscaler\/resolve\/main\/ltx-2\.3-22b-ic-lora-pixel-spatial-upscaler-x2-0\.9\.safetensors/);
-  assert.match(MODEL_ASSETS.ltxPixelUpscale.find((asset) => asset[0] === 'ltxPixelUpscale4xLora')[2], /Lightricks\/LTX-2\.3-22b-IC-LoRA-Pixel-Spatial-Upscaler\/resolve\/main\/ltx-2\.3-22b-ic-lora-pixel-spatial-upscaler-x4-0\.9\.safetensors/);
-  assert.match(MODEL_ASSETS.ltxTextProjection.find((asset) => asset[0] === 'ltxTextProjection')[2], /onewayomni\/ltx-2\.3_text_projection_bf16\.safetensors\/resolve\/main\/ltx-2\.3_text_projection_bf16\.safetensors/);
-  assert.equal(MODEL_ASSETS.ltxStoryboard[0][1], 'loras');
-  assert.match(MODEL_ASSETS.ltxStoryboard.find((asset) => asset[0] === 'ltxStoryboardLora')[2], /Muapi\/ltx_2\.3_multi-ref-character_storyboard\/resolve\/main\/ltx_2\.3_multi-ref-character_storyboard\.safetensors/);
-  assert.deepEqual(COMPONENTS.ltxmultiref.models, ['ltxMultipleSubject']);
-  assert.deepEqual(COMPONENTS.ltxpixelupscale.models, ['ltxPixelUpscale']);
-  assert.deepEqual(COMPONENTS.ltxproject.models, ['ltxTextProjection']);
-  assert.deepEqual(COMPONENTS.ltxstoryboard.models, ['ltxStoryboard']);
-  assert.deepEqual(COMPONENTS.ltxcamera.nodes, ['ltxvideo', 'vhs']);
   assert.match(MODEL_ASSETS.upscale[0][2], /AInVFX\/SeedVR2_comfyUI/);
   assert.match(MODEL_ASSETS.upscale[1][2], /numz\/SeedVR2_comfyUI/);
   assert.match(MODEL_ASSETS.ltx.find((asset) => asset[0] === 'ltxTextEncoder')[2], /Comfy-Org\/ltx-2\/resolve\/main\/split_files\/text_encoders\/gemma_3_12B_it_fp4_mixed\.safetensors/);
   assert.match(MODEL_ASSETS.ltx.find((asset) => asset[0] === 'ltxGemmaLora')[2], /Comfy-Org\/ltx-2/);
+  assert.deepEqual(COMPONENTS.ltx25.models, ['ltx25']);
+  assert.deepEqual(COMPONENTS.ltx25quality.models, ['ltx25Quality']);
+  assert.equal(COMPONENTS.ltx25quality.optional, true);
+  assert.equal(MODEL_ASSETS.ltx25.length, 6);
+  assert.equal(MODEL_ASSETS.ltx25Quality.length, 3);
+  assert.match(MODEL_ASSETS.ltx25.find((asset) => asset[0] === 'ltx25Unet')[2], /Lightricks\/LTX-2\.5.*distilled-transformer-comfy-int8-convrot/);
+  assert.match(MODEL_ASSETS.ltx25.find((asset) => asset[0] === 'ltx25PromptEnhancer')[2], /Comfy-Org\/gemma-4.*gemma4_e2b_it_bf16/);
+  assert.equal(MODEL_ASSETS.ltx25.find((asset) => asset[0] === 'ltx25Upscaler')[1], 'latent_upscale_models');
+  assert.match(MODEL_ASSETS.ltx25Quality.find((asset) => asset[0] === 'ltx25QualityUnet')[2], /Lightricks\/LTX-2\.5.*dev-transformer-bf16/);
+  assert.match(MODEL_ASSETS.ltx25Quality.find((asset) => asset[0] === 'ltx25DistilledLora')[2], /Lightricks\/LTX-2\.5.*distilled-lora-450-bf16/);
   assert.match(MODEL_ASSETS.ltxEdit[0][2], /Alissonerdx\/EditAnything/);
   assert.match(MODEL_ASSETS.faceid.find((asset) => asset[0] === 'ltxFaceIdLora')[2], /Alissonerdx\/LTX-Best-Face-ID\/resolve\/main\/Best_FaceID_v1\.0_LoRA\.safetensors/);
   assert.match(MODEL_ASSETS.faceid.find((asset) => asset[0] === 'ltxFaceIdDistilledLora')[2], /Comfy-Org\/ltx-2\.3\/resolve\/main\/split_files\/loras\/ltx_2\.3_22b_distilled_1\.1_lora_dynamic_fro09_avg_rank_111_bf16\.safetensors/);
@@ -235,6 +240,61 @@ test('regional prompting installs the reviewed mirror and reuses a compatible le
   }
 });
 
+test('RTX 4K setup installs the reviewed NVIDIA node and its nvidia-vfx requirement', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixbox-rtx-node-'));
+  const customNodesPath = path.join(rootDir, 'custom_nodes');
+  const modelsPath = path.join(rootDir, 'models');
+  const pythonPath = path.join(rootDir, '.venv', 'Scripts', 'python.exe');
+  const nodePath = path.join(customNodesPath, NODE_PACKS.rtx.folder);
+  const requirementsPath = path.join(nodePath, 'requirements.txt');
+  const commands = [];
+  const reports = [];
+  try {
+    fs.mkdirSync(path.dirname(pythonPath), { recursive: true });
+    fs.mkdirSync(modelsPath, { recursive: true });
+    fs.writeFileSync(path.join(rootDir, 'main.py'), '');
+    fs.writeFileSync(pythonPath, '');
+
+    const result = await installComponents({
+      runtime: { comfy: { path: rootDir, modelsPath }, dataDir: path.join(rootDir, 'mix-data') },
+      settings: {},
+      components: ['video4k'],
+      report: (phase, message, detail) => reports.push({ phase, message, detail }),
+      options: {
+        run: async (command, args) => {
+          commands.push([command, args]);
+          if (args[0] === 'clone') {
+            fs.mkdirSync(path.join(nodePath, '.git'), { recursive: true });
+            fs.writeFileSync(requirementsPath, 'nvidia-vfx\n');
+          }
+          if (args.includes('freeze')) return 'torch==2.9.1\nnumpy==2.2.6';
+          return '';
+        },
+      },
+    });
+
+    assert.deepEqual(result.components, ['video4k']);
+    assert.equal(result.completed, 1);
+    assert.equal(result.total, 1);
+    assert.equal(result.restartRequired, true);
+    assert.deepEqual(commands.find(([, args]) => args[0] === 'clone'), [
+      'git', ['clone', NODE_PACKS.rtx.repo, nodePath],
+    ]);
+    assert.deepEqual(commands.find(([, args]) => args.includes('checkout')), [
+      'git', ['-C', nodePath, 'checkout', '--detach', NODE_PACKS.rtx.ref],
+    ]);
+    const requirementsInstall = commands.find(([command, args]) => (
+      command === pythonPath && args.includes('install') && args.includes(requirementsPath)
+    ));
+    assert.ok(requirementsInstall, 'nvidia-vfx requirements are installed into the connected ComfyUI Python');
+    assert.deepEqual(requirementsInstall[1].slice(-2), ['-r', requirementsPath]);
+    assert.equal(fs.readFileSync(requirementsPath, 'utf8'), 'nvidia-vfx\n');
+    assert.ok(reports.some((entry) => entry.phase === 'requirements' && /NVIDIA RTX Nodes/.test(entry.message)));
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
 test('uv is bootstrapped into the ComfyUI Python environment with a clear failure code', async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixbox-uv-bootstrap-'));
   const pythonPath = path.join(rootDir, 'python.exe');
@@ -285,13 +345,25 @@ test('Apple LTX setup selects the official BF16 checkpoint', () => {
 test('MiniMax H3 Turbo installer routes exact managed filenames and keeps custom adapters check-only', async () => {
   const v4Name = 'minimax_h3_turbo_v4_step600_ema.safetensors';
   const legacyName = 'minimax_h3_turbo_4step_ema_ckpt850.safetensors';
+  const lightxName = 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors';
+  const lightx4Name = 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors';
   const v4 = dependencyModelPlan(['h3Turbo'], { h3TurboLora: v4Name });
   const legacy = dependencyModelPlan(['h3Turbo'], { h3TurboLora: legacyName });
+  const lightx = dependencyModelPlan(['h3Turbo'], { h3TurboLora: lightxName });
+  const lightxReference = dependencyModelPlan(['h3RefTurbo'], { h3RefTurboLora: lightxName });
+  const lightx4 = dependencyModelPlan(['h3Turbo'], { h3TurboLora: lightx4Name });
+  const lightx4Reference = dependencyModelPlan(['h3RefTurbo'], { h3RefTurboLora: lightx4Name });
   const legacySubfolder = dependencyModelPlan(['h3Turbo'], { h3TurboLora: `MiniMax\\${legacyName}` });
   const custom = dependencyModelPlan(['h3Turbo'], { h3TurboLora: 'my-reviewed-h3-turbo.safetensors' });
   assert.match(v4.assets[0][2], new RegExp(`${v4Name.replaceAll('.', '\\.')}$`));
   assert.match(legacy.assets[0][2], new RegExp(`${legacyName.replaceAll('.', '\\.')}$`));
   assert.match(legacySubfolder.assets[0][2], new RegExp(`${legacyName.replaceAll('.', '\\.')}$`));
+  assert.match(lightx.assets[0][2], new RegExp(`/lightx2v/Minimax-h3-Turbo/resolve/[0-9a-f]{40}/${lightxName.replaceAll('.', '\\.')}$`));
+  assert.equal(lightxReference.assets[0][0], 'h3RefTurboLora');
+  assert.match(lightxReference.assets[0][2], new RegExp(`${lightxName.replaceAll('.', '\\.')}$`));
+  assert.match(lightx4.assets[0][2], new RegExp(`${lightx4Name.replaceAll('.', '\\.')}$`));
+  assert.equal(lightx4Reference.assets[0][0], 'h3RefTurboLora');
+  assert.match(lightx4Reference.assets[0][2], new RegExp(`${lightx4Name.replaceAll('.', '\\.')}$`));
   assert.equal(custom.assets[0][5]?.checkOnly, true);
   assert.equal(custom.effectiveSettings.h3TurboLora, 'my-reviewed-h3-turbo.safetensors');
 
@@ -451,39 +523,6 @@ test('dependency planning adopts a compatible Krea text encoder already register
   });
   assert.equal(plan.effectiveSettings.clip, compatible);
   assert.equal(plan.settingUpdates.clip, compatible);
-});
-
-test('Intel Arc H3 setup substitutes INT8 ConvRot for NVFP4 AWQ', () => {
-  const plan = dependencyModelPlan(['h3'], {}, { gpuVendor: 'intel' });
-  const clipAsset = plan.assets.find((asset) => asset[0] === 'h3Clip');
-  assert.ok(clipAsset);
-  assert.match(clipAsset[2], /int8_convrot/);
-  assert.doesNotMatch(clipAsset[2], /nvfp4_awq/);
-});
-
-test('Intel Arc respects explicit uncensored H3 text encoder selection', () => {
-  const plan = dependencyModelPlan(['h3'], {}, {
-    gpuVendor: 'intel',
-    modelVariants: { h3: 'int8-convrot-uncensored' },
-  });
-  const clipAsset = plan.assets.find((asset) => asset[0] === 'h3Clip');
-  assert.ok(clipAsset);
-  assert.match(clipAsset[2], /heretic/);
-});
-
-test('NVIDIA H3 keeps NVFP4 AWQ by default but supports uncensored override', () => {
-  const autoPlan = dependencyModelPlan(['h3'], {}, { gpuVendor: 'nvidia' });
-  const autoClip = autoPlan.assets.find((asset) => asset[0] === 'h3Clip');
-  assert.ok(autoClip);
-  assert.match(autoClip[2], /nvfp4_awq/);
-
-  const uncensoredPlan = dependencyModelPlan(['h3'], {}, {
-    gpuVendor: 'nvidia',
-    modelVariants: { h3: 'int8-convrot-uncensored' },
-  });
-  const uncensoredClip = uncensoredPlan.assets.find((asset) => asset[0] === 'h3Clip');
-  assert.ok(uncensoredClip);
-  assert.match(uncensoredClip[2], /heretic/);
 });
 
 test('large Hugging Face models use isolated Xet acceleration before the HTTP fallback', async () => {
@@ -1204,6 +1243,31 @@ test('node installs constrain only the protected runtime instead of freezing pac
   assert.doesNotMatch(constraints, /setuptools|pip|diffusers|transformers/i);
 });
 
+test('runtime constraints discard stale local wheel references without splitting Windows paths', () => {
+  const constraints = protectedRuntimeConstraints([
+    'numpy @ file:///D:/a/ComfyUI/cu130_python_deps/numpy-2.5.1-cp313-cp313-win_amd64.whl',
+    'torch @ file:///Z:/Stable_Diffusion/Mix Studio/python_embeded/torch-2.9.1.whl',
+    'torchvision==0.24.1+cu130',
+    'torchaudio===2.9.1+cu130',
+    'opencv-python==4.12.0.88',
+    'diffusers==0.39.0',
+  ].join('\n'));
+  assert.doesNotMatch(constraints, /file:|D:\/a|Mix Studio|numpy|(?:^|\n)torch\s*@/i);
+  assert.match(constraints, /^torchvision==0\.24\.1\+cu130$/m);
+  assert.match(constraints, /^torchaudio===2\.9\.1\+cu130$/m);
+  assert.match(constraints, /^opencv-python==4\.12\.0\.88$/m);
+  assert.doesNotMatch(constraints, /diffusers/);
+
+  const requirements = 'Z:\\Stable_Diffusion\\Mix Studio\\custom_nodes\\SeedVR2\\requirements.txt.mixbox-safe';
+  const constraintFile = 'Z:\\Stable_Diffusion\\Mix Studio\\data\\dependency-backups\\runtime-constraints.txt';
+  assert.deepEqual(requirementsArgs(requirements, false, { constraintFile }).slice(-4), [
+    '--constraint', constraintFile, '-r', requirements,
+  ]);
+  assert.deepEqual(uvRequirementsArgs(requirements, 'Z:\\Stable_Diffusion\\ComfyUI\\python_embeded\\python.exe', false, { constraintFile }).slice(-4), [
+    '--constraint', constraintFile, '-r', requirements,
+  ]);
+});
+
 test('repair requirements never reinstall ComfyUI runtime packages from PyPI', () => {
   const filtered = filterProtectedRuntimeRequirements([
     'torch', 'torchvision>=0.20', 'torchaudio==2.0', 'numpy',
@@ -1247,140 +1311,6 @@ test('BFS optional audio import is guarded idempotently', async () => {
     assert.match(patched, /try:\n    from \.amv_guide_node/);
     assert.match(patched, /AMV Guide node not loaded/);
     assert.equal(await patchBfsOptionalAudio(nodePath), false);
-  } finally {
-    fs.rmSync(nodePath, { recursive: true, force: true });
-  }
-});
-
-test('SeedVR2 node is patched for Intel XPU and Windows cp1252 console', async () => {
-  const nodePath = fs.mkdtempSync(path.join(os.tmpdir(), 'mixbox-seedvr2-patch-'));
-  try {
-    // compatibility.py: emoji status prints at module import time.
-    const compatFile = path.join(nodePath, 'src', 'optimization', 'compatibility.py');
-    fs.mkdirSync(path.dirname(compatFile), { recursive: true });
-     fs.writeFileSync(compatFile, [
-      'sage_status = "\u2705" if SAGE_ATTN_AVAILABLE else "\u274c"',
-      '# Log all optimization status once globally (cross-process) using environment variable',
-      'def _probe_bfloat16_support():',
-      '    """Probe bfloat16 tensor creation on the primary accelerator."""',
-      '    return torch.randn(8, 8, dtype=torch.bfloat16, device=\'cuda:0\')',
-      'if num_available == 3:',
-      '    print(f"\u26a1 SeedVR2 optimizations check: ...")',
-      'elif num_available == 0:',
-      '    print(f"\u26a0\ufe0f  SeedVR2 optimizations check: ...")',
-      '    print("\ud83d\udca1 For best performance: pip install sageattention flash-attn triton")',
-      'else:',
-      '    icon = "\u26a1" if num_available >= 2 else "\u26a0\ufe0f "',
-      '    print(f"{icon} SeedVR2 optimizations check: ...")',
-      '    print(f"\ud83d\udca1 Optional: pip install ...")',
-      '    print(f"\ud83d\udd27 Conv3d workaround active: ...")',
-    ].join('\r\n'));
-
-    // __init__.py: must expose the comfy_entrypoint import so the V1 mapping
-    // shim can be injected next to it.
-    const initFile = path.join(nodePath, '__init__.py');
-    fs.writeFileSync(initFile, [
-      'from .src.optimization.compatibility import ensure_triton_compat  # noqa: F401',
-      'from .src.interfaces import comfy_entrypoint, SeedVR2Extension',
-      '',
-      '__all__ = ["comfy_entrypoint", "SeedVR2Extension"]',
-    ].join('\r\n'));
-
-    // memory_manager.py: CUDA/MPS-only device enumeration + emoji VRAM prints.
-    const memFile = path.join(nodePath, 'src', 'optimization', 'memory_manager.py');
-    fs.mkdirSync(path.dirname(memFile), { recursive: true });
-    fs.writeFileSync(memFile, [
-      'import torch',
-      'from typing import Tuple, Dict, Any, Optional, List, Union',
-      '',
-      'def is_cuda_available() -> bool:',
-      '    return torch.cuda.is_available()',
-      '',
-      'def is_mps_available() -> bool:',
-      '    """Check if MPS (Apple Metal) backend is available."""',
-      '    return hasattr(torch.backends, \'mps\') and torch.backends.mps.is_available()',
-      '',
-      'def get_device_list(include_none=False, include_cpu=False):',
-      '    devs = []',
-      '    has_cuda = False',
-      '    has_mps = False',
-      '    try:',
-      '        if is_cuda_available():',
-      '            devs += [f"cuda:{i}" for i in range(torch.cuda.device_count())]',
-      '            has_cuda = True',
-      '    except Exception:',
-      '        pass',
-      '    try:',
-      '        if is_mps_available():',
-      '            devs.append("mps")  # MPS doesn\'t use device indices',
-      '            has_mps = True',
-      '    except Exception:',
-      '        pass',
-      '    result = []',
-      '    if include_none:',
-      '        result.append("none")',
-      '    if include_cpu and (has_cuda or not has_mps):',
-      '        result.append("cpu")',
-      '    result.extend(devs)',
-      '',
-      '    return result if result else []',
-      '',
-      'def get_basic_vram_info(device=None):',
-      '    if is_cuda_available():',
-      '        free_memory, total_memory = torch.cuda.mem_get_info(device)',
-      '    elif is_mps_available():',
-      '        mem = psutil.virtual_memory()',
-      '        free_memory = mem.total - mem.used',
-      '        total_memory = mem.total',
-      '    else:',
-      '        return {"error": "No GPU backend available (CUDA/MPS)"}',
-      '    return {"free_gb": free_memory, "total_gb": total_memory}',
-      '',
-      'def get_vram_usage(device=None):',
-      '    if is_cuda_available():',
-      '        allocated = torch.cuda.memory_allocated(device)',
-      '        return allocated, reserved, peak_allocated, peak_reserved',
-      '    elif is_mps_available():',
-      '        # MPS doesn\'t support per-device queries - uses global memory tracking',
-      '        allocated = torch.mps.current_allocated_memory()',
-      '        return allocated, reserved, allocated, reserved',
-      '',
-      'backend = "MPS" if is_mps_available() else "CUDA"',
-      'print(f"\ud83d\udcca Initial {backend} memory: ...")',
-      'print(f"\u26a0\ufe0f Memory check failed: ...")',
-    ].join('\r\n'));
-
-    assert.equal(await patchSeedVr2Xpu(nodePath), true);
-
-    const compat = fs.readFileSync(compatFile, 'utf8');
-    assert.doesNotMatch(compat, /\u2705|\u274c|\u26a1|\ud83d\udca1|\ud83d\udd27/);
-    assert.match(compat, /\[SeedVR2\] optimizations check:/);
-    assert.match(compat, /def _seedvr2_safe_print/);
-    assert.match(compat, /torch\.cuda\.is_available\(\)/);
-    assert.match(compat, /torch\.xpu\.is_available\(\)/);
-    assert.match(compat, /torch\.randn\(8, 8, dtype=torch\.bfloat16, device=\('cuda:0' if torch\.cuda\.is_available\(\) else \('xpu:0' if hasattr\(torch, 'xpu'\) and torch\.xpu\.is_available\(\) else 'cpu'\)\)\)/);
-    assert.doesNotMatch(compat, /device='cuda:0'/);
-
-    const mem = fs.readFileSync(memFile, 'utf8');
-    assert.match(mem, /def is_xpu_available\(\) -> bool:/);
-    assert.match(mem, /torch\.xpu\.is_available\(\)/);
-    assert.match(mem, /has_xpu = True/);
-    assert.match(mem, /if include_cpu and \(has_cuda or has_xpu or not has_mps\):/);
-    assert.match(mem, /elif is_xpu_available\(\):/);
-    assert.match(mem, /_seedvr2_safe_print\(f"\[SeedVR2\] Initial/);
-    // No empty-device crash: at least one device is guaranteed.
-    assert.match(mem, /if not devs:\n        devs = \["cpu"\]/);
-
-    // __init__.py exposes the V3 classes via the classic NODE_CLASS_MAPPINGS
-    // path so this ComfyUI build registers them in /object_info.
-    const initFile2 = path.join(nodePath, '__init__.py');
-    const init = fs.readFileSync(initFile2, 'utf8');
-    assert.match(init, /\[mixstudio\] seedvr2 v1 mappings/);
-    assert.match(init, /"SeedVR2LoadDiTModel": SeedVR2LoadDiTModel/);
-    assert.match(init, /"SeedVR2VideoUpscaler": SeedVR2VideoUpscaler/);
-
-    // Idempotent: a second run must be a no-op.
-    assert.equal(await patchSeedVr2Xpu(nodePath), false);
   } finally {
     fs.rmSync(nodePath, { recursive: true, force: true });
   }

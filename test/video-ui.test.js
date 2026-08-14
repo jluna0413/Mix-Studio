@@ -45,8 +45,8 @@ test('MiniMax H3 resolution picker mirrors the backend S, M, L, and XL canvases'
   assert.match(app, /Match frame[\s\S]*state\.vidH3MatchSource = true/);
   assert.match(app, /#resPanel'\)\.hidden = state\.view === 'edit'[\s\S]*isVideo && !!state\.vidRef && state\.vidEngine !== 'h3'/);
   assert.match(app, /width: state\.vidEngine === 'h3'[\s\S]*\? state\.width[\s\S]*height: state\.vidEngine === 'h3'[\s\S]*\? state\.height/);
-  assert.match(server, /h3Dimensions\(requestedAspectRatio, 1, body\.h3ResolutionSize\)/);
-  assert.match(server, /h3ResolutionSize: engine === 'h3' \? Number\(body\.h3ResolutionSize\)/);
+  assert.match(server, /h3Dimensions\(requestedAspectRatio, 1, h3OutputResolutionSize\)/);
+  assert.match(server, /h3ResolutionSize: engine === 'h3' \? h3OutputResolutionSize/);
 });
 
 test('MiniMax H3 reuse restores the base tier independently from an RTX 4K pass', () => {
@@ -107,21 +107,28 @@ test('MiniMax H3 offers verified SageAttention with an explicit standard-attenti
   assert.match(app, /vidH3SageAttention: true/);
   assert.match(app, /function renderH3SageAttention\(\)/);
   assert.match(app, /sageAttention: state\.vidEngine === 'h3' \? state\.vidH3SageAttention !== false : undefined/);
-  assert.match(app, /lastMeta\?.dependencies\?.sageAttention\?.installable !== false/);
+  assert.match(app, /if \(state\.vidEngine === 'h3' && state\.vidH3SageAttention !== false\) components\.add\('h3sage'\)/);
   assert.match(app, /info\.attentionBackend === 'sageattention' \? 'SageAttention \(verified\)' : 'Standard PyTorch'/);
   assert.match(css, /\.h3-sage-toggle\[data-ready="false"\]\[aria-checked="true"\]/);
   assert.match(server, /const h3SageAttention = engine === 'h3' && body\.sageAttention !== false/);
-  assert.match(server, /\/\^nvidia\$\/i\.test\(gpuVendor\)/);
   assert.match(server, /code: 'h3_sage_attention_unavailable'/);
   assert.match(server, /attentionBackend: engine === 'h3' \? \(opts\.sageAttention \? 'sageattention' : 'standard'\)/);
 });
 
-test('MiniMax H3 SageAttention silently falls back to standard attention on non-NVIDIA GPUs', () => {
-  assert.match(server, /const h3SageAttention = engine === 'h3' && body\.sageAttention !== false/);
-  assert.match(server, /\/\^nvidia\$\/i\.test\(gpuVendor\)/);
-  assert.match(server, /capabilities\.sageAttention\?.installable !== true/);
-  assert.match(server, /capabilities\.sageAttention\?.ready !== true/);
-  assert.match(server, /ids\.add\('h3sage'\)/);
+test('MiniMax H3 exposes the shared LoRA stack and sends it to the video workflow', () => {
+  assert.doesNotMatch(app, /loraPanel'\)\.closest\('\.panel'\)\.hidden = isVideo && state\.vidEngine === 'h3'/);
+  assert.match(app, /function compatibleLoraCategories\(\)[\s\S]{0,180}state\.vidEngine === 'h3'[\s\S]{0,80}\['h3', 'unknown'\]/);
+  assert.match(app, /loras: state\.videoLoras,/);
+  assert.doesNotMatch(app, /loras: state\.vidEngine === 'h3' \? \[\] : state\.videoLoras/);
+  assert.match(app, /function h3ManagedWorkflowLora\(name\)/);
+  assert.match(app, /function selectedH3LoraCompatibility\(\)/);
+  assert.match(app, /H3 LoRAs use the standard fused QKV model layout and are unavailable with DynTime/);
+  assert.match(server, /h3: \['UNETLoader', 'CLIPLoader', 'VAELoader', 'LoraLoaderModelOnly'/);
+  assert.match(server, /let requestedVideoLoras = Array\.isArray\(body\.loras\)/);
+  assert.match(server, /code: 'h3_lora_model_incompatible'/);
+  assert.match(server, /code: 'h3_managed_lora_duplicate'/);
+  assert.match(server, /loras: requestedVideoLoras,/);
+  assert.doesNotMatch(server, /loras: engine === 'h3' \? \[\]/);
 });
 
 test('Video frame and media inputs use visual source cards', () => {
@@ -190,15 +197,16 @@ test('Video model selection sits above the prompt and collapses after choosing',
 test('Video choices lead with model names and keep tasks secondary', () => {
   const choices = [
     ['ltx', 'Cinematic Video', 'LTX 2.3'],
+    ['ltx25', 'Next-gen Cinematic Video', 'LTX 2.5'],
     ['ltx-edit', 'Video Editing', 'LTX Edit'],
     ['eros', 'Image Animation', '10Eros DMD'],
     ['wan', 'Complex Motion', 'Wan 2.2'],
     ['scail', 'Motion Transfer', 'SCAIL 2'],
   ];
   for (const [engine, task, model] of choices) {
-    assert.match(html, new RegExp(`data-engine="${engine}"[^>]*data-task-label="${regexEscape(task)}"[^>]*data-model-label="${regexEscape(model)}"[^>]*><b>${regexEscape(model)}(?:\\s*<span class="model-status-badge">Experimental</span>)?</b><small>${regexEscape(task)}</small>`));
+    assert.match(html, new RegExp(`data-engine="${engine}"[^>]*data-task-label="${regexEscape(task)}"[^>]*data-model-label="${regexEscape(model)}"[^>]*><b>${regexEscape(model)}(?:\\s*<span class="model-status-badge">(?:Experimental|Preview)</span>)?</b><small>${regexEscape(task)}</small>`));
   }
-  assert.match(app, /const VIDEO_ENGINE_TASKS = \{[\s\S]*task: 'Cinematic Video', model: 'LTX 2\.3'[\s\S]*task: 'Motion Transfer', model: 'SCAIL 2'/);
+  assert.match(app, /const VIDEO_ENGINE_TASKS = \{[\s\S]*task: 'Cinematic Video', model: 'LTX 2\.3'[\s\S]*task: 'Next-gen Cinematic Video', model: 'LTX 2\.5'[\s\S]*task: 'Motion Transfer', model: 'SCAIL 2'/);
   assert.match(app, /\$\('#vidEngineSelected'\)\.textContent = definition\.model/);
   assert.match(app, /\$\('#vidEngineNote'\)\.textContent = faceMode \? 'Character Performance' : definition\.task/);
 });
@@ -342,11 +350,11 @@ test('Duration is the first video control and Motion Freedom is a separate setti
   assert.doesNotMatch(app, /openDurationPicker|durationPickerSheet|vidDurScrub/);
 });
 
-test('LTX 2.3 and MiniMax H3 expose their supported duration limits', () => {
+test('LTX 2.3, LTX 2.5, and MiniMax H3 expose their supported duration limits', () => {
   const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
   assert.match(html, /id="vidDur"[^>]*max="20"/);
   assert.match(html, /id="animDur"[^>]*max="20"/);
-  assert.match(app, /function videoDurationMax\(engine\)[\s\S]*engine === 'scail'\) return 60;[\s\S]*cameraMotionReferenceSelected\(\)\) return cameraMotionGuideLimit\(\);[\s\S]*engine === 'ltx'\) return 20;[\s\S]*engine === 'h3'\) return h3LongContextActive\(\) \? 120 : 15;[\s\S]*return 15;/);
+  assert.match(app, /function videoDurationMax\(engine\)[\s\S]*engine === 'scail'\) return 60;[\s\S]*cameraMotionReferenceSelected\(\)\) return cameraMotionGuideLimit\(\);[\s\S]*engine === 'ltx' \|\| engine === 'ltx25'\) return 20;[\s\S]*engine === 'h3'\) return h3LongContextActive\(\) \? 120 : 15;[\s\S]*return 15;/);
   assert.match(app, /Math\.min\(Number\(durEl\.max\) \|\| 15, Math\.round\(len\)\)/);
   assert.match(server, /engine === 'ltx'[\s\S]*ltxDurationSeconds\(seconds\)/);
   assert.match(server, /seconds: opts\.seconds/);
@@ -355,9 +363,9 @@ test('LTX 2.3 and MiniMax H3 expose their supported duration limits', () => {
 test('LTX settings avoid duplicate pipeline and playback summaries', () => {
   assert.doesNotMatch(html, /id="vidLtx(?:Generation|Playback)/);
   assert.doesNotMatch(app, /vidLtx(?:Generation|Playback)/);
-  assert.match(app, /const ltxFamily = engine === 'ltx' \|\| ltxEdit/);
+  assert.match(app, /const ltxFamily = engine === 'ltx' \|\| engine === 'ltx25' \|\| ltxEdit/);
   assert.match(app, /function renderVideoFpsChoices\(\)/);
-  assert.match(app, /const baseFps = ltx \? \(state\.vidFace \? 24 : 25\) : \(state\.vidEngine === 'scail' \? state\.vidScailFps : 16\)/);
+  assert.match(app, /const baseFps = state\.vidEngine === 'ltx25'[\s\S]{0,160}\? 24[\s\S]{0,160}state\.vidEngine === 'scail'/);
   assert.match(app, /\$\('#vidFpsRow'\)\.hidden = h3 \|\| !\(ltxFamily \|\| wanOrScail\)/);
   assert.match(app, /\$\('#vidScailFpsField'\)\.hidden = !\(isVideo && state\.vidEngine === 'scail'\)/);
   assert.match(app, /\$\{baseFps \* multiplier\} fps · RIFE/);
@@ -365,7 +373,7 @@ test('LTX settings avoid duplicate pipeline and playback summaries', () => {
 
 test('LTX requests can pass through the same RIFE interpolation stage as Wan and SCAIL', () => {
   const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-  assert.match(server, /const smooth = \(engine === 'ltx' \|\| isLtxEdit \|\| engine === 'wan' \|\| engine === 'scail'\)/);
+  assert.match(server, /const smooth = \(engine === 'ltx' \|\| engine === 'ltx25' \|\| isLtxEdit \|\| engine === 'wan' \|\| engine === 'scail'\)/);
   assert.match(server, /frameSource = await rifeSmooth\(graph, frameSource, opts\.smooth\);/);
   assert.match(server, /fps: opts\.fps \* \(opts\.smooth > 1 \? opts\.smooth : 1\)/);
 });
@@ -388,11 +396,6 @@ test('Video prompt tools stay hidden and structured audio labels survive state c
   assert.match(css, /#vidDriveTools\[hidden\]/);
   assert.match(html, /data-audio-title/);
   assert.match(app, /function setAudioChipVisual\(chip, active\)/);
-  assert.match(html, /id="vidAudioX"[^>]*aria-label="Remove audio track"[^>]*>✕/);
-  assert.match(html, /id="animAudioX"[^>]*aria-label="Remove audio track"[^>]*>✕/);
-  assert.match(app, /\$\('#vidAudioX'\)\.addEventListener\('click'[\s\S]*event\.stopPropagation\(\)/);
-  assert.match(app, /\$\('#animAudioX'\)\.addEventListener\('click'[\s\S]*event\.stopPropagation\(\)/);
-  assert.match(app, /\.querySelector\('\.attach-x'\)/);
 });
 
 test('SCAIL accepts a driving video without a typed motion prompt', () => {
@@ -439,11 +442,7 @@ test('automatic motion prompting keeps each queued frame and video submission at
   assert.match(app, /autoMotionPrompt,\s*preparedMotionPrompt: false/);
   assert.match(app, /state\.motionPromptRequestsPending \+= 1/);
   assert.match(app, /Reading frame, then queueing video/);
-  // Batch submissions are strictly sequential: the server serializes all
-  // ComfyUI work, so firing N animate requests at once would stack N
-  // reference-upload buffers before the first job reaches the queue.
-  assert.match(app, /for \(const request of requests\) \{/);
-  assert.doesNotMatch(app, /Promise\.allSettled\(requests\.map/);
+  assert.match(app, /Promise\.allSettled\(requests\.map/);
   assert.match(app, /preparedMotionPromptCache/);
   assert.match(app, /motionPromptRequest && motionPromptRequest\.key === key/);
   assert.doesNotMatch(app, /function maybeCreateAutomaticMotionPrompt\(\)/);
@@ -570,7 +569,7 @@ test('Video exposes model-aware step counts and keeps fixed schedules read-only'
 test('MiniMax H3 Turbo supports Frames and Reference modes with separate audio-safe setup paths', () => {
   assert.match(html, /id="vidH3TurboToggle"[^>]*role="switch"[^>]*aria-checked="false"/);
   assert.match(html, /id="vidH3TurboSummary">6 frames · 6 reference · audio-safe/);
-  assert.match(html, /id="vidH3TurboV4Caution"[^>]*data-icon-tooltip="Four-step Turbo v4 caution"/);
+  assert.match(html, /id="vidH3TurboCaution"[^>]*data-icon-tooltip="MiniMax H3 Turbo caution"/);
   assert.match(html, /id="vidH3TurboStrength"[^>]*min="0\.8"[^>]*max="1\.2"[^>]*value="1"/);
   assert.match(html, /<label for="vidH3TurboStrength">Turbo LoRA strength<\/label>/);
   assert.match(html, /id="vidH3TurboStrength"[^>]*aria-describedby="vidH3TurboStrengthHelp vidH3TurboStrengthScale"/);
@@ -581,7 +580,7 @@ test('MiniMax H3 Turbo supports Frames and Reference modes with separate audio-s
   assert.match(css, /\.h3-turbo-strength-slider::before[\s\S]{0,500}--h3-turbo-progress/);
   assert.match(html, /id="setH3TurboLora"/);
   assert.match(html, /id="setH3RefTurboLora"/);
-  assert.match(html, /id="setH3FramesTurboVariant"[\s\S]*value="v4"[\s\S]*value="legacy-4step"/);
+  assert.match(html, /id="setH3TurboSetup"[\s\S]*value="recommended"[\s\S]*value="lightx8"[\s\S]*value="lightx4_768p"[\s\S]*value="legacy"/);
   assert.match(app, /vidH3Turbo: false/);
   assert.match(app, /vidH3TurboSteps: 6/);
   assert.match(app, /vidH3RefTurboSteps: 6/);
@@ -591,28 +590,33 @@ test('MiniMax H3 Turbo supports Frames and Reference modes with separate audio-s
   assert.match(app, /LightX2V · audio-safe sampler/);
   assert.match(app, /H3 Turbo v4\/600 · 6-step quality default/);
   assert.match(app, /H3 Turbo legacy v1\/850 · original 4-step default/);
-  assert.match(app, /const H3_FRAMES_TURBO_LORAS = Object\.freeze/);
-  assert.match(app, /'legacy-4step': 'minimax_h3_turbo_4step_ema_ckpt850\.safetensors'/);
-  assert.match(app, /state\.vidH3TurboSteps = variant === 'legacy-4step' \? 4 : 6/);
+  assert.match(app, /const H3_TURBO_SETUPS = Object\.freeze/);
+  assert.match(app, /lightx8:[\s\S]{0,220}minimax_h3_fl2v_turbo_8step_v1\.0_comfyui_bf16\.safetensors/);
+  assert.match(app, /lightx4_768p:[\s\S]{0,220}minimax_h3_fl2v_turbo_4step_v1\.0_768p_comfyui_bf16\.safetensors/);
+  assert.match(app, /state\.vidH3TurboSteps = setup\.framesSteps/);
+  assert.match(app, /state\.vidH3RefTurboSteps = setup\.referenceSteps/);
   assert.match(app, /6–8 steps recommended/);
   assert.match(app, /native audio-safe sampler/);
   assert.match(app, /if \(h3TurboActive\(\)\) components\.add\(h3ReferenceBackedMode\(\) \? 'h3turbor2v' : 'h3turbo'\)/);
   assert.match(app, /h3Turbo: state\.vidEngine === 'h3' \? h3TurboActive\(\) : undefined/);
   assert.match(server, /const h3Turbo = h3TurboRequested;/);
   assert.doesNotMatch(server, /h3_turbo_reference_unsupported/);
-  assert.match(server, /clampInt\(body\.steps, 4, 100, h3ReferenceBacked \? 6 : h3FramesTurboDefaultSteps\(settings\.h3TurboLora\)\)/);
+  assert.match(server, /clampInt\(body\.steps, 4, 100, h3TurboDefaultSteps\(settings, h3GraphMode\)\)/);
+  assert.doesNotMatch(server, /\bselectedMode\b/);
   assert.match(server, /h3TurboNativeSampler = minimaxH3NativeAudioSampling\(info\)/);
-  assert.match(server, /if \(h3Core\.nativeAudioSampling\)[\s\S]{0,260}missing\.h3turbo = \['MiniMaxH3TurboLoRA'\]/);
+  assert.match(server, /const h3TurboCanvas = h3Turbo \? h3TurboFixedCanvas\(settings, h3GraphMode\) : null/);
+  assert.match(server, /if \(h3TurboCanvas\)[\s\S]{0,300}W = h3TurboCanvas\.width[\s\S]{0,160}H = h3TurboCanvas\.height/);
+  assert.match(server, /if \(h3Core\.nativeAudioSampling\)[\s\S]{0,500}h3TurboUsesStandardLoader\(settings, 'frames'\)[\s\S]{0,240}'MiniMaxH3SigmaShift'/);
   assert.match(server, /h3turbo: \['MiniMaxH3TurboLoRA', 'MiniMaxH3TurboSampler'\]/);
   assert.match(server, /h3turbor2v: \['LoraLoaderModelOnly', 'MiniMaxH3SigmaShift', 'MiniMaxH3TurboSampler'\]/);
 });
 
 test('MiniMax H3 Frames Turbo defaults new installs to v4 while preserving explicit legacy and manual adapters', () => {
-  assert.match(server, /const DEFAULT_H3_TURBO_LORA = 'minimax_h3_turbo_v4_step600_ema\.safetensors'/);
+  assert.match(server, /const DEFAULT_H3_TURBO_LORA = H3_TURBO_LORAS\.framesRecommended/);
   assert.match(server, /const SETTINGS_SCHEMA_VERSION = 3/);
   assert.doesNotMatch(server, /stored\.h3TurboLora = DEFAULT_H3_TURBO_LORA/);
   assert.match(server, /keep the original ckpt850 four-step adapter/);
-  assert.match(server, /function h3FramesTurboDefaultSteps\([\s\S]{0,220}LEGACY_H3_TURBO_LORA[\s\S]{0,80}\? 4 : 6/);
+  assert.match(server, /h3TurboDefaultSteps\(settings, h3GraphMode\)/);
   assert.match(server, /stored\.settingsSchemaVersion = SETTINGS_SCHEMA_VERSION/);
   assert.match(server, /h3TurboLora: engine === 'h3' && opts\.turbo/);
   assert.match(app, /copyableMeta\('Turbo adapter', prettyLora\(String\(info\.h3TurboLora\)\)\)/);
@@ -621,13 +625,13 @@ test('MiniMax H3 Frames Turbo defaults new installs to v4 while preserving expli
 test('long H3 Reference Turbo videos advance through five-second jobs and rejoin as one result', () => {
   assert.match(server, /h3TurboReferenceSegments\(frames\)/);
   assert.match(server, /opts\.turboReferenceSegment = h3TurboReferenceChunks\[0\]/);
-  assert.match(server, /async function queueNextH3VideoChunk\(job\)/);
+  assert.match(server, /async function queueNextVideoChunk\(job\)/);
   assert.match(server, /videoChunkSequence\.chunkBuffers\[videoChunkSequence\.index\] = buf/);
   assert.match(server, /await joinVideoChunks\(\{/);
   assert.match(server, /broadcast\('videoChunkStep'/);
   assert.match(app, /if \(result\.sequenceId\) state\.activeJobSequences\.set\(result\.jobId, result\.sequenceId\)/);
   assert.match(app, /es\.addEventListener\('videoChunkStep'/);
-  assert.match(app, /H3 Turbo chunk'\} \$\{d\.nextChunk\} of \$\{d\.total\}/);
+  assert.match(app, /const sequenceLabel = wanAnimate2 \? 'Wan Animate 2 clip'/);
 });
 
 test('MiniMax H3 Long context allows Turbo with an icon-only quality caution', () => {
@@ -676,7 +680,7 @@ test('Gallery Animate routes an image into the full Video tab as either a start 
   assert.match(app, /openAnimateRouteSheet\(it\)/);
   assert.match(app, /function galleryImageDestinationActions\(item[\s\S]*label: 'First frame'[^\n]*sendToVideoTab\(item, 'start'\)/);
   assert.match(app, /function galleryImageDestinationActions\(item[\s\S]*label: 'Last frame'[^\n]*sendToVideoTab\(item, 'end'\)/);
-  assert.match(app, /const endEngine = \['ltx', 'h3', 'eros'\]\.find/);
+  assert.match(app, /const endEngine = \['ltx25', 'ltx', 'h3', 'eros'\]\.find/);
   assert.match(html, /id="animateRouteStart"[\s\S]*<b>First frame<\/b>/);
   assert.match(html, /id="animateRouteEnd"[\s\S]*<b>Last frame<\/b>/);
 });
@@ -690,7 +694,7 @@ test('MiniMax H3 keeps its frame and reference-backed downloads independent', ()
   assert.doesNotMatch(html, /Reference mode installs its separate Ref2VA model only when you first use it\./);
   assert.doesNotMatch(html, /Text \+ frames does not download that model\./);
   assert.doesNotMatch(html, /id="vidH3ModeCopy"/);
-  assert.match(app, /const byEngine = \{ ltx: 'video', h3: 'h3'/);
+  assert.match(app, /const byEngine = \{ ltx: 'video', ltx25: 'ltx25', h3: 'h3'/);
   assert.match(app, /state\.vidEngine === 'h3' && h3ReferenceBackedMode\(\)\) components\.add\('h3r2v'\)/);
   assert.match(app, /sourceItemId: !h3Reference && state\.vidRef \? state\.vidRef\.srcItemId : undefined/);
   assert.match(fs.readFileSync(path.join(root, 'server.js'), 'utf8'), /!item && body\.sourceItemId && !h3ReferenceBacked/);

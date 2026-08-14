@@ -167,6 +167,81 @@ test('MiniMax H3 text-to-video does not synthesize placeholder keyframes', async
   assert.equal(graph.condition.inputs.last_frame, undefined);
 });
 
+test('MiniMax H3 applies ordered user LoRAs to the model used by its scheduler and guider', async () => {
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'frames', prompt: 'A dramatic close-up.', W: 1344, H: 768, frames: 124, seed: 7,
+    loras: [
+      { name: 'MiniMax-H3/realism.safetensors', strength: 0.8, on: true },
+      { name: 'MiniMax-H3/off.safetensors', strength: 1, on: false },
+      { name: 'MiniMax-H3/character.safetensors', strength: -0.25, on: true },
+      { name: 'MiniMax-H3/zero.safetensors', strength: 0, on: true },
+    ],
+  }, settings);
+
+  assert.deepEqual(graph.user_lora_1, {
+    class_type: 'LoraLoaderModelOnly',
+    inputs: {
+      model: ['model', 0],
+      lora_name: 'MiniMax-H3/realism.safetensors',
+      strength_model: 0.8,
+    },
+  });
+  assert.deepEqual(graph.user_lora_2.inputs, {
+    model: ['user_lora_1', 0],
+    lora_name: 'MiniMax-H3/character.safetensors',
+    strength_model: -0.25,
+  });
+  assert.deepEqual(graph.user_lora_3.inputs, {
+    model: ['user_lora_2', 0],
+    lora_name: 'MiniMax-H3/zero.safetensors',
+    strength_model: 0,
+  });
+  assert.equal(graph.user_lora_4, undefined);
+  assert.deepEqual(graph.scheduler.inputs.model, ['user_lora_3', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['user_lora_3', 0]);
+});
+
+test('MiniMax H3 user LoRAs stack after Frames Turbo and before native AV sampling and SageAttention', async () => {
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'frames', prompt: 'A singer performs.', W: 1344, H: 768, frames: 124, seed: 17,
+    turbo: true, turboNativeSampler: true, sageAttention: true,
+    loras: [{ name: 'MiniMax-H3/stage-light.safetensors', strength: 1.15, on: true }],
+  }, settings);
+
+  assert.deepEqual(graph.turbo_lora.inputs.model, ['model', 0]);
+  assert.deepEqual(graph.user_lora_1.inputs.model, ['turbo_lora', 0]);
+  assert.deepEqual(graph.turbo_sampling.inputs.model, ['user_lora_1', 0]);
+  assert.deepEqual(graph.scheduler.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.sage_attention.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['sage_attention', 0]);
+});
+
+test('MiniMax H3 user LoRAs stack after Reference Turbo and before its audio-safe sigma shift', async () => {
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'reference', prompt: 'Use <Picture 1>.', W: 1344, H: 768, frames: 124, seed: 17,
+    turbo: true,
+    references: { images: [{ name: 'hero.png' }] },
+    loras: [{ name: 'MiniMax-H3/film-look.safetensors', strength: 0.65, on: true }],
+  }, settings);
+
+  assert.deepEqual(graph.turbo_lora.inputs.model, ['model', 0]);
+  assert.deepEqual(graph.user_lora_1.inputs.model, ['turbo_lora', 0]);
+  assert.deepEqual(graph.turbo_sampling.inputs.model, ['user_lora_1', 0]);
+  assert.deepEqual(graph.scheduler.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['turbo_sampling', 0]);
+});
+
+test('MiniMax H3 rejects standard fused-QKV LoRAs with the experimental DynTime model', async () => {
+  await assert.rejects(buildMiniMaxH3Graph({
+    mode: 'reference', prompt: 'Use <Picture 1>.', W: 1344, H: 768, frames: 124, seed: 17,
+    references: { images: [{ name: 'hero.png' }] },
+    loras: [{ name: 'MiniMax-H3/film-look.safetensors', strength: 1, on: true }],
+  }, Object.assign({}, settings, {
+    h3ReferenceModelVariant: 'dyntime',
+    h3DynTimeRefUnet: 'MiniMax-H3_Ref2VA-DT-sQKV-INT8-ConvRot.safetensors',
+  })), (error) => error?.code === 'h3_lora_model_incompatible');
+});
+
 test('MiniMax H3 Long context saves the first AV latent and continues later clips through the lossless latent path', async () => {
   const first = await buildMiniMaxH3Graph({
     mode: 'frames', prompt: 'A singer continues the performance.', W: 1344, H: 768,
@@ -298,7 +373,7 @@ test('MiniMax H3 Turbo uses native Euler sampling after ComfyUI audio scheduling
   }, settings);
 
   assert.equal(graph.turbo_sampler, undefined);
-  assert.deepEqual(graph.native_av_sampling, {
+  assert.deepEqual(graph.turbo_sampling, {
     class_type: 'MiniMaxH3SigmaShift',
     inputs: { model: ['turbo_lora', 0], shift_video: 12, shift_audio: 3 },
   });
@@ -307,8 +382,8 @@ test('MiniMax H3 Turbo uses native Euler sampling after ComfyUI audio scheduling
   });
   assert.equal(graph.scheduler.inputs.scheduler, 'simple');
   assert.equal(graph.scheduler.inputs.steps, 7);
-  assert.deepEqual(graph.scheduler.inputs.model, ['native_av_sampling', 0]);
-  assert.deepEqual(graph.guider.inputs.model, ['native_av_sampling', 0]);
+  assert.deepEqual(graph.scheduler.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['turbo_sampling', 0]);
   assert.deepEqual(graph.sample.inputs.sampler, ['sampler_select', 0]);
   assert.equal(Object.values(graph).some((node) => /cache/i.test(node.class_type)), false);
 });
@@ -347,6 +422,62 @@ test('MiniMax H3 Reference Turbo uses LightX2V with the audio-safe creator sampl
   assert.equal(Object.values(graph).some((node) => /cache/i.test(node.class_type)), false);
 });
 
+test('MiniMax H3 LightX2V v1.0 uses the standard LoRA loader and eight-step schedule', async () => {
+  const lightx = Object.assign({}, settings, {
+    h3TurboLora: 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
+    h3RefTurboLora: 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
+  });
+  const frames = await buildMiniMaxH3Graph({
+    mode: 'frames', prompt: 'A runner crosses the finish line.', W: 1344, H: 768,
+    frames: 124, seed: 23, turbo: true, turboNativeSampler: true,
+  }, lightx);
+  assert.equal(frames.turbo_lora.class_type, 'LoraLoaderModelOnly');
+  assert.equal(frames.turbo_lora.inputs.lora_name, lightx.h3TurboLora);
+  assert.equal(frames.scheduler.inputs.steps, 8);
+  assert.equal(frames.turbo_sampling.class_type, 'MiniMaxH3SigmaShift');
+  assert.deepEqual(frames.sample.inputs.sampler, ['sampler_select', 0]);
+
+  const reference = await buildMiniMaxH3Graph({
+    mode: 'reference', prompt: 'Restyle <Video 1>.', W: 1344, H: 768,
+    frames: 124, seed: 24, turbo: true, turboNativeSampler: true,
+    turboReferenceSegment: h3TurboReferenceSegments(124)[0],
+    references: { videos: [{ name: 'source.mp4', hasAudio: true }] },
+  }, lightx);
+  assert.equal(reference.turbo_lora.class_type, 'LoraLoaderModelOnly');
+  assert.equal(reference.turbo_lora.inputs.lora_name, lightx.h3RefTurboLora);
+  assert.equal(reference.scheduler.inputs.steps, 8);
+  assert.equal(reference.turbo_sampler, undefined);
+  assert.deepEqual(reference.sample.inputs.sampler, ['sampler_select', 0]);
+});
+
+test('MiniMax H3 LightX2V v1.0 four-step 768p uses its 6/3 sampling shifts', async () => {
+  const filename = 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors';
+  const lightx = Object.assign({}, settings, {
+    h3TurboLora: filename,
+    h3RefTurboLora: filename,
+  });
+  const frames = await buildMiniMaxH3Graph({
+    mode: 'frames', prompt: 'A dancer crosses a sunlit studio.', W: 1344, H: 768,
+    frames: 124, seed: 25, turbo: true, turboNativeSampler: true,
+  }, lightx);
+  assert.equal(frames.turbo_lora.class_type, 'LoraLoaderModelOnly');
+  assert.equal(frames.scheduler.inputs.steps, 4);
+  assert.deepEqual(frames.turbo_sampling.inputs, {
+    model: ['turbo_lora', 0], shift_video: 6, shift_audio: 3,
+  });
+  assert.deepEqual(frames.sample.inputs.sampler, ['sampler_select', 0]);
+
+  const reference = await buildMiniMaxH3Graph({
+    mode: 'reference', prompt: 'Restyle <Picture 1>.', W: 1344, H: 768,
+    frames: 124, seed: 26, turbo: true, turboNativeSampler: true,
+    references: { images: [{ name: 'subject.png' }] },
+  }, lightx);
+  assert.equal(reference.scheduler.inputs.steps, 4);
+  assert.deepEqual(reference.turbo_sampling.inputs, {
+    model: ['turbo_lora', 0], shift_video: 6, shift_audio: 3,
+  });
+});
+
 test('MiniMax H3 Reference Turbo renders a planned long-video segment inside the five-second safety window', async () => {
   const segment = h3TurboReferenceSegments(362)[1];
   const graph = await buildMiniMaxH3Graph({
@@ -372,6 +503,22 @@ test('MiniMax H3 Reference Turbo renders a planned long-video segment inside the
   assert.deepEqual(graph.video.inputs.images, ['vsr', 0]);
   assert.deepEqual(graph.save.inputs.video, ['video', 0]);
   assert.deepEqual(graph.poster_pick.inputs.image, ['decode', 0]);
+});
+
+test('MiniMax H3 Reference Turbo plans a single five-second video without an external chunk segment', async () => {
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'reference', prompt: 'Replace the chair in <Video 1> with <Picture 1>.', W: 1344, H: 768,
+    frames: 124, seed: 19, turbo: true,
+    references: {
+      images: [{ name: 'stool.png' }],
+      videos: [{ name: 'chair.mp4', hasAudio: true }],
+    },
+  }, settings);
+
+  assert.equal(graph.condition.inputs.length, 124);
+  assert.equal(graph.ref_video_0_0.inputs.frame_load_cap, 124);
+  assert.equal(graph.ref_video_0_0.inputs.skip_first_frames, 0);
+  assert.deepEqual(graph.condition.inputs['ref_video_audios.ref_video_audio_0'], ['ref_video_0_0', 2]);
 });
 
 test('MiniMax H3 Reference Turbo rejects an unplanned long video graph', async () => {

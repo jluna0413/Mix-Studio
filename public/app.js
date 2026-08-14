@@ -1,28 +1,16 @@
-/* Mix Studio front-end: mobile-first Mix Studio design language */
+/* KreaStudio front-end — mobile-first, Modatory design language */
 'use strict';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
-
-/* Move focus out of a container that is about to be hidden with inert or
-   aria-hidden. Browsers ignore aria-hidden (and log a console warning) when a
-   focused descendant exists, so relocate focus first. */
-function moveFocusOutOf(root, fallback) {
-  if (!root || !root.contains(document.activeElement)) return;
-  const target = fallback && !fallback.hidden && !fallback.disabled ? fallback : null;
-  if (target) target.focus({ preventScroll: true });
-  else document.activeElement.blur();
-}
 const CameraSettings = window.KreaCameraSettings;
 const CameraMotion = window.KreaCameraMotion;
 const ProgressEta = window.KreaProgressEta;
 const JobReconciliation = window.KreaJobReconciliation;
 const Analytics = window.KreaAnalytics;
-const SupportPrompt = window.KreaSupportPrompt;
-const ReleaseNotes = window.MixStudioReleaseNotes;
 const progressEta = ProgressEta.createProgressEtaTracker();
-const EDIT_MODEL_ORDER_VERSION = 3;
-const DEFAULT_EDIT_ENGINE_ORDER = Object.freeze(['klein9', 'klein4', 'qwen', 'krea2ref', 'krea2remix', 'krea2']);
+const EDIT_MODEL_ORDER_VERSION = 2;
+const DEFAULT_EDIT_ENGINE_ORDER = Object.freeze(['klein9', 'klein4', 'qwen', 'krea2ref', 'krea2']);
 // Keep every local workspace write bound to the profile that loaded this
 // document. Profile transitions update localStorage before the old page exits,
 // so consulting the live key during pagehide can otherwise copy one profile's
@@ -75,7 +63,6 @@ const state = {
   qwenAngleElevations: [],
   qwenAngleDistances: [],
   qwenQuality: 'quality',
-  krea2RefBoost: 4,
   prompts: { create: '', edit: '', video: '' }, // per-tab prompt text
   loras: [],                 // {name, strength, on} - Create tab (Krea 2)
   videoLoras: [],            // {name, strength, on} - Video tab (LTX/Wan)
@@ -87,7 +74,7 @@ const state = {
   editEngine: 'klein9',
   editEngineOrder: [...DEFAULT_EDIT_ENGINE_ORDER],
   editEngineDefault: 'klein9',
-  videoEngineOrder: ['ltx', 'h3', 'ltx-edit', 'eros', 'wan', 'scail'],
+  videoEngineOrder: ['ltx', 'ltx-edit', 'eros', 'wan', 'scail'],
   videoEngineDefault: 'ltx',
   appRelease: { version: '', releasedAt: null, revision: '', instanceId: '' },
   officialRelease: null,
@@ -133,14 +120,6 @@ const state = {
   kreaMaskPreviewCutout: false,
   kreaMaskViewMode: 'dim',
   vidRef: null,              // {name, url, w, h} - Video tab source image
-  vidH3Mode: 'frames',       // frames | reference
-  vidH3MatchSource: true,    // keep frame-mode output at the first frame's aspect unless explicitly overridden
-  vidH3Xl: false,
-  vidH3SageAttention: true,
-  vidH3Steps: 20,
-  vidH3RefImageSize: 'match',
-  vidH3RefSlots: 1,
-  vidH3References: { images: [], videos: [], audios: [] },
   directorOpen: false,
   directorProject: null,
   directorComposerMode: 'timeline',
@@ -173,18 +152,11 @@ const state = {
   userDefaults: {
     create: { steps: 12, cfg: 1, batch: 1 },
     edit: { steps: 4, cfg: 1, batch: 1, denoise: 0.4 },
-    krea2Edit: { steps: 10, cfg: 1 },
     video: { duration: 5, motionFreedom: 35 },
     seed: { mode: 'random', value: 0 },
-    visualPresets: { useVisualTreatment: false, showCards: true },
   },
   generationTuning: { create: null, edit: null, video: null },
-  promptPresetSelections: {
-    camera: [],
-  },
-  promptPacks: [],
-  promptPacksCanManage: false,
-  promptPacksLoaded: false,
+  cameraSettings: CameraSettings ? Object.assign({}, CameraSettings.DEFAULT_CAMERA_SETTINGS) : {},
   showAllLoras: true,
   activeJobs: new Set(),
   activeJobSequences: new Map(), // prompt id -> sequential edit id
@@ -192,7 +164,6 @@ const state = {
   upscaling: new Set(),      // item ids
   animating: new Set(),      // item ids
   pendingGalleryRequests: new Set(), // kind:item while its queue POST is in flight
-  telemetry: null, // Live memory telemetry from /api/telemetry/memory
   animateTarget: null,
   animateRouteTarget: null,
   currentItem: null,
@@ -208,7 +179,6 @@ const state = {
   selected: new Set(),
   connOk: false,
   features: {},              // machine-level installer choices, all on by default
-  videoCapabilities: {},     // connected-device support reported by the server
 };
 
 const ASPECTS = [
@@ -223,46 +193,6 @@ const ASPECTS = [
   { label: '21:9', ar: 21 / 9 },
 ];
 const RESOLUTION_SIZE_OPTIONS = [0.75, 1, 1.75];
-
-function h3ResolutionActive() {
-  return state.view === 'video' && state.vidEngine === 'h3';
-}
-
-function h3ResolutionSize() {
-  return state.vidH3Xl ? H3Resolution.XL_SIZE : state.mp;
-}
-
-function h3DimensionsForAspect(aspect = state.aspect) {
-  const selected = ASPECTS.find((option) => option.label === aspect) || ASPECTS[0];
-  return H3Resolution.dimensions(selected.ar, 1, h3ResolutionSize());
-}
-
-function h3SourceAspectRatio(asset = state.vidRef) {
-  const width = Number(asset?.w);
-  const height = Number(asset?.h);
-  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0
-    ? width / height
-    : 0;
-}
-
-function h3MatchSourceActive() {
-  return h3ResolutionActive()
-    && state.vidH3Mode === 'frames'
-    && state.vidH3MatchSource !== false
-    && h3SourceAspectRatio() > 0;
-}
-
-function h3ResolutionAspectRatio() {
-  return h3MatchSourceActive() ? h3SourceAspectRatio() : selectedAspectRatio();
-}
-
-function h3CurrentDimensions() {
-  return H3Resolution.dimensions(h3ResolutionAspectRatio(), 1, h3ResolutionSize());
-}
-
-function selectedAspectRatio(aspect = state.aspect) {
-  return (ASPECTS.find((option) => option.label === aspect) || ASPECTS[0]).ar;
-}
 
 const QWEN_ANGLE_VIEWS = [
   { id: 'front-left', label: 'Front left' },
@@ -287,12 +217,12 @@ const QWEN_ANGLE_DISTANCES = [
   { id: 'wide shot', label: 'Wide' },
 ];
 const EDIT_ENGINES = [...DEFAULT_EDIT_ENGINE_ORDER];
-const OUTPAINT_EDIT_ENGINES = new Set(EDIT_ENGINES.filter((engine) => engine !== 'krea2remix'));
+const OUTPAINT_EDIT_ENGINES = new Set(EDIT_ENGINES);
 const ANGLE_EDIT_ENGINES = new Set(['klein4', 'klein9', 'qwen']);
-const SEQUENTIAL_EDIT_ENGINES = new Set(['klein4', 'klein9', 'qwen', 'krea2ref', 'krea2remix']);
+const SEQUENTIAL_EDIT_ENGINES = new Set(['klein4', 'klein9', 'qwen', 'krea2ref']);
 const EDIT_MASK_ENGINES = new Set(['klein4', 'klein9', 'qwen', 'krea2']);
-const EDIT_FEATURES = { klein4: 'edit.klein4', klein9: 'edit.klein9', qwen: 'edit.qwen', krea2: 'edit.krea2', krea2ref: 'edit.krea2ref', krea2remix: 'edit.krea2remix' };
-const VIDEO_FEATURES = { ltx: 'video.ltx', h3: 'video.h3', 'ltx-edit': 'video.ltxEdit', eros: 'video.eros', wan: 'video.wan', scail: 'video.scail' };
+const EDIT_FEATURES = { klein4: 'edit.klein4', klein9: 'edit.klein9', qwen: 'edit.qwen', krea2: 'edit.krea2', krea2ref: 'edit.krea2ref' };
+const VIDEO_FEATURES = { ltx: 'video.ltx', 'ltx-edit': 'video.ltxEdit', eros: 'video.eros', wan: 'video.wan', scail: 'video.scail' };
 const VIDEO_ENGINES = Object.keys(VIDEO_FEATURES);
 
 function normalizeEngineOrder(order, engines) {
@@ -309,52 +239,25 @@ function promoteEngineDefault(order, preferred, engines) {
 function featureEnabled(key) { return state.features[key] !== false; }
 function enabledEditEngines() { return normalizeEngineOrder(state.editEngineOrder, EDIT_ENGINES).filter((engine) => featureEnabled(EDIT_FEATURES[engine])); }
 function enabledVideoEngines() { return normalizeEngineOrder(state.videoEngineOrder, VIDEO_ENGINES).filter((engine) => featureEnabled(VIDEO_FEATURES[engine])); }
-function videoEngineCapability(engine) {
-  return state.videoCapabilities?.[engine] || { supported: true, reason: '' };
-}
-function videoEngineSupported(engine) { return videoEngineCapability(engine).supported !== false; }
-function supportedVideoEngines() { return enabledVideoEngines().filter(videoEngineSupported); }
-function capabilityEngineForButton(button) {
-  if (VIDEO_ENGINES.includes(button?.dataset?.engine)) return button.dataset.engine;
-  if (button?.matches?.('[data-director-entry]')) return 'ltx';
-  const feature = button?.dataset?.featureEngine;
-  return Object.keys(VIDEO_FEATURES).find((engine) => VIDEO_FEATURES[engine] === feature) || '';
-}
-function applyVideoCapability(button) {
-  const engine = capabilityEngineForButton(button);
-  if (!engine) return;
-  const capability = videoEngineCapability(engine);
-  button.disabled = capability.supported === false;
-  button.setAttribute('aria-disabled', String(button.disabled));
-  if (button.disabled) {
-    button.title = capability.reason || 'This video model is not supported on the connected generation device.';
-  } else if (button.title === button.dataset.capabilityReason) {
-    button.removeAttribute('title');
-  }
-  button.dataset.capabilityReason = capability.reason || '';
-}
 function supportsCurrentEditAngles() { return state.view === 'edit' && ANGLE_EDIT_ENGINES.has(state.editEngine); }
 
 function renderFeatureVisibility() {
   applySavedEngineOrders();
   const editEngines = enabledEditEngines();
   const videoEngines = enabledVideoEngines();
-  const supportedVideos = videoEngines.filter(videoEngineSupported);
   const hasEdit = editEngines.length > 0;
-  const hasVideo = supportedVideos.length > 0;
+  const hasVideo = videoEngines.length > 0;
   $$('[data-feature-engine]').forEach((button) => {
     button.hidden = !featureEnabled(button.dataset.featureEngine);
-    applyVideoCapability(button);
   });
   $$('[data-feature-view="edit"]').forEach((button) => { button.hidden = !hasEdit; });
   $$('[data-feature-view="video"]').forEach((button) => { button.hidden = !hasVideo; });
   $$('#animEngineRow .chip[data-engine]').forEach((button) => {
     button.hidden = !featureEnabled(VIDEO_FEATURES[button.dataset.engine]);
-    applyVideoCapability(button);
   });
   if (editEngines.length && !editEngines.includes(state.editEngine)) switchEditEngine(editEngines[0]);
-  if (supportedVideos.length && !supportedVideos.includes(state.vidEngine)) state.vidEngine = supportedVideos[0];
-  if (supportedVideos.length && !supportedVideos.includes(state.animEngine)) state.animEngine = supportedVideos[0];
+  if (videoEngines.length && !videoEngines.includes(state.vidEngine)) state.vidEngine = videoEngines[0];
+  if (videoEngines.length && !videoEngines.includes(state.animEngine)) state.animEngine = videoEngines[0];
   markEngineRow('editEngineRow', state.editEngine);
   markEngineRow('vidEngineRow', state.vidEngine);
   markEngineRow('animEngineRow', state.animEngine);
@@ -440,7 +343,6 @@ async function api(path, opts) {
     throw error;
   }
   if (Analytics) Analytics.trackGenerationRequest(path, opts);
-  if (SupportPrompt) SupportPrompt.recordGenerationRequest(path);
   return data;
 }
 
@@ -487,24 +389,7 @@ function expandPromptLoraTriggers(value) {
 }
 
 function promptForGeneration() {
-  const expanded = expandPromptLoraTriggers(promptDraft().replace(/@image-(\d+)/g, 'image $1'));
-  if (state.userDefaults.visualPresets?.useVisualTreatment !== true) {
-    return expanded;
-  }
-  const presets = activePromptPresetTokens().filter((preset) => (
-    preset.value && expanded.includes(preset.value)
-  ));
-  if (!presets.length) return expanded;
-  let scene = expanded;
-  for (const preset of presets) scene = stripAppliedPromptPreset(scene, preset.value);
-  const visualTreatment = presets
-    .map((preset) => String(preset.value).trim().replace(/[.!?]+$/, ''))
-    .filter(Boolean)
-    .join('; ');
-  const sceneText = scene.trim().replace(/[\s,.;:]+$/, '');
-  return sceneText
-    ? `${sceneText}. Visual treatment: ${visualTreatment}.`
-    : visualTreatment;
+  return expandPromptLoraTriggers(promptDraft().replace(/@image-(\d+)/g, 'image $1'));
 }
 
 function rehydratePromptReferences(value, references = []) {
@@ -526,10 +411,6 @@ function reusableItemPrompt(item, useEnhanced = false) {
 
 function refForPromptToken(index) {
   return state.refs[Number(index) - 1] || null;
-}
-
-function h3ReferenceModeActive() {
-  return state.view === 'video' && state.vidEngine === 'h3' && state.vidH3Mode === 'reference';
 }
 
 function makePromptReferenceToken(index) {
@@ -558,45 +439,6 @@ function makePromptReferenceToken(index) {
   return token;
 }
 
-function makeH3PromptReferenceToken(tag) {
-  const entry = h3PromptReferenceEntries().find((candidate) => candidate.tag === tag);
-  const token = document.createElement('span');
-  token.className = `prompt-ref-token prompt-h3-ref-token prompt-h3-${entry?.mediaKind || 'missing'}`;
-  token.contentEditable = 'false';
-  token.dataset.h3RefTag = tag;
-  token.title = entry ? `${entry.label}: ${entry.asset.label || entry.asset.name}` : tag;
-
-  const open = document.createElement('button');
-  open.type = 'button';
-  open.className = 'prompt-ref-open';
-  open.dataset.openH3PromptRef = tag;
-  open.setAttribute('aria-label', `Change ${entry?.label || tag.replace(/[<>]/g, '')} reference`);
-
-  if (entry?.mediaKind === 'image' && (entry.asset.url || entry.asset.name)) {
-    const img = document.createElement('img');
-    img.src = entry.asset.url || `/api/input?name=${encodeURIComponent(entry.asset.name)}`;
-    img.alt = '';
-    open.appendChild(img);
-  } else {
-    const media = document.createElement('span');
-    media.className = 'prompt-ref-media';
-    media.setAttribute('aria-hidden', 'true');
-    media.textContent = entry?.mediaKind === 'audio' ? '♫' : (entry?.mediaKind === 'video' ? '▶' : '?');
-    open.appendChild(media);
-  }
-  const label = document.createElement('b');
-  label.textContent = tag.replace(/[<>]/g, '');
-  open.appendChild(label);
-  const remove = document.createElement('button');
-  remove.type = 'button';
-  remove.className = 'prompt-ref-remove';
-  remove.dataset.removePromptRef = tag;
-  remove.setAttribute('aria-label', `Remove ${label.textContent} from prompt`);
-  remove.textContent = '×';
-  token.append(open, remove);
-  return token;
-}
-
 function makePromptLoraTriggerToken(name) {
   const token = document.createElement('span');
   const phrase = typeof loraTriggerPhrase === 'function' ? loraTriggerPhrase({ name }) : '';
@@ -609,426 +451,17 @@ function makePromptLoraTriggerToken(name) {
   return token;
 }
 
-function builtinCameraPresets() {
-  if (!CameraSettings) return [];
-  return CameraSettings.CAMERA_COMBOS.map((combo) => ({
-    category: 'camera',
-    categoryLabel: 'Camera',
-    categoryDescription: 'Choose the camera language that shapes framing, optics, and texture.',
-    accent: 'cyan',
-    packId: 'mix-studio-camera',
-    packName: 'Camera Presets',
-    presetId: combo.id,
-    label: combo.label,
-    note: combo.note || '',
-    value: CameraSettings.cameraPresetPromptPhrase(combo.id),
-    thumbnail: combo.thumbnail,
-    thumbnailAlt: combo.thumbnailAlt || '',
-  }));
-}
-
-function promptPresetPackCatalog() {
-  const packs = [];
-  const cameras = builtinCameraPresets();
-  if (cameras.length) {
-    packs.push({
-      id: 'mix-studio-camera',
-      name: 'Camera Presets',
-      author: 'Mix Studio',
-      version: 'Built in',
-      description: 'Six camera looks included with Mix Studio.',
-      builtin: true,
-      categories: [{
-        id: 'camera',
-        label: 'Camera',
-        description: cameras[0].categoryDescription,
-        accent: 'cyan',
-        presets: cameras,
-      }],
-    });
-  }
-  for (const pack of state.promptPacks || []) {
-    if (pack.enabled === false) continue;
-    packs.push({
-      id: pack.id,
-      name: pack.name,
-      author: pack.author,
-      version: pack.version,
-      description: pack.description || '',
-      builtin: false,
-      categories: (pack.categories || []).map((source) => ({
-        id: source.id,
-        label: source.label,
-        description: source.description || '',
-        accent: source.accent || 'violet',
-        presets: (source.presets || []).map((preset) => ({
-          category: source.id,
-          categoryLabel: source.label,
-          categoryDescription: source.description || '',
-          accent: source.accent || 'violet',
-          packId: pack.id,
-          packName: pack.name,
-          presetId: preset.id,
-          label: preset.label,
-          note: preset.note || '',
-          value: preset.promptText,
-          thumbnail: preset.thumbnail,
-          thumbnailAlt: `${preset.label} preset preview`,
-        })),
-      })),
-    });
-  }
-  return packs;
-}
-
-function promptPresetCatalog() {
-  const categories = new Map();
-  for (const pack of promptPresetPackCatalog()) {
-    for (const source of pack.categories) {
-      if (!categories.has(source.id)) {
-        categories.set(source.id, {
-          id: source.id,
-          label: source.label,
-          description: source.description,
-          accent: source.accent,
-          presets: [],
-        });
-      }
-      categories.get(source.id).presets.push(...source.presets);
-    }
-  }
-  return [...categories.values()];
-}
-
-function promptPresetSelectionPayload(preset) {
-  if (!preset) return null;
-  return {
-    packId: preset.packId,
-    presetId: preset.presetId,
-    label: preset.label,
-    promptText: preset.value,
-    accent: preset.accent || 'violet',
-    categoryLabel: preset.categoryLabel || preset.category,
-    thumbnail: preset.thumbnail || '',
-  };
-}
-
-function promptPresetSelectionKey(preset) {
-  return [
-    String(preset?.packId || ''),
-    String(preset?.presetId || ''),
-    String(preset?.value || preset?.promptText || ''),
-  ].join('\u0000');
-}
-
-function rawPromptPresetSelections(categoryId) {
-  const raw = state.promptPresetSelections && state.promptPresetSelections[categoryId];
-  if (!raw) return [];
-  return Array.isArray(raw) ? raw.filter(Boolean) : [raw];
-}
-
-function selectedPromptPresets(categoryId) {
-  const catalog = promptPresetCatalog()
-    .find((category) => category.id === categoryId)?.presets || [];
-  const resolved = rawPromptPresetSelections(categoryId).map((raw) => {
-    if (categoryId === 'camera' && typeof raw === 'string' && CameraSettings) {
-      const combo = CameraSettings.cameraCombo(raw);
-      return builtinCameraPresets().find((preset) => preset.presetId === combo?.id) || null;
-    }
-    const presetId = typeof raw === 'object' ? raw.presetId : '';
-    const packId = typeof raw === 'object' ? raw.packId : '';
-    const available = catalog.find((preset) => (
-      preset.presetId === presetId && (!packId || preset.packId === packId)
-    ));
-    if (available) return available;
-    if (typeof raw === 'object' && raw.promptText) {
-      return {
-        category: categoryId,
-        categoryLabel: raw.categoryLabel || categoryId,
-        accent: raw.accent || 'violet',
-        packId: raw.packId || '',
-        presetId: raw.presetId || '',
-        label: raw.label || 'Unavailable preset',
-        value: raw.promptText,
-        thumbnail: raw.thumbnail || '',
-        unavailable: true,
-      };
-    }
-    return null;
-  }).filter(Boolean);
-  return resolved.filter((preset, index) => (
-    resolved.findIndex((candidate) => promptPresetSelectionKey(candidate) === promptPresetSelectionKey(preset)) === index
-  ));
-}
-
-function allSelectedPromptPresets() {
-  return Object.keys(state.promptPresetSelections || {})
-    .flatMap((categoryId) => selectedPromptPresets(categoryId));
-}
-
-function activePromptPresetTokens() {
-  return allSelectedPromptPresets()
-    .filter((preset) => preset?.value)
-    .map((preset) => ({
-      category: preset.category,
-      categoryLabel: preset.categoryLabel,
-      accent: preset.accent,
-      packId: preset.packId,
-      presetId: preset.presetId,
-      label: preset.label,
-      thumbnail: preset.thumbnail,
-      value: preset.value,
-    }));
-}
-
-function promptPresetMetadataForGeneration() {
-  const value = promptDraft();
-  reconcilePromptPresetSelectionsWithPrompt(value);
-  return activePromptPresetTokens()
-    .filter((preset) => preset.value && value.includes(preset.value))
-    .map((preset) => ({
-      category: preset.category,
-      categoryLabel: preset.categoryLabel,
-      accent: preset.accent,
-      packId: preset.packId,
-      presetId: preset.presetId,
-      label: preset.label,
-      promptText: preset.value,
-      thumbnail: preset.thumbnail || '',
-    }));
-}
-
-function promptPresetSelectionsForReuse(item, prompt) {
-  const value = String(prompt || '');
-  const selections = {};
-  const identifiedPromptTexts = new Set();
-  const addSelection = (categoryId, selection) => {
-    if (!selection) return;
-    const existing = selections[categoryId] || [];
-    const key = promptPresetSelectionKey(selection);
-    if (!existing.some((candidate) => promptPresetSelectionKey(candidate) === key)) {
-      selections[categoryId] = [...existing, selection];
-    }
-  };
-  for (const raw of Array.isArray(item?.promptPresets) ? item.promptPresets : []) {
-    if (!raw || !raw.category || !raw.promptText || !value.includes(raw.promptText)) continue;
-    identifiedPromptTexts.add(raw.promptText);
-    addSelection(raw.category, {
-      packId: raw.packId || '',
-      presetId: raw.presetId || '',
-      label: raw.label || 'Visual preset',
-      promptText: raw.promptText,
-      accent: raw.accent || 'violet',
-      categoryLabel: raw.categoryLabel || raw.category,
-      thumbnail: raw.thumbnail || '',
-    });
-  }
-  for (const category of promptPresetCatalog()) {
-    const matches = (category.presets || [])
-      .filter((preset) => preset.value && value.includes(preset.value) && !identifiedPromptTexts.has(preset.value))
-      .sort((left, right) => right.value.length - left.value.length);
-    for (const match of matches) {
-      addSelection(category.id, promptPresetSelectionPayload(match));
-      identifiedPromptTexts.add(match.value);
-    }
-  }
-  return selections;
-}
-
-function promptPresetSelectionStateSignature(selections) {
-  return JSON.stringify(Object.entries(selections || {})
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([categoryId, raw]) => [
-      categoryId,
-      (Array.isArray(raw) ? raw : (raw ? [raw] : []))
-        .filter(Boolean)
-        .map((selection) => ({
-          packId: String(selection?.packId || ''),
-          presetId: String(selection?.presetId || ''),
-          promptText: String(selection?.promptText || selection?.value || ''),
-          label: String(selection?.label || ''),
-          categoryLabel: String(selection?.categoryLabel || ''),
-          accent: String(selection?.accent || ''),
-          thumbnail: String(selection?.thumbnail || ''),
-        }))
-        .sort((left, right) => promptPresetSelectionKey(left).localeCompare(promptPresetSelectionKey(right))),
-    ]));
-}
-
-function reconcilePromptPresetSelectionsWithPrompt(prompt = promptDraft()) {
-  const remembered = [];
-  for (const categoryId of Object.keys(state.promptPresetSelections || {})) {
-    selectedPromptPresets(categoryId).forEach((preset) => {
-      remembered.push(Object.assign({ category: categoryId }, promptPresetSelectionPayload(preset)));
-    });
-  }
-  const next = promptPresetSelectionsForReuse({ promptPresets: remembered }, prompt);
-  if (promptPresetSelectionStateSignature(next) === promptPresetSelectionStateSignature(state.promptPresetSelections)) {
-    return false;
-  }
-  state.promptPresetSelections = next;
-  return true;
-}
-
-function promptPresetsForItem(item) {
-  const prompt = String(item?.promptTemplate || item?.prompt || item?.motionPrompt || '');
-  const selections = promptPresetSelectionsForReuse(item, prompt);
-  return Object.entries(selections).flatMap(([category, entries]) => (
-    entries.map((entry) => Object.assign({ category }, entry))
-  ));
-}
-
-function promptPresetNames(presets) {
-  return (Array.isArray(presets) ? presets : []).map((preset) => {
-    const label = String(preset?.label || 'Visual preset').trim();
-    const category = String(preset?.categoryLabel || '').trim();
-    return category && category.toLowerCase() !== label.toLowerCase()
-      ? `${label} (${category})`
-      : label;
-  }).filter(Boolean);
-}
-
-function promptPresetGenerationInfoMarkup(presets) {
-  if (!Array.isArray(presets) || !presets.length) return '';
-  const cards = presets.map((preset) => {
-    const label = String(preset?.label || 'Visual preset').trim();
-    const category = String(preset?.categoryLabel || 'Mix Pack').trim();
-    const thumbnail = String(preset?.thumbnail || '').trim();
-    return `<span class="lightbox-preset-chip" data-preset-accent="${escapeHtml(preset?.accent || 'violet')}">
-      ${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="">` : '<i aria-hidden="true"></i>'}
-      <span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(category)}</small></span>
-    </span>`;
-  }).join('');
-  return `<div class="lightbox-preset-meta" role="group" aria-label="Mix Pack presets used">
-    <b>Mix Pack presets:</b><span class="lightbox-preset-list">${cards}</span>
-  </div>`;
-}
-
-function h3GenerationReferenceDescriptors(info = {}) {
-  if (info?.engine !== 'h3' || info?.h3Mode !== 'reference' || !info?.h3References) return [];
-  const refs = info.h3References;
-  const kinds = [
-    ['images', 'image', 'Picture'],
-    ['videos', 'video', 'Video'],
-    ['audios', 'audio', 'Audio'],
-  ];
-  return kinds.flatMap(([collection, kind, inputName]) => (
-    (Array.isArray(refs[collection]) ? refs[collection] : []).map((asset, index) => {
-      const name = String(asset?.name || '').trim();
-      const fallbackLabel = name.split(/[\\/]/).pop() || `${inputName} ${index + 1}`;
-      return {
-        kind,
-        name,
-        assetLabel: String(asset?.label || fallbackLabel).trim() || fallbackLabel,
-        inputLabel: `${inputName} ${index + 1}`,
-        hasAudio: kind === 'video' && asset?.hasAudio === true,
-      };
-    }).filter((asset) => asset.name)
-  ));
-}
-
-function h3ReferenceGenerationInfoMarkup(info) {
-  const references = h3GenerationReferenceDescriptors(info);
-  if (!references.length) return '';
-  const icon = '<i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><path d="M9 9v6l6-3z"/></svg></i>';
-  const cards = references.map((reference) => {
-    const src = `/api/input?name=${encodeURIComponent(reference.name)}`;
-    const media = reference.kind === 'image'
-      ? `<img src="${escapeHtml(src)}" alt="">`
-      : (reference.kind === 'video'
-        ? `<video src="${escapeHtml(src)}" muted playsinline preload="metadata" aria-hidden="true"></video>`
-        : icon);
-    const inputLabel = reference.hasAudio ? `${reference.inputLabel} · embedded audio` : reference.inputLabel;
-    return `<span class="lightbox-reference-chip" data-reference-kind="${reference.kind}">
-      ${media}<span><strong>${escapeHtml(reference.assetLabel)}</strong><small>${escapeHtml(inputLabel)}</small></span>
-    </span>`;
-  }).join('');
-  return `<div class="lightbox-reference-meta" role="group" aria-label="H3 references used">
-    <b>References:</b><span class="lightbox-reference-list">${cards}</span>
-  </div>`;
-}
-
-function makePromptPresetToken(preset) {
-  const token = document.createElement('span');
-  token.className = 'prompt-preset-token';
-  token.contentEditable = 'false';
-  token.dataset.presetCategory = preset.category;
-  token.dataset.presetPack = preset.packId || '';
-  token.dataset.presetId = preset.presetId;
-  token.dataset.presetAccent = preset.accent || 'violet';
-  token.dataset.promptValue = preset.value;
-  token.title = `${preset.label || 'Visual preset'} · change from Visual Presets`;
-  const open = document.createElement('button');
-  open.type = 'button';
-  open.className = 'prompt-preset-open';
-  open.dataset.openPromptPreset = preset.presetId;
-  open.setAttribute('aria-label', `Open ${preset.label || 'visual preset'} in Visual Presets`);
-  if (preset.thumbnail) {
-    const image = document.createElement('img');
-    image.src = preset.thumbnail;
-    image.alt = '';
-    image.addEventListener('error', () => token.classList.add('image-missing'), { once: true });
-    open.appendChild(image);
-  }
-  const copy = document.createElement('span');
-  copy.className = 'prompt-preset-token-copy';
-  const label = document.createElement('b');
-  label.textContent = preset.label || 'Visual preset';
-  const category = document.createElement('small');
-  category.textContent = preset.categoryLabel || 'Visual preset';
-  copy.append(label, category);
-  open.appendChild(copy);
-  const remove = document.createElement('button');
-  remove.type = 'button';
-  remove.className = 'prompt-preset-remove';
-  remove.dataset.removePromptPreset = preset.category;
-  remove.setAttribute('aria-label', `Remove ${preset.label || 'visual preset'} from prompt`);
-  remove.textContent = '×';
-  token.append(open, remove);
-  return token;
-}
-
-function makePromptPresetSeparator(value) {
-  const separator = document.createElement('span');
-  separator.className = 'prompt-preset-separator';
-  separator.contentEditable = 'false';
-  separator.dataset.promptValue = value;
-  separator.setAttribute('aria-hidden', 'true');
-  return separator;
-}
-
-function escapePromptPattern(value) {
-  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function renderPromptComposer() {
   const composer = $('#promptComposer');
   if (!composer) return;
   const value = promptDraft();
-  reconcilePromptPresetSelectionsWithPrompt(value);
-  const presets = state.userDefaults.visualPresets?.showCards === false
-    ? []
-    : activePromptPresetTokens().filter((preset) => value.includes(preset.value));
-  const presetByValue = new Map(presets.map((preset) => [preset.value, preset]));
-  const presetPattern = [...presetByValue.keys()]
-    .sort((left, right) => right.length - left.length)
-    .map(escapePromptPattern)
-    .join('|');
-  const pattern = `(@image-\\d+|<(?:Picture|Video|Audio) \\d+>|@lora-trigger\\[[^\\]]+\\]|@lora-trigger-[^\\s,;:!?]+${presetPattern ? `|${presetPattern}` : ''})`;
-  const parts = value.split(new RegExp(pattern, 'g'));
+  const parts = value.split(/(@image-\d+|@lora-trigger\[[^\]]+\]|@lora-trigger-[^\s,;:!?]+)/g);
   composer.replaceChildren();
-  parts.forEach((part, index) => {
+  parts.forEach((part) => {
     const refMatch = /^@image-(\d+)$/.exec(part);
-    const h3RefMatch = /^<(?:Picture|Video|Audio) \d+>$/.test(part);
     const loraMatch = /^@lora-trigger(?:\[[^\]]+\]|-[^\s,;:!?]+)$/.test(part);
-    const betweenPresets = /^\s*,\s*$/.test(part)
-      && presetByValue.has(parts[index - 1])
-      && presetByValue.has(parts[index + 1]);
     if (refMatch) composer.appendChild(makePromptReferenceToken(refMatch[1]));
-    else if (h3RefMatch && h3ReferenceModeActive()) composer.appendChild(makeH3PromptReferenceToken(part));
     else if (loraMatch) composer.appendChild(makePromptLoraTriggerToken(loraNameFromTriggerToken(part)));
-    else if (presetByValue.has(part)) composer.appendChild(makePromptPresetToken(presetByValue.get(part)));
-    else if (betweenPresets) composer.appendChild(makePromptPresetSeparator(part));
     else if (part) composer.appendChild(document.createTextNode(part));
   });
 }
@@ -1037,11 +470,8 @@ function composerNodeText(node, root) {
   if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
   if (node.nodeType !== Node.ELEMENT_NODE) return '';
   const el = node;
-  if (el.classList.contains('prompt-h3-ref-token')) return el.dataset.h3RefTag || '';
   if (el.classList.contains('prompt-ref-token')) return `@image-${el.dataset.refIndex}`;
   if (el.classList.contains('prompt-lora-token')) return loraTriggerToken(el.dataset.loraName);
-  if (el.classList.contains('prompt-preset-token')) return el.dataset.promptValue || el.textContent || '';
-  if (el.classList.contains('prompt-preset-separator')) return el.dataset.promptValue || ', ';
   if (el.tagName === 'BR') return '\n';
   const text = [...el.childNodes].map((child) => composerNodeText(child, root)).join('');
   return el !== root && /^(DIV|P)$/.test(el.tagName) ? `${text}\n` : text;
@@ -1060,20 +490,6 @@ function setPromptDraft(value, { render = true } = {}) {
 
 function syncPromptDraftFromComposer() {
   setPromptDraft(promptDraftFromComposer(), { render: false });
-  const selections = Object.assign({}, state.promptPresetSelections);
-  let selectionsChanged = false;
-  for (const categoryId of Object.keys(selections)) {
-    const current = selectedPromptPresets(categoryId);
-    const remaining = current.filter((preset) => promptDraft().includes(preset.value));
-    if (remaining.length !== current.length) {
-      selections[categoryId] = remaining.map(promptPresetSelectionPayload);
-      selectionsChanged = true;
-    }
-  }
-  if (selectionsChanged) {
-    state.promptPresetSelections = selections;
-    renderCameraPicker();
-  }
   if (Object.prototype.hasOwnProperty.call(state.prompts, state.view)) state.prompts[state.view] = promptDraft();
   updatePromptClear();
   renderPromptSuggestions();
@@ -1167,106 +583,36 @@ function insertPromptReference(index, preferredRange = null, options = {}) {
   return caret;
 }
 
-function insertPromptH3Reference(tag, preferredRange = null) {
-  const composer = $('#promptComposer');
-  composer.focus({ preventScroll: true });
-  const selection = window.getSelection();
-  const range = promptComposerRange(preferredRange);
-  selection.removeAllRanges();
-  selection.addRange(range);
-  range.deleteContents();
-  const leading = promptRangeNeedsSeparator(range, composer) ? document.createTextNode(' ') : null;
-  const token = makeH3PromptReferenceToken(tag);
-  const space = document.createTextNode(' ');
-  const fragment = document.createDocumentFragment();
-  if (leading) fragment.appendChild(leading);
-  fragment.append(token, space);
-  range.insertNode(fragment);
-  placePromptCaretAfter(space);
-  promptSelectionRange = null;
-  syncPromptDraftFromComposer();
-  saveForm();
-}
-
-let promptMentionTargetToken = null;
-
-function replacePromptH3ReferenceToken(token, tag) {
-  if (!token?.isConnected || !token.classList.contains('prompt-h3-ref-token')) {
-    insertPromptH3Reference(tag);
-    return;
-  }
-  const replacement = makeH3PromptReferenceToken(tag);
-  token.replaceWith(replacement);
-  syncPromptDraftFromComposer();
-  $('#promptComposer').focus({ preventScroll: true });
-}
-
 function renderPromptMentionPicker() {
   const list = $('#promptMentionList');
   list.replaceChildren();
-  const h3Reference = h3ReferenceModeActive();
-  const replacingH3Reference = h3Reference && promptMentionTargetToken?.isConnected;
-  $('#promptMentionTitle').textContent = replacingH3Reference
-    ? 'Change H3 reference'
-    : (h3Reference ? 'Reference an H3 input' : 'Reference an image');
-  $('#promptMentionCopy').textContent = replacingH3Reference
-    ? 'Choose which reference input this card should use.'
-    : h3Reference
-    ? 'Choose a picture, video, or audio input to bind it to this prompt.'
-    : 'Choose an uploaded reference to add it to this prompt.';
-  const refs = h3Reference
-    ? h3PromptReferenceEntries()
-    : state.refs.map((ref, index) => ({ asset: ref, index, mediaKind: 'image', label: `Image ${index + 1}` })).filter(({ asset }) => asset);
+  const refs = state.refs.map((ref, index) => ({ ref, index })).filter(({ ref }) => ref);
   if (!refs.length) {
-    list.innerHTML = `<div class="prompt-mention-empty">Add a reference ${h3Reference ? 'input' : 'image'} above first, then type <b>@</b> here to place it in the prompt.</div>`;
+    list.innerHTML = '<div class="prompt-mention-empty">Add a reference image above first, then type <b>@</b> here to place it in the prompt.</div>';
     return;
   }
-  refs.forEach((entry) => {
-    const ref = entry.asset;
+  refs.forEach(({ ref, index }) => {
     const option = document.createElement('button');
     option.type = 'button';
     option.className = 'prompt-mention-option';
-    const current = replacingH3Reference && promptMentionTargetToken.dataset.h3RefTag === entry.tag;
-    option.classList.toggle('current', current);
-    option.setAttribute('aria-pressed', String(current));
-    let media;
-    if (entry.mediaKind === 'image') {
-      media = document.createElement('img');
-      media.src = ref.displayUrl || ref.url || `/api/input?name=${encodeURIComponent(ref.name)}`;
-      media.alt = '';
-    } else {
-      media = document.createElement('span');
-      media.className = `prompt-mention-media ${entry.mediaKind}`;
-      media.setAttribute('aria-hidden', 'true');
-      media.textContent = entry.mediaKind === 'audio' ? '♫' : '▶';
-    }
+    const img = document.createElement('img');
+    img.src = ref.displayUrl || ref.url;
+    img.alt = '';
     const copy = document.createElement('span');
-    const title = document.createElement('b');
-    title.textContent = entry.label;
-    const detail = document.createElement('small');
-    detail.textContent = h3Reference ? (ref.label || ref.name) : 'Insert reference into prompt';
-    copy.append(title, detail);
+    copy.innerHTML = `<b>Image ${index + 1}</b><small>Insert reference into prompt</small>`;
     const add = document.createElement('i');
-    add.textContent = current ? '✓' : (replacingH3Reference ? '→' : '+');
-    option.append(media, copy, add);
+    add.textContent = '+';
+    option.append(img, copy, add);
     option.addEventListener('click', () => {
       $('#promptMentionSheet').classList.remove('show');
-      const targetToken = promptMentionTargetToken;
-      promptMentionTargetToken = null;
-      if (h3Reference && targetToken?.isConnected) replacePromptH3ReferenceToken(targetToken, entry.tag);
-      else if (h3Reference) insertPromptH3Reference(entry.tag);
-      else insertPromptReference(entry.index + 1);
+      insertPromptReference(index + 1);
     });
     list.appendChild(option);
   });
 }
 
 function openPromptMentionPicker() {
-  const options = arguments[0] || {};
-  promptMentionTargetToken = options.targetToken?.classList.contains('prompt-h3-ref-token')
-    ? options.targetToken
-    : null;
-  if (!promptMentionTargetToken) capturePromptSelection();
+  capturePromptSelection();
   renderPromptMentionPicker();
   $('#promptMentionSheet').classList.add('show');
 }
@@ -1325,7 +671,6 @@ function openAppDialog(options = {}) {
     if (inputOptions.min != null) input.min = String(inputOptions.min); else input.removeAttribute('min');
     if (inputOptions.max != null) input.max = String(inputOptions.max); else input.removeAttribute('max');
     if (inputOptions.step != null) input.step = String(inputOptions.step); else input.removeAttribute('step');
-    if (inputOptions.inputMode) input.inputMode = String(inputOptions.inputMode); else input.removeAttribute('inputmode');
     input.autocomplete = inputOptions.autocomplete || 'off';
   }
 
@@ -1786,9 +1131,6 @@ function renderOfficialRelease() {
   const drawerButton = $('#updatesBtn');
   const settingsButton = $('#settingsUpdatesBtn');
   const settingsStatus = $('#settingsUpdatesStatus');
-  const installedVersion = String(state.officialInstalledVersion || '').trim();
-  const installedTag = installedVersion ? `v${installedVersion.replace(/^v/i, '')}` : '';
-  const latestMatchesInstalled = !!installedVersion && latest?.version === installedVersion.replace(/^v/i, '');
   const setReleaseStatus = (text, stateName) => {
     $('#updatesDrawerStatus').textContent = text;
     if (settingsStatus) settingsStatus.textContent = text;
@@ -1831,20 +1173,15 @@ function renderOfficialRelease() {
   }
 
   setReleaseStatus(
-    state.officialReleaseUpdateAvailable
-      ? `${latest.tagName} available`
-      : `${installedTag || latest.tagName} is current`,
+    state.officialReleaseUpdateAvailable ? `${latest.tagName} available` : `${latest.tagName} is current`,
     state.officialReleaseUpdateAvailable ? 'available' : 'current',
   );
   const publishedLabel = formatUpdateDate(latest.publishedAt);
-  const releaseNotesHtml = ReleaseNotes?.toHtml
-    ? ReleaseNotes.toHtml(latest.notes || 'Open the official release page to see the complete notes.')
-    : `<p>${escapeHtml(latest.notes || 'Open the official release page to see the complete notes.')}</p>`;
   list.innerHTML = `
     <article class="update-entry${unread ? ' new' : ''}">
       <div class="update-entry-head"><strong>${escapeHtml(latest.title)}</strong>${publishedLabel ? `<time datetime="${escapeHtml(latest.publishedAt)}">${escapeHtml(publishedLabel)}</time>` : ''}</div>
-      <span class="update-entry-version">${escapeHtml(latest.tagName || `v${latest.version}`)}</span>${latestMatchesInstalled ? '<span class="update-entry-installed">Installed</span>' : ''}
-      <div class="update-entry-notes">${releaseNotesHtml}</div>
+      <span class="update-entry-version">${escapeHtml(latest.tagName || `v${latest.version}`)}</span>${state.officialReleaseUpdateAvailable ? '' : '<span class="update-entry-installed">Installed</span>'}
+      <p>${escapeHtml(latest.notes || 'Open the official release page to see the complete notes.')}</p>
     </article>`;
   actions.hidden = false;
   $('#updatesReleaseLink').href = latest.url;
@@ -1852,11 +1189,7 @@ function renderOfficialRelease() {
   install.disabled = appUpdateRunning;
   installStatus.textContent = state.officialReleaseUpdateAvailable
     ? (state.profileIsOwner ? 'The update installs only when both queues are idle.' : 'Switch to the owner profile to install this update.')
-    : state.officialReleaseError
-      ? 'Showing the last successful GitHub check.'
-      : latestMatchesInstalled
-        ? 'This installation matches the latest stable release.'
-        : 'This installation is newer than the latest published GitHub release.';
+    : (state.officialReleaseError ? 'Showing the last successful GitHub check.' : 'This installation matches the latest stable release.');
 }
 
 function markLatestReleaseSeen() {
@@ -1881,7 +1214,7 @@ function showSystemUpdateNotification(release) {
   try {
     const notice = new Notification(release.title, {
       body: officialReleaseSummary(release),
-      icon: '/mix-studio-logo.svg',
+      icon: '/modatory-logo.svg',
       tag: `mix-studio-update-${officialReleaseId(release)}`,
     });
     notice.onclick = () => {
@@ -2182,7 +1515,6 @@ function renderAppDrawerNavigation() {
   const expanded = createActive && appDrawerCreateExpanded;
   createButton.setAttribute('aria-expanded', String(expanded));
   const modes = $('#drawerCreateModes');
-  if (!expanded) moveFocusOutOf(modes, createButton);
   modes.classList.toggle('is-collapsed', !expanded);
   modes.setAttribute('aria-hidden', String(!expanded));
   modes.inert = !expanded;
@@ -2233,14 +1565,6 @@ function setAppUpdateStatus(message, tone) {
 
 function formatAppUpdateError(error) {
   const fallback = String(error?.message || 'Mix Studio could not install the update.');
-  if (error?.code === 'update_assets_missing') {
-    const missing = Array.isArray(error.details?.missingFiles)
-      ? error.details.missingFiles.filter((file) => typeof file === 'string' && file.trim()).slice(0, 4)
-      : [];
-    return missing.length
-      ? `The update is incomplete because critical app files are missing: ${missing.join(', ')}. Repair or reinstall Mix Studio before restarting.`
-      : fallback;
-  }
   if (error?.code !== 'update_dirty') return fallback;
   const files = Array.isArray(error.details?.dirtyFiles) ? error.details.dirtyFiles : [];
   if (!files.length) return fallback;
@@ -2472,13 +1796,6 @@ $('#appRestartBtn').addEventListener('click', async () => {
 function round32(n) { return Math.max(64, Math.round(n / 32) * 32); }
 
 function computeDims() {
-  if (h3ResolutionActive()) {
-    const dimensions = h3CurrentDimensions();
-    state.customDims = false;
-    state.width = dimensions.width;
-    state.height = dimensions.height;
-    return;
-  }
   if (state.customDims) return;
   const a = ASPECTS.find((x) => x.label === state.aspect) || ASPECTS[0];
   const px = state.mp * 1e6;
@@ -2533,7 +1850,7 @@ function saveMediaPreferences(next) {
 }
 
 const WORKSPACE_ASSET_FIELDS = [
-  'kind', 'name', 'w', 'h', 'label', 'safeName', 'safeW', 'safeH', 'srcItemId',
+  'name', 'w', 'h', 'label', 'safeName', 'safeW', 'safeH', 'srcItemId',
   'faceId', 'hasAudio', 'dur', 'trimStart', 'trimEnd', 'duration',
 ];
 
@@ -2592,19 +1909,10 @@ function saveForm() {
       editAutomaticLoras: state.editAutomaticLoras,
       loraTriggers: state.loraTriggers,
       editEngine: state.editEngine, vidEngine: state.vidEngine, vidScailMode: state.vidScailMode,
-      vidH3Mode: state.vidH3Mode,
-      vidH3MatchSource: state.vidH3MatchSource,
-      vidH3Xl: state.vidH3Xl,
-      vidH3SageAttention: state.vidH3SageAttention,
-      vidH3Steps: state.vidH3Steps,
-      vidH3RefImageSize: state.vidH3RefImageSize,
-      vidH3RefSlots: state.vidH3RefSlots,
-      vidH3References: Object.fromEntries(Object.entries(h3References())
-        .map(([kind, assets]) => [kind, assets.map(serializeWorkspaceAsset).filter(Boolean)])),
       editModelOrderVersion: EDIT_MODEL_ORDER_VERSION,
       editEngineOrder: state.editEngineOrder, editEngineDefault: state.editEngineDefault,
       videoEngineOrder: state.videoEngineOrder, videoEngineDefault: state.videoEngineDefault,
-      promptPresetSelections: state.promptPresetSelections,
+      cameraSettings: state.cameraSettings,
       videoCameraMotions: state.videoCameraMotions,
       videoCameraMotionPhrase: state.videoCameraMotionPhrase,
       videoCameraGuide: serializeWorkspaceAsset(state.videoCameraGuide),
@@ -2682,7 +1990,6 @@ function saveForm() {
       qwenAngleElevations: state.qwenAngleElevations,
       qwenAngleDistances: state.qwenAngleDistances,
       qwenQuality: state.qwenQuality,
-      krea2RefBoost: state.krea2RefBoost,
       generationTuning: state.generationTuning,
     }));
   } catch { /* noop */ }
@@ -2731,8 +2038,6 @@ function loadForm() {
     state.qwenAngleDistances = Array.isArray(f.qwenAngleDistances)
       ? [...new Set(f.qwenAngleDistances.filter((id) => QWEN_ANGLE_DISTANCES.some((option) => option.id === id)))] : [];
     state.qwenQuality = f.qwenQuality === 'fast' ? 'fast' : 'quality';
-    state.krea2RefBoost = Number.isFinite(Number(f.krea2RefBoost))
-      ? Math.max(0, Math.min(12, Number(f.krea2RefBoost))) : 4;
     state.loras = Array.isArray(f.loras) ? f.loras : [];
     state.videoLoras = Array.isArray(f.videoLoras) ? f.videoLoras : [];
     state.loraTriggers = f.loraTriggers && typeof f.loraTriggers === 'object' ? Object.fromEntries(
@@ -2839,19 +2144,6 @@ function loadForm() {
     state.promptAssistantUseSource = f.promptAssistantUseSource !== false;
     state.editRefSlots = Math.max(1, state.refs.reduce((count, ref, index) => ref ? Math.max(count, index + 1) : count, 1));
     state.vidRef = restoreWorkspaceAsset(f.vidRef);
-    state.vidH3Mode = f.vidH3Mode === 'reference' ? 'reference' : 'frames';
-    state.vidH3MatchSource = f.vidH3MatchSource !== false;
-    state.vidH3Xl = f.vidH3Xl === true;
-    state.vidH3SageAttention = f.vidH3SageAttention !== false;
-    state.vidH3Steps = Math.max(1, Math.min(100, Math.round(Number(f.vidH3Steps) || 20)));
-    state.vidH3RefImageSize = f.vidH3RefImageSize === 'max' ? 'max' : 'match';
-    state.vidH3References = Object.fromEntries(['images', 'videos', 'audios'].map((kind) => [
-      kind,
-      (Array.isArray(f.vidH3References?.[kind]) ? f.vidH3References[kind] : [])
-        .map(restoreWorkspaceAsset).filter(Boolean),
-    ]));
-    const h3ReferenceCount = Object.values(state.vidH3References).reduce((count, assets) => count + assets.length, 0);
-    state.vidH3RefSlots = Math.max(1, Math.min(15, Math.max(Number(f.vidH3RefSlots) || 1, h3ReferenceCount)));
     state.vidEnd = restoreWorkspaceAsset(f.vidEnd);
     state.vidDrive = restoreWorkspaceAsset(f.vidDrive);
     state.vidFace = restoreWorkspaceAsset(f.vidFace);
@@ -2898,31 +2190,8 @@ function loadForm() {
     // Older form state treated inversion as an export-time toggle. The mask
     // editor now applies inversion directly to the visible mask canvas.
     state.kreaMaskInvert = false;
-    if (CameraSettings) {
-      const savedPresetSelections = f.promptPresetSelections && typeof f.promptPresetSelections === 'object'
-        ? f.promptPresetSelections : {};
-      const savedCamera = savedPresetSelections.camera;
-      const normalizedSelections = Object.fromEntries(
-        Object.entries(savedPresetSelections).map(([categoryId, raw]) => [
-          categoryId,
-          Array.isArray(raw) ? raw.filter(Boolean) : (raw ? [raw] : []),
-        ]),
-      );
-      const savedCameraEntries = Array.isArray(savedCamera)
-        ? savedCamera
-        : (savedCamera ? [savedCamera] : []);
-      const cameraCandidates = savedCameraEntries.length ? savedCameraEntries : [undefined];
-      const cameraPresets = cameraCandidates
-        .map((entry) => CameraSettings.normalizeCameraPresetId(
-          typeof entry === 'object' ? entry?.presetId : entry,
-          Object.prototype.hasOwnProperty.call(f, 'cameraSettings') ? f.cameraSettings : undefined,
-        ))
-        .map((cameraId) => builtinCameraPresets().find((preset) => preset.presetId === cameraId))
-        .filter(Boolean)
-        .map(promptPresetSelectionPayload);
-      state.promptPresetSelections = Object.assign({}, normalizedSelections, {
-        camera: cameraPresets,
-      });
+    if (f.cameraSettings && CameraSettings) {
+      state.cameraSettings = CameraSettings.normalizeSettings(f.cameraSettings);
     }
     if (CameraMotion) {
       state.videoCameraMotions = CameraMotion.normalizeCameraMotions(f.videoCameraMotions);
@@ -3704,37 +2973,7 @@ function genLabel() {
   }
   if (editOutpaintActive()) return 'Generate Expand';
   if (state.view === 'edit' && state.editEngine === 'krea2' && hasEditMask()) return 'Generate Fill';
-  if (state.directorOpen) return state.directorProject?.extensionSource ? 'Generate Extension' : 'Generate Video';
   return state.view === 'edit' ? 'Generate Edit' : (state.view === 'video' ? 'Generate Video' : 'Generate');
-}
-
-function renderH3SageAttention() {
-  const field = $('#vidH3SageField');
-  const toggle = $('#vidH3SageToggle');
-  const status = $('#vidH3SageStatus');
-  if (!field || !toggle || !status) return;
-  const visible = state.view === 'video' && state.vidEngine === 'h3';
-  field.hidden = !visible;
-  const enabled = state.vidH3SageAttention !== false;
-  const capability = lastMeta?.dependencies?.sageAttention;
-  toggle.setAttribute('aria-checked', String(enabled));
-  toggle.dataset.ready = String(capability?.ready === true);
-  if (!enabled) {
-    status.textContent = 'Off · use standard PyTorch attention';
-    toggle.title = 'H3 will use the standard attention backend.';
-  } else if (capability?.installable === false) {
-    status.textContent = 'Not available on this GPU · standard attention';
-    toggle.title = capability.reason || 'SageAttention requires an NVIDIA CUDA GPU.';
-  } else if (capability?.ready === true) {
-    status.textContent = `Verified in ComfyUI${capability.sageVersion ? ` · SageAttention ${capability.sageVersion}` : ''}`;
-    toggle.title = 'The matching package, Triton runtime, CUDA kernel, and KJ graph patch are verified.';
-  } else if (capability) {
-    status.textContent = capability.reason || 'Install the H3 SageAttention workflow to enable acceleration';
-    toggle.title = status.textContent;
-  } else {
-    status.textContent = 'Verifying the ComfyUI runtime…';
-    toggle.title = status.textContent;
-  }
 }
 
 function updateVideoPanels() {
@@ -3758,13 +2997,7 @@ function updateVideoPanels() {
   promptPanel.classList.toggle('scail-input-first', scailInputFirst);
   $('#promptLabel').textContent = isRegion ? 'Global prompt' : (scailInputFirst ? 'Creative direction · optional' : 'Prompt');
   $('#promptComposer').dataset.placeholder = isVideo
-    ? (state.vidEngine === 'ltx-edit'
-      ? 'Describe the edit…'
-      : (state.vidEngine === 'scail'
-        ? 'Optional — add style or motion direction…'
-        : (state.vidEngine === 'h3' && state.vidH3Mode === 'reference'
-          ? 'Type @ to reference an input, then describe the video and sound…'
-          : 'Describe the motion and sound…')))
+    ? (state.vidEngine === 'ltx-edit' ? 'Describe the edit…' : (state.vidEngine === 'scail' ? 'Optional — add style or motion direction…' : 'Describe the motion…'))
     : (state.createMode === 'region' && state.view === 'create'
       ? 'Describe the full scene… (optional)'
       : (state.view === 'edit'
@@ -3783,17 +3016,14 @@ function updateVideoPanels() {
   renderQwenAngleTool();
   renderQwenAngleMode();
   renderQwenQuality();
-  renderKrea2RefBoost();
   renderEditModelSummary();
   renderEditSequence();
   regionWorkspace.hidden = !isRegion;
   if (!isRegion) setRegionResolutionExpanded(false);
-  $('#vidExtras').hidden = !isVideo || state.vidEngine === 'wan' || state.vidEngine === 'scail'
-    || state.vidEngine === 'ltx-edit' || (state.vidEngine === 'h3' && state.vidH3Mode === 'reference');
+  $('#vidExtras').hidden = !isVideo || state.vidEngine === 'wan' || state.vidEngine === 'scail' || state.vidEngine === 'ltx-edit';
   $('#createPromptTools').hidden = state.view !== 'create';
-  $('#cameraPromptBtn').hidden = false;
-  $('#videoPromptTools').hidden = !isVideo;
-  $('#videoCameraMotionBtn').hidden = !isVideo || state.vidEngine === 'scail' || state.vidEngine === 'h3';
+  $('#cameraPromptBtn').hidden = state.view !== 'create';
+  $('#videoPromptTools').hidden = !isVideo || state.vidEngine === 'scail';
   syncCameraMotionTool();
   renderKrea2Mode();
   renderCreateImageGuide();
@@ -3804,30 +3034,20 @@ function updateVideoPanels() {
   renderEditUpscale();
   renderKreaMaskTools();
   $('#resPanel').hidden = state.view === 'edit'
-    || (isVideo && !!state.vidRef && state.vidEngine !== 'h3')
+    || (isVideo && !!state.vidRef)
     || (isRegion && !useSharedRegionResolution);
   $('.region-resolution-picker').hidden = useSharedRegionResolution;
   if (useSharedRegionResolution) setRegionResolutionExpanded(false);
   $('#seedInput').closest('.panel').hidden = false;
-  $('#advancedStepsField').hidden = false;
+  $('#advancedStepsField').hidden = isVideo;
   $('#advancedCfgField').hidden = isVideo;
   $('#vidScailFpsField').hidden = !(isVideo && state.vidEngine === 'scail');
-  renderH3SageAttention();
-  renderVideoStepControl();
   $('#videoAdvancedNote').hidden = !isVideo;
   renderNegativePromptControl();
   if (isVideo) { renderVidAttach(); renderVidDrive(); }
-  $('#loraPanel').closest('.panel').hidden = isVideo && state.vidEngine === 'h3';
   renderLoras();
   schedulePromptIntentHint();
 }
-
-$('#vidH3SageToggle').addEventListener('click', () => {
-  state.vidH3SageAttention = state.vidH3SageAttention === false;
-  renderH3SageAttention();
-  $('#genLbl').textContent = genLabel();
-  saveForm();
-});
 
 /* Shared source picker: every generation media dropzone can accept either a
    fresh device file or an existing image/video from the current gallery. */
@@ -3836,15 +3056,11 @@ let assetPickerReturnFocus = null;
 let resetAssetPickerSwipeVisuals = () => {};
 let animateAssetPickerNavigation = () => {};
 
-function assetPickerKinds(accept) {
-  const normalized = String(accept || '').toLowerCase();
-  const kinds = ['image', 'video', 'audio'].filter((kind) => normalized.includes(`${kind}/`));
-  return kinds.length ? kinds : ['image'];
-}
-
 function assetPickerKind(accept) {
-  const kinds = assetPickerKinds(accept);
-  return kinds.length === 1 ? kinds[0] : 'mixed';
+  const normalized = String(accept || '').toLowerCase();
+  if (normalized.startsWith('video')) return 'video';
+  if (normalized.startsWith('audio')) return 'audio';
+  return 'image';
 }
 
 function formatAssetBytes(bytes) {
@@ -3856,11 +3072,10 @@ function formatAssetBytes(bytes) {
 }
 
 function uploadedAssetPickerAssets(accept) {
-  const allowedKinds = new Set(assetPickerKinds(accept));
+  const kind = assetPickerKind(accept);
   return (state.uploadedAssets || [])
-    .filter((asset) => asset && allowedKinds.has(asset.kind))
+    .filter((asset) => asset && asset.kind === kind)
     .map((asset) => {
-      const kind = asset.kind;
       const createdAt = Number(asset.createdAt || 0);
       const detail = [kind[0].toUpperCase() + kind.slice(1), formatAssetBytes(asset.size), new Date(createdAt || Date.now()).toLocaleDateString()]
         .filter(Boolean).join(' · ');
@@ -3884,18 +3099,18 @@ function uploadedAssetPickerAssets(accept) {
 }
 
 function previousGenerationAssets(accept) {
-  const allowedKinds = new Set(assetPickerKinds(accept));
+  const kind = assetPickerKind(accept);
   const assets = [];
   for (const item of state.items || []) {
     const folder = (state.folders || []).find((entry) => entry.id === item.folder);
-    if (allowedKinds.has('video')) {
+    if (kind === 'video') {
       for (const video of Array.isArray(item.videos) ? item.videos : []) {
         if (!video || !video.file) continue;
         const engine = videoEngineLabel(video.info && video.info.engine, video.info);
         const createdAt = Number(video.createdAt || item.createdAt || 0);
         assets.push({
           key: `${item.id}:video:${video.id || video.file}`,
-          kind: 'video', file: video.file, itemId: item.id, videoId: video.id,
+          kind, file: video.file, itemId: item.id, videoId: video.id,
           label: video.info?.motionPrompt || item.prompt || 'Previous video',
           detail: `${engine} · ${new Date(createdAt || Date.now()).toLocaleDateString()}`,
           poster: item.file, activity: createdAt || itemActivity(item), createdAt,
@@ -3903,13 +3118,12 @@ function previousGenerationAssets(accept) {
           liked: video.liked === true || item.liked === true,
         });
       }
-    }
-    if (allowedKinds.has('image') && item.file) {
+    } else if (item.file) {
       const model = galleryImageModelLabel(item);
       const createdAt = Number(item.createdAt || 0);
       assets.push({
         key: `${item.id}:image:${item.upscaled || item.file}`,
-        kind: 'image', file: item.upscaled || item.file, itemId: item.id,
+        kind, file: item.upscaled || item.file, itemId: item.id,
         label: item.prompt || 'Previous image',
         detail: `${model || 'Image'} · ${new Date(item.createdAt || Date.now()).toLocaleDateString()}`,
         activity: createdAt || itemActivity(item), createdAt,
@@ -3963,7 +3177,6 @@ function closeAssetPickerMenus(except = null) {
     const trigger = $(`#assetPicker${name[0].toUpperCase() + name.slice(1)}Trigger`);
     const menu = $(`#assetPicker${name[0].toUpperCase() + name.slice(1)}Menu`);
     if (!trigger || !menu) return;
-    moveFocusOutOf(menu, trigger);
     trigger.setAttribute('aria-expanded', 'false');
     menu.hidden = true;
     menu.inert = true;
@@ -4223,14 +3436,10 @@ function openAssetPicker(accept, callback, title, options = {}) {
   closeAssetPickerMenus();
   renderAssetPickerFilters();
   const kind = assetPickerKind(accept);
-  $('#assetPickerTitle').textContent = title || (kind === 'mixed'
-    ? 'Choose a media source'
-    : `Choose ${kind === 'audio' ? 'an' : 'a'} ${kind} source`);
+  $('#assetPickerTitle').textContent = title || `Choose ${kind === 'audio' ? 'an' : 'a'} ${kind} source`;
   $('#assetPickerCopy').textContent = assetPickerState.multiple
     ? 'Upload several images at once or select multiple images from generations or uploaded assets.'
-    : (kind === 'mixed'
-      ? 'Use an image, video, or audio clip from your device, generations, or uploaded assets.'
-      : `Use ${kind === 'audio' ? 'audio' : `a ${kind}`} from your device, generations, or uploaded assets.`);
+    : `Use ${kind === 'audio' ? 'audio' : `a ${kind}`} from your device, generations, or uploaded assets.`;
   renderAssetPickerMultiBar();
   $('#assetPickerSheet').classList.add('show');
   animateAssetPickerEntrance(panel, assetPickerReturnFocus);
@@ -4334,18 +3543,12 @@ function pickDeviceUpload(accept, cb, options = {}) {
     const files = [...(input.files || [])];
     if (!files.length) return;
     const assets = [];
-    const allowedKinds = new Set(assetPickerKinds(accept));
     for (const file of files) {
       try {
-        const mimeKind = String(file.type || '').split('/')[0].toLowerCase();
-        const extensionKind = /\.(?:mp4|mov|mkv|webm|avi|m4v)$/i.test(file.name) ? 'video'
-          : (/\.(?:mp3|wav|flac|m4a|aac|ogg|opus)$/i.test(file.name) ? 'audio' : 'image');
-        const kind = ['image', 'video', 'audio'].includes(mimeKind) ? mimeKind : extensionKind;
-        if (!allowedKinds.has(kind)) throw new Error(`Choose ${[...allowedKinds].join(', ')} media`);
         const res = await uploadInputAsset(file, file.name || 'file.bin', { catalog: true });
         const url = URL.createObjectURL(file);
         let dims = { w: 0, h: 0 };
-        if (kind === 'image') {
+        if (accept.startsWith('image')) {
           dims = await new Promise((resolve) => {
             const im = new Image();
             im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
@@ -4353,7 +3556,7 @@ function pickDeviceUpload(accept, cb, options = {}) {
             im.src = url;
           });
         }
-        assets.push({ kind, name: res.name, url, w: dims.w, h: dims.h, label: file.name, hasAudio: res.hasAudio === true });
+        assets.push({ name: res.name, url, w: dims.w, h: dims.h, label: file.name, hasAudio: res.hasAudio === true });
       } catch (e) { toast(`${file.name}: ${e.message}`, true); }
     }
     if (assets.length) await cb(input.multiple ? assets : assets[0]);
@@ -4474,7 +3677,7 @@ function clipboardPasteContext() {
     };
   }
   if (state.view === 'edit') {
-    const capacity = editReferenceCapacity();
+    const capacity = state.editEngine === 'krea2' || editOutpaintActive() ? 1 : state.refs.length;
     return {
       kind: 'edit', key: `edit:${state.editEngine}:${editOutpaintActive() ? 'expand' : 'standard'}`,
       capacity,
@@ -4747,7 +3950,7 @@ async function applyClipboardImages(request, destination, assets) {
   } else if (destination.kind === 'video') {
     const previousFrame = state.vidRef;
     const previousFace = state.vidFace;
-    setVideoFirstFrame(assets[0]);
+    state.vidRef = assets[0];
     state.vidFace = null;
     releaseClipboardAssetUrl(previousFrame, assets[0]);
     releaseClipboardAssetUrl(previousFace, assets[0]);
@@ -4847,7 +4050,6 @@ async function usePreviousGenerations(assets) {
         const url = assetPickerMediaUrl(asset);
         const dims = asset.kind === 'image' ? await imageDimensions(url) : { w: 0, h: 0 };
         prepared.push({
-          kind: asset.kind,
           name: asset.file,
           url,
           w: dims.w,
@@ -4864,7 +4066,6 @@ async function usePreviousGenerations(assets) {
     if (picker.galleryReference) {
       closeAssetPicker();
       const prepared = chosen.map((asset) => ({
-          kind: asset.kind,
           name: asset.file,
           url: assetPickerMediaUrl(asset),
           label: asset.label || 'Previous generation',
@@ -4887,7 +4088,7 @@ async function usePreviousGenerations(assets) {
       const url = URL.createObjectURL(blob);
       const dims = asset.kind === 'image' ? await imageDimensions(url) : { w: 0, h: 0 };
       prepared.push({
-        kind: asset.kind, name: res.name, url, w: dims.w, h: dims.h,
+        name: res.name, url, w: dims.w, h: dims.h,
         label: asset.label || 'Previous generation', hasAudio: res.hasAudio === true,
         srcItemId: asset.itemId,
         srcVideoId: asset.videoId,
@@ -5183,7 +4384,6 @@ $('#assetPickerFolderTrigger').addEventListener('click', () => {
   const open = trigger.getAttribute('aria-expanded') !== 'true';
   closeAssetPickerMenus(open ? 'folder' : null);
   trigger.setAttribute('aria-expanded', String(open));
-  if (!open) moveFocusOutOf(menu, trigger);
   menu.hidden = !open;
   menu.inert = !open;
 });
@@ -5194,7 +4394,6 @@ $('#assetPickerSortTrigger').addEventListener('click', () => {
   const open = trigger.getAttribute('aria-expanded') !== 'true';
   closeAssetPickerMenus(open ? 'sort' : null);
   trigger.setAttribute('aria-expanded', String(open));
-  if (!open) moveFocusOutOf(menu, trigger);
   menu.hidden = !open;
   menu.inert = !open;
 });
@@ -5398,7 +4597,7 @@ const DEFAULT_KLEIN_OUTPAINT_LORAS = {
   klein9: 'f2k_9B_lcs_consist_20260415.safetensors',
 };
 const DEFAULT_EDIT_AUTOMATIC_LORAS = {
-  'krea2-outpaint': 'krea2_identity_edit_v1_2.safetensors',
+  'krea2-outpaint': 'krea2_identity_edit_v1_1_r128.safetensors',
   'qwen-lightning': 'Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors',
 };
 
@@ -5527,8 +4726,8 @@ function syncKleinOutpaintConsistencyLora() {
 
 function activeEditAutomaticLoraSpec() {
   if (state.view !== 'edit') return null;
-  if (state.editEngine === 'krea2ref' || (state.editEngine === 'krea2' && state.editOutpaint)) {
-    const status = lastMeta?.models?.krea2IdentityEdit?.lora;
+  if (state.editEngine === 'krea2' && state.editOutpaint) {
+    const status = lastMeta?.models?.krea2Outpaint?.lora;
     return {
       key: 'krea2-outpaint',
       name: status?.name || DEFAULT_EDIT_AUTOMATIC_LORAS['krea2-outpaint'],
@@ -5867,7 +5066,6 @@ function renderCreateImageGuide() {
   const hasStoredImage = !!state.createRef;
   const hasActiveImage = hasStoredImage && state.createGuideActive;
   const open = visible && state.createImageGuideOpen;
-  if (!visible) moveFocusOutOf(section);
   chip.classList.toggle('has-image', hasActiveImage);
   toggle.classList.toggle('icon-chip', !hasActiveImage);
   toggle.classList.toggle('has-source', hasStoredImage);
@@ -5884,7 +5082,6 @@ function renderCreateImageGuide() {
   if (hasActiveImage) toggle.removeAttribute('title');
   else toggle.title = hasStoredImage ? 'Image tools · image loaded' : 'Add image · device or Library';
   markIconTooltip(toggle);
-  if (!open) moveFocusOutOf(section, toggle);
   section.classList.toggle('expanded', open);
   section.inert = !open;
   section.setAttribute('aria-hidden', String(!open));
@@ -5973,20 +5170,11 @@ async function createPromptFromImageName(image) {
   toast('Prompt created · use Revise to change it');
 }
 
-function promptAssistantSourceImage() {
-  if (state.view !== 'video') return state.promptSourceImage;
-  if (h3ReferenceModeActive()) return h3References().images[0] || null;
-  return state.vidRef || null;
-}
-
 function renderPromptAssistantSource() {
-  const source = promptAssistantSourceImage();
+  const source = state.promptSourceImage;
   const row = $('#promptAssistantSource');
   row.hidden = !source;
   if (source) $('#promptAssistantSourceImg').src = source.url || `/api/input?name=${encodeURIComponent(source.name)}`;
-  $('#promptAssistantSourceTitle').textContent = state.view === 'video'
-    ? (h3ReferenceModeActive() ? 'Use Picture 1 for context' : 'Use the first frame for context')
-    : 'Use the source image for context';
   const toggle = $('#promptAssistantSourceToggle');
   const enabled = !!source && state.promptAssistantUseSource;
   toggle.classList.toggle('on', enabled);
@@ -6002,7 +5190,7 @@ function setPromptAssistantBusy(busy, message = '') {
   form.setAttribute('aria-busy', String(busy));
   $('#promptAssistantApply').disabled = busy;
   $('#promptAssistantInput').disabled = busy;
-  $('#promptAssistantSourceToggle').disabled = busy || !promptAssistantSourceImage();
+  $('#promptAssistantSourceToggle').disabled = busy || !state.promptSourceImage;
   $$('.prompt-assistant-starters button').forEach((button) => { button.disabled = busy; });
   const status = $('#promptAssistantStatus');
   status.hidden = !message;
@@ -6011,38 +5199,13 @@ function setPromptAssistantBusy(busy, message = '') {
 
 function openPromptAssistant() {
   const currentPrompt = promptDraft().trim();
-  const video = state.view === 'video';
-  $('#promptAssistantTitle').textContent = currentPrompt
-    ? (video ? 'Revise video prompt' : 'Revise prompt')
-    : (video ? 'Build video prompt' : 'Build prompt');
+  $('#promptAssistantTitle').textContent = currentPrompt ? 'Revise prompt' : 'Build prompt';
   $('#promptAssistantApply').textContent = currentPrompt ? 'Revise prompt' : 'Build prompt';
-  $('#promptAssistantCopy').textContent = video
-    ? 'Say what should change. Mix Studio will rewrite the complete video prompt while preserving continuity, timing, camera direction, audio, and reference tags.'
-    : 'Say what should change. Mix Studio will rewrite the whole prompt, reconcile related details, and preserve everything else.';
-  const starters = video ? [
-    ['Add shot beats', 'Restructure this as a coherent sequence with timestamped beats, purposeful camera angles, and only as many cuts as the duration can support.'],
-    ['Change camera', 'Keep the subject and action, but change the camera direction to '],
-    ['Improve motion', 'Make the subject movement, secondary motion, and transitions more specific and physically natural.'],
-    ['Shorten', 'Shorten this prompt while preserving its key action, continuity, camera direction, and audio.'],
-  ] : [
-    ['Change subject', 'Change the main subject to '],
-    ['Change colors', 'Change the color palette to '],
-    ['Remix', 'Keep the composition and visual style, but create a distinct new subject: '],
-    ['Shorten', 'Shorten this prompt and keep only the visual details that matter most.'],
-  ];
-  $$('.prompt-assistant-starters button').forEach((button, index) => {
-    const starter = starters[index];
-    button.textContent = starter[0];
-    button.dataset.promptRevision = starter[1];
-  });
-  $('#promptAssistantInput').placeholder = video
-    ? 'Add a low-angle close-up at 4 seconds, then cut wide as the subject turns. Keep the dialogue and end on the same action.'
-    : 'Change the woman to a man in a tailored navy suit, use teal and gold, and keep the lighting and composition.';
   if (!promptAssistantBusy) $('#promptAssistantInput').value = '';
   renderPromptAssistantSource();
   setPromptAssistantBusy(promptAssistantBusy, promptAssistantBusy ? 'Rewriting the complete prompt…' : '');
   const undo = state.promptRevisionUndo;
-  $('#promptAssistantUndo').hidden = !(undo && undo.view === state.view && currentPrompt === undo.after);
+  $('#promptAssistantUndo').hidden = !(undo && currentPrompt === undo.after);
   $('#promptAssistantSheet').classList.add('show');
   syncSheetScrollLock();
   setTimeout(() => $('#promptAssistantInput').focus(), 80);
@@ -6054,7 +5217,6 @@ function closePromptAssistant() {
 }
 
 $('#promptAssistantBtn').addEventListener('click', openPromptAssistant);
-$('#videoPromptAssistantBtn').addEventListener('click', openPromptAssistant);
 $('#promptAssistantSourceToggle').addEventListener('click', () => {
   state.promptAssistantUseSource = !state.promptAssistantUseSource;
   renderPromptAssistantSource();
@@ -6070,9 +5232,9 @@ $$('.prompt-assistant-starters [data-prompt-revision]').forEach((button) => {
 });
 $('#promptAssistantUndo').addEventListener('click', () => {
   const undo = state.promptRevisionUndo;
-  if (!undo || undo.view !== state.view || promptDraft().trim() !== undo.after) return;
+  if (!undo || promptDraft().trim() !== undo.after) return;
   checkpointDesktopInputSetup();
-  state.prompts[state.view] = undo.before;
+  state.prompts.create = undo.before;
   setPromptDraft(undo.before);
   state.promptRevisionUndo = null;
   updatePromptClear();
@@ -6091,8 +5253,7 @@ $('#promptAssistantForm').addEventListener('submit', async (event) => {
     return;
   }
   const before = promptDraft().trim();
-  const revisionView = state.view;
-  const source = state.promptAssistantUseSource ? promptAssistantSourceImage() : null;
+  const source = state.promptAssistantUseSource ? state.promptSourceImage : null;
   setPromptAssistantBusy(true, before ? 'Rewriting the complete prompt…' : 'Building a generation-ready prompt…');
   checkpointDesktopInputSetup();
   try {
@@ -6103,19 +5264,15 @@ $('#promptAssistantForm').addEventListener('submit', async (event) => {
         currentPrompt: before,
         changeRequest,
         imageName: source && source.name ? source.name : undefined,
-        kind: revisionView === 'video' ? 'video' : 'image',
-        engine: revisionView === 'video' ? state.vidEngine : undefined,
-        seconds: revisionView === 'video' ? Number($('#vidDur').value) || 5 : undefined,
-        h3Mode: revisionView === 'video' && state.vidEngine === 'h3' ? state.vidH3Mode : undefined,
       }),
     });
     const revised = String(result.prompt || '').trim();
     if (!revised) throw new Error('Prompt assistant returned no usable text');
-    if (state.view !== revisionView || promptDraft().trim() !== before) {
+    if (promptDraft().trim() !== before) {
       throw new Error('The prompt changed while the revision was running. Review it and try again.');
     }
-    state.prompts[revisionView] = revised;
-    state.promptRevisionUndo = { before, after: revised, view: revisionView };
+    state.prompts.create = revised;
+    state.promptRevisionUndo = { before, after: revised };
     state.enhance = false;
     setPromptDraft(revised);
     updatePromptClear();
@@ -6125,7 +5282,7 @@ $('#promptAssistantForm').addEventListener('submit', async (event) => {
     setPromptAssistantBusy(false);
     closePromptAssistant();
     $('#promptComposer').focus();
-    toast(revisionView === 'video' ? 'Video prompt revised' : 'Prompt revised · Enhance turned off');
+    toast('Prompt revised · Enhance turned off');
   } catch (error) {
     setPromptAssistantBusy(false, error.message || 'Could not revise this prompt');
     if (!isJobCancellation(error)) toast(error.message, true);
@@ -6330,22 +5487,8 @@ function selectedRegion() {
 }
 
 function normalizeRegionStrength(value) {
-  return normalizeLoraStrength(value);
-}
-
-const LORA_SLIDER_MIN = 0;
-const LORA_SLIDER_MAX = 2;
-
-function normalizeLoraStrength(value, fallback = 1) {
   const strength = Number(value);
-  return Number.isFinite(strength) ? Math.max(-100, Math.min(100, strength)) : fallback;
-}
-
-function normalizeLoraSliderStrength(value, fallback = 1) {
-  const strength = Number(value);
-  return Number.isFinite(strength)
-    ? Math.max(LORA_SLIDER_MIN, Math.min(LORA_SLIDER_MAX, strength))
-    : fallback;
+  return Number.isFinite(strength) ? Math.max(0, Math.min(2, strength)) : 1;
 }
 
 function loraStrengthHoldDelay(pointerType) {
@@ -6410,7 +5553,6 @@ function setRegionLoraExpanded(open) {
   const body = $('#regionLoraBody');
   disclosure.classList.toggle('expanded', expanded);
   $('#regionLoraHeader').setAttribute('aria-expanded', String(expanded));
-  moveFocusOutOf(body, $('#regionLoraHeader'));
   body.inert = !expanded;
   body.setAttribute('aria-hidden', String(!expanded));
 }
@@ -6426,7 +5568,6 @@ function syncRegionSettings(focusPrompt) {
   const settings = $('#regionSettings');
   const region = selectedRegion();
   const open = regionSettingsOpen && !!region;
-  if (!open) moveFocusOutOf(settings);
   const index = region ? state.regions.findIndex((item) => item.id === region.id) : -1;
   const selectedColor = region?.color || REGION_COLORS[(index < 0 ? 0 : index) % REGION_COLORS.length];
   settings.style.setProperty('--selected-region-color', selectedColor);
@@ -6537,10 +5678,7 @@ function renderRegionLoraCard(region) {
         const value = await askText({
           title: 'Region LoRA strength',
           confirmLabel: 'Set strength',
-          input: {
-            label: 'Strength · -100 to 100', value: region.strength, type: 'number',
-            min: -100, max: 100, step: 0.05, inputMode: 'decimal',
-          },
+          input: { label: 'Strength · 0 to 2', value: region.strength, type: 'number' },
         });
         if (value == null) return;
         region.strength = normalizeRegionStrength(value);
@@ -6572,7 +5710,7 @@ function renderRegionLoraCard(region) {
     startY = event.clientY;
     lastY = event.clientY;
     pointerId = event.pointerId;
-    startStrength = normalizeLoraSliderStrength(region.strength);
+    startStrength = normalizeRegionStrength(region.strength);
     holdTimer = setTimeout(() => {
       adjusting = true;
       card.classList.add('adjusting');
@@ -6586,7 +5724,7 @@ function renderRegionLoraCard(region) {
     if (event.cancelable) event.preventDefault();
     if (adjusting) {
       const dy = startY - event.clientY;
-      region.strength = normalizeLoraSliderStrength(Math.round((startStrength + dy / 90) * 20) / 20);
+      region.strength = normalizeRegionStrength(Math.round((startStrength + dy / 90) * 20) / 20);
       strengthEl.textContent = region.strength.toFixed(2);
       adjustEl.textContent = region.strength.toFixed(2);
     } else {
@@ -6640,7 +5778,6 @@ function setRegionResolutionExpanded(open) {
   if (!picker || !menu) return;
   picker.classList.toggle('expanded', expanded);
   $('#regionResolutionBtn').setAttribute('aria-expanded', String(expanded));
-  moveFocusOutOf(menu, $('#regionResolutionBtn'));
   menu.inert = !expanded;
   menu.setAttribute('aria-hidden', String(!expanded));
 }
@@ -6789,7 +5926,7 @@ function renderRegionEditor() {
   region.strength = normalizeRegionStrength(region.strength);
   syncRegionLoraDisclosure(region);
   renderRegionLoraCard(region);
-  $('#regionStrengthInput').value = String(normalizeLoraSliderStrength(region.strength));
+  $('#regionStrengthInput').value = String(region.strength);
   $('#regionStrengthVal').textContent = region.strength.toFixed(2);
   const hasRef = !!region.refImageName;
   $('#regionRefBtn').hidden = hasRef;
@@ -6952,12 +6089,11 @@ function syncEditAreaChrome() {
   const active = supported && hasEditMask();
   const kreaEdit = state.view === 'edit' && state.editEngine === 'krea2';
   const kreaRef = state.view === 'edit' && state.editEngine === 'krea2ref';
-  const kreaRemix = state.view === 'edit' && state.editEngine === 'krea2remix';
   $('#kreaMaskTools').hidden = !supported;
   const outpaint = editOutpaintActive();
   const localizedActive = active && !outpaint;
   const preserve = $('#editComposite');
-  preserve.hidden = localizedActive || (!outpaint && (kreaEdit || kreaRef || kreaRemix));
+  preserve.hidden = localizedActive || (!outpaint && (kreaEdit || kreaRef));
   const preserveLabel = outpaint ? 'Keep the source at native resolution and blend the generated border' : 'Preserve unchanged areas';
   preserve.setAttribute('aria-label', preserveLabel);
   preserve.title = preserveLabel;
@@ -8373,15 +7509,9 @@ wireEndFrame('vid', 'vidEnd');
 wireEndFrame('anim', 'animEnd');
 
 /* Swap first/last frame in the Video tab */
-function videoSupportsEndFrame() {
-  return state.vidEngine === 'ltx'
-    || state.vidEngine === 'eros'
-    || (state.vidEngine === 'h3' && state.vidH3Mode === 'frames');
-}
-
 function updateSwapChip() {
   const swap = $('#vidSwap');
-  const supportsEnd = videoSupportsEndFrame();
+  const supportsEnd = state.vidEngine === 'ltx' || state.vidEngine === 'eros';
   const hasFirst = !!state.vidRef;
   const hasLast = !!state.vidEnd;
   swap.hidden = !supportsEnd || (!hasFirst && !hasLast);
@@ -8393,13 +7523,10 @@ function updateSwapChip() {
 }
 
 function swapVideoFrames(message = 'First and last frames swapped') {
-  const nextFirst = state.vidEnd || null;
-  state.vidEnd = state.vidRef || null;
-  setVideoFirstFrame(nextFirst);
+  [state.vidRef, state.vidEnd] = [state.vidEnd || null, state.vidRef || null];
   renderVidAttach();
   endFrameRefresh.vidEnd();
   updateVideoPanels();
-  saveForm();
   toast(message);
 }
 
@@ -8420,9 +7547,7 @@ function clearVideoFrameDrag() {
 
 function wireVideoFrameDrag(slot, role) {
   slot.addEventListener('pointerdown', (event) => {
-    if (!videoSupportsEndFrame()) return;
     if (event.target.closest('.attach-x, .input-crop-action')) return;
-    if (event.pointerType === 'mouse') event.preventDefault();
     clearVideoFrameDrag();
     const drag = {
       pointerId: event.pointerId,
@@ -8434,15 +7559,13 @@ function wireVideoFrameDrag(slot, role) {
       timer: null,
     };
     videoFrameDrag = drag;
-    const activate = () => {
+    drag.timer = setTimeout(() => {
       if (videoFrameDrag !== drag) return;
       drag.active = true;
       slot.classList.add('frame-reordering');
       try { slot.setPointerCapture(event.pointerId); } catch { /* noop */ }
       if (navigator.vibrate) navigator.vibrate(10);
-    };
-    if (event.pointerType === 'mouse') activate();
-    else drag.timer = setTimeout(activate, 300);
+    }, 300);
   });
   slot.addEventListener('pointermove', (event) => {
     const drag = videoFrameDrag;
@@ -8702,9 +7825,6 @@ function setAudioChipVisual(chip, active) {
   } else {
     chip.textContent = active ? 'Audio added' : 'Audio';
   }
-  // Show/hide the dedicated remove button on either audio chip.
-  const removeBtn = chip.querySelector('.attach-x');
-  if (removeBtn) removeBtn.hidden = !active;
   // Face ID mode rewrites the video audio chip with lipsync copy.
   if (chip && chip.id === 'vidAudioChip' && typeof renderVidFace === 'function') renderVidFace();
 }
@@ -8819,10 +7939,6 @@ function wireSigmaRow(rowId, key) {
   $$(`#${rowId} .chip`).forEach((c) => c.addEventListener('click', () => {
     $$(`#${rowId} .chip`).forEach((x) => x.classList.toggle('active', x === c));
     state[key] = c.dataset.sig;
-    if (rowId === 'vidSigmaRow') {
-      renderVideoStepControl();
-      saveForm();
-    }
   }));
 }
 wireSigmaRow('vidSigmaRow', 'vidSigma');
@@ -8899,54 +8015,6 @@ function renderQwenQuality() {
   renderNegativePromptControl();
 }
 
-function krea2IdentityEditSamplingPreset() {
-  const preset = state.userDefaults.krea2Edit || {};
-  const steps = Number(preset.steps);
-  const cfg = Number(preset.cfg);
-  return {
-    steps: Number.isFinite(steps) ? Math.round(Math.max(8, Math.min(12, steps))) : 10,
-    cfg: Number.isFinite(cfg) ? Math.max(1, Math.min(5, cfg)) : 1,
-  };
-}
-
-function applyKrea2IdentityEditSamplingPreset() {
-  if (state.view !== 'edit' || state.editEngine !== 'krea2ref') return;
-  const preset = krea2IdentityEditSamplingPreset();
-  $('#stepsInput').value = String(preset.steps);
-  $('#cfgInput').value = String(preset.cfg);
-}
-
-function krea2RefBoostTone(value) {
-  if (value < 2.5) return 'Creative';
-  if (value < 6) return 'Balanced';
-  if (value < 9) return 'Faithful';
-  return 'Locked';
-}
-
-function syncKrea2RefBoostUi(value) {
-  const input = $('#krea2RefBoost');
-  const slider = $('#krea2RefBoostSlider');
-  if (!input || !slider) return;
-  const normalized = Math.max(0, Math.min(12, Number(value) || 0));
-  const tone = krea2RefBoostTone(normalized);
-  input.value = String(normalized);
-  input.setAttribute('aria-valuetext', `${normalized.toFixed(2)}, ${tone}`);
-  slider.style.setProperty('--reference-progress', `${(normalized / 12) * 100}%`);
-  $('#krea2RefBoostVal').textContent = normalized.toFixed(2);
-  $('#krea2RefBoostTone').textContent = tone;
-}
-
-function renderKrea2RefBoost() {
-  const active = state.view === 'edit'
-    && (state.editEngine === 'krea2ref' || (state.editEngine === 'krea2' && state.editOutpaint));
-  const field = $('#krea2RefBoostField');
-  if (!field) return;
-  field.hidden = !active;
-  const value = Math.max(0, Math.min(12, Number(state.krea2RefBoost) || 0));
-  state.krea2RefBoost = value;
-  syncKrea2RefBoostUi(value);
-}
-
 function syncEditSamplingRow() {
   const row = $('#editSamplingRow');
   if (!row) return;
@@ -8965,12 +8033,6 @@ $('#qwenQualityControl').addEventListener('click', (event) => {
   renderLoras();
   saveForm();
 });
-
-$('#krea2RefBoost').addEventListener('input', (event) => {
-  state.krea2RefBoost = Math.max(0, Math.min(12, Number(event.target.value) || 0));
-  syncKrea2RefBoostUi(state.krea2RefBoost);
-});
-$('#krea2RefBoost').addEventListener('change', saveForm);
 
 function selectedQwenAngleViews() {
   const views = QWEN_ANGLE_VIEWS
@@ -9004,11 +8066,9 @@ function renderQwenAngleMode() {
   const inline = $('#qwenAnglesInline');
   const textPane = $('#qwenTextPromptPane');
   const promptBox = textPane.closest('.prompt-box');
-  if (!active) moveFocusOutOf(inline);
   inline.classList.toggle('is-active', active);
   inline.setAttribute('aria-hidden', String(!active));
   inline.inert = !active;
-  if (active) moveFocusOutOf(textPane);
   textPane.classList.toggle('is-collapsed', active);
   textPane.setAttribute('aria-hidden', String(active));
   textPane.inert = active;
@@ -9127,15 +8187,11 @@ $('#qwenAnglesToggleAll').addEventListener('click', () => {
 
 function renderEnhance() {
   const btn = $('#enhanceBtn');
-  const h3Video = state.view === 'video' && state.vidEngine === 'h3';
   const frameAwareVideo = state.view === 'video' && !!state.vidRef
     && !['ltx-edit'].includes(state.vidEngine);
   btn.classList.toggle('on', state.enhance);
-  btn.setAttribute('aria-pressed', String(state.enhance));
   btn.title = state.enhance
-    ? (h3Video
-      ? 'H3 prompt enhance: on · timed shots, camera, sound, and dialogue when appropriate'
-      : (frameAwareVideo ? 'Enhance with start frame + prompt: on' : 'Prompt enhance: on'))
+    ? (frameAwareVideo ? 'Enhance with start frame + prompt: on' : 'Prompt enhance: on')
     : 'Prompt enhance: off';
   btn.setAttribute('aria-label', btn.title);
 }
@@ -9185,7 +8241,7 @@ function updatePromptClear() {
   $('#promptClear').hidden = !promptDraft().trim();
 }
 $('#promptComposer').addEventListener('beforeinput', (event) => {
-  if ((state.view === 'edit' || h3ReferenceModeActive()) && event.inputType === 'insertText' && event.data === '@') {
+  if (state.view === 'edit' && event.inputType === 'insertText' && event.data === '@') {
     event.preventDefault();
     openPromptMentionPicker();
   }
@@ -9195,41 +8251,15 @@ $('#promptComposer').addEventListener('input', syncPromptDraftFromComposer);
 $('#promptComposer').addEventListener('keyup', capturePromptSelection);
 $('#promptComposer').addEventListener('mouseup', capturePromptSelection);
 $('#promptComposer').addEventListener('click', (event) => {
-  const remove = event.target.closest('[data-remove-prompt-ref], [data-remove-prompt-lora], [data-remove-prompt-preset]');
-  if (!remove) {
-    const openH3Reference = event.target.closest('[data-open-h3-prompt-ref]');
-    const h3Token = openH3Reference?.closest('.prompt-h3-ref-token');
-    if (h3Token) {
-      openPromptMentionPicker({ targetToken: h3Token });
-      return;
-    }
-    const openPreset = event.target.closest('[data-open-prompt-preset]');
-    const token = openPreset?.closest('.prompt-preset-token');
-    if (token) {
-      openCameraPicker({
-        packId: token.dataset.presetPack,
-        categoryId: token.dataset.presetCategory,
-        presetId: token.dataset.presetId,
-      });
-    }
-    return;
-  }
-  const token = remove.closest('.prompt-ref-token, .prompt-lora-token, .prompt-preset-token');
-  if (token.classList.contains('prompt-preset-token')) {
-    const separator = token.previousElementSibling?.classList.contains('prompt-preset-separator')
-      ? token.previousElementSibling
-      : token.nextElementSibling?.classList.contains('prompt-preset-separator')
-        ? token.nextElementSibling
-        : null;
-    separator?.remove();
-  }
+  const remove = event.target.closest('[data-remove-prompt-ref], [data-remove-prompt-lora]');
+  if (!remove) return;
+  const token = remove.closest('.prompt-ref-token, .prompt-lora-token');
   token.remove();
   syncPromptDraftFromComposer();
   $('#promptComposer').focus();
 });
 $('#promptClear').addEventListener('click', () => {
   setPromptDraft('');
-  state.promptPresetSelections = { camera: [] };
   if (Object.prototype.hasOwnProperty.call(state.prompts, state.view)) state.prompts[state.view] = '';
   updatePromptClear();
   renderPromptSuggestions();
@@ -9238,600 +8268,184 @@ $('#promptClear').addEventListener('click', () => {
   schedulePromptIntentHint(0);
 });
 
-let activePromptPresetPackId = 'mix-studio-camera';
-let activePromptPresetCategoryId = 'all';
-let promptPresetSearchQuery = '';
-let promptPresetPackView = 'catalog';
-let promptPresetCategoryScrollFrame = 0;
-let promptPresetCategoryNavigationTarget = '';
-let promptPresetCategoryNavigationTimer = 0;
+const CAMERA_WHEEL_KEYS = ['camera', 'lens', 'focalLength', 'aperture', 'shutter', 'iso'];
+const cameraWheelScrollTimers = {};
+let cameraWheelSyncing = false;
 
-function promptPresetPackSelection(pack) {
-  const activeCategorySelection = selectedPromptPresets(activePromptPresetCategoryId)
-    .find((preset) => preset?.packId === pack.id);
-  if (activeCategorySelection) return activeCategorySelection;
-  return allSelectedPromptPresets().find((preset) => preset?.packId === pack.id) || null;
+function clearCameraWheelScrollTimers() {
+  Object.keys(cameraWheelScrollTimers).forEach((key) => {
+    clearTimeout(cameraWheelScrollTimers[key]);
+    delete cameraWheelScrollTimers[key];
+  });
 }
 
-function promptPresetPackThumbnail(pack) {
-  const selected = promptPresetPackSelection(pack);
-  const source = selected?.thumbnail || pack.categories
-    .flatMap((category) => category.presets || [])
-    .find((preset) => preset.thumbnail)?.thumbnail;
-  return source
-    ? `<img src="${escapeHtml(source)}" alt="" loading="lazy">`
-    : '<span aria-hidden="true">M</span>';
-}
-
-function normalizedPromptPresetSearch(value) {
-  return String(value || '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim();
-}
-
-function promptPresetSearchEntries(packs, query) {
-  const terms = normalizedPromptPresetSearch(query).split(/\s+/).filter(Boolean);
-  if (!terms.length) return [];
-  const entries = [];
-  for (const pack of packs) {
-    for (const category of pack.categories || []) {
-      for (const preset of category.presets || []) {
-        const searchable = normalizedPromptPresetSearch([
-          pack.name,
-          pack.author,
-          pack.description,
-          category.label,
-          category.description,
-          preset.label,
-          preset.note,
-          preset.value,
-        ].join(' '));
-        if (terms.every((term) => searchable.includes(term))) entries.push({ pack, category, preset });
-      }
-    }
-  }
-  return entries;
-}
-
-function syncPromptPresetSearchControl(resultCount = null, packCount = 0) {
-  const input = $('#promptPresetSearch');
-  const clear = $('#promptPresetSearchClear');
-  const status = $('#promptPresetSearchStatus');
-  if (!input || !clear || !status) return;
-  if (input.value !== promptPresetSearchQuery) input.value = promptPresetSearchQuery;
-  clear.hidden = !promptPresetSearchQuery;
-  status.textContent = promptPresetSearchQuery && resultCount !== null
-    ? `${resultCount} result${resultCount === 1 ? '' : 's'}${packCount ? ` · ${packCount} pack${packCount === 1 ? '' : 's'}` : ''}`
-    : '';
-}
-
-function renderPromptPresetSummary() {
-  const summary = $('#promptPresetSummary');
-  const list = $('#promptPresetSelectionList');
-  if (!summary || !list) return;
-  const applied = allSelectedPromptPresets().filter((preset) => preset?.value);
-  summary.classList.toggle('has-selections', applied.length > 0);
-  $('#promptPresetSelection').textContent = applied.length
-    ? (applied.length === 1 ? applied[0].label : `${applied.length} presets`)
-    : 'No presets applied';
-  list.hidden = applied.length === 0;
-  list.replaceChildren();
-  for (const preset of applied) {
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'preset-selection-chip';
-    remove.dataset.presetAccent = preset.accent || 'violet';
-    remove.title = `Remove ${preset.label || 'visual preset'}`;
-    remove.setAttribute('aria-label', `Remove ${preset.label || 'visual preset'}`);
-    if (preset.thumbnail) {
-      const image = document.createElement('img');
-      image.src = preset.thumbnail;
-      image.alt = '';
-      image.addEventListener('error', () => remove.classList.add('image-missing'), { once: true });
-      remove.appendChild(image);
-    }
-    const fallback = document.createElement('span');
-    fallback.className = 'preset-selection-chip-fallback';
-    fallback.textContent = String(preset.label || 'P').slice(0, 1);
-    const dismiss = document.createElement('span');
-    dismiss.className = 'preset-selection-chip-remove';
-    dismiss.setAttribute('aria-hidden', 'true');
-    dismiss.textContent = '×';
-    remove.append(fallback, dismiss);
-    remove.addEventListener('click', () => applyPromptPresetSelection(preset.category, preset));
-    list.appendChild(remove);
-  }
-}
-
-function clearPromptPresetSearch(options = {}) {
-  if (!promptPresetSearchQuery && !$('#promptPresetSearch')?.value) return;
-  promptPresetSearchQuery = '';
-  syncPromptPresetSearchControl();
+function setCameraSetting(key, value) {
+  if (!CameraSettings) return;
+  state.cameraSettings = CameraSettings.normalizeSettings(Object.assign({}, state.cameraSettings, { [key]: value }));
   renderCameraPicker();
-  if (options.focus !== false) $('#promptPresetSearch')?.focus({ preventScroll: true });
+  saveForm();
 }
 
-function focusPromptPresetPack(id) {
-  requestAnimationFrame(() => {
-    const button = $$('#promptPresetPackNav [data-preset-pack-tab]')
-      .find((item) => item.dataset.presetPackTab === id);
-    button?.focus({ preventScroll: true });
-  });
+function updateCameraPreview() {
+  const preview = $('#cameraPreview');
+  if (preview) preview.textContent = CameraSettings.cameraPromptPhrase(state.cameraSettings);
 }
 
-function syncPromptPresetPackNameOverflow() {
-  $$('#promptPresetPackNav .preset-pack-card-copy strong').forEach((line) => {
-    const content = line.firstElementChild;
-    if (!content) return;
-    const overflow = Math.max(0, Math.ceil(content.scrollWidth - line.clientWidth));
-    line.classList.toggle('is-overflowing', overflow > 2);
-    line.style.setProperty('--preset-pack-name-overflow', `${overflow}px`);
-    line.style.setProperty('--preset-pack-name-duration', `${Math.min(12, Math.max(5, 4 + overflow / 16))}s`);
-  });
+function cameraMatchesSettings(settings) {
+  const current = CameraSettings.normalizeSettings(state.cameraSettings);
+  const next = CameraSettings.normalizeSettings(settings);
+  return ['camera', 'lens', 'focalLength', 'aperture', 'shutter', 'iso']
+    .every((key) => current[key] === next[key]);
 }
 
-function promptPresetPackGridColumns() {
-  const grid = $('#promptPresetPackNav');
-  if (!grid) return 1;
-  return Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(/\s+/).filter(Boolean).length);
+function applyCameraCombo(comboId) {
+  if (!CameraSettings) return;
+  state.cameraSettings = CameraSettings.applyCameraCombo(comboId, state.cameraSettings);
+  renderCameraPicker();
+  saveForm();
 }
 
-function focusPromptPresetCategory(id) {
-  requestAnimationFrame(() => {
-    const button = $$('#promptPresetCategoryNav [data-preset-category-tab]')
-      .find((item) => item.dataset.presetCategoryTab === id);
-    button?.focus({ preventScroll: true });
-  });
-}
-
-function syncPromptPresetCategoryOverflow() {
-  const rail = $('#promptPresetCategoryRail');
-  const nav = $('#promptPresetCategoryNav');
-  if (!rail || !nav) return;
-  const maxScroll = Math.max(0, nav.scrollWidth - nav.clientWidth);
-  const canScrollPrev = maxScroll > 2 && nav.scrollLeft > 4;
-  const canScrollNext = maxScroll > 2 && nav.scrollLeft < maxScroll - 4;
-  rail.classList.toggle('can-scroll-prev', canScrollPrev);
-  rail.classList.toggle('can-scroll-next', canScrollNext);
-  [
-    [$('#promptPresetCategoryPrev'), canScrollPrev],
-    [$('#promptPresetCategoryNext'), canScrollNext],
-  ].forEach(([button, available]) => {
-    if (!button) return;
-    button.disabled = !available;
-    button.tabIndex = available ? 0 : -1;
-    button.setAttribute('aria-hidden', String(!available));
-  });
-}
-
-function scrollPromptPresetCategories(direction) {
-  const nav = $('#promptPresetCategoryNav');
-  if (!nav) return;
-  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  nav.scrollBy({
-    left: direction * Math.max(120, Math.round(nav.clientWidth * .72)),
-    behavior: reduceMotion ? 'auto' : 'smooth',
-  });
-}
-
-function syncPromptPresetCategoryIndicator(options = {}) {
-  const nav = $('#promptPresetCategoryNav');
-  const indicator = nav?.querySelector('.preset-category-filter-indicator');
-  const active = nav?.querySelector('[data-preset-category-tab].active');
-  if (!nav || !indicator || !active) return;
-  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  const animate = options.animate !== false && !reduceMotion;
-  indicator.style.width = `${active.offsetWidth}px`;
-  indicator.style.transform = `translateX(${active.offsetLeft}px)`;
-  if (!indicator.classList.contains('is-ready')) {
-    indicator.getBoundingClientRect();
-    indicator.classList.add('is-ready');
+function renderCameraCombos() {
+  const row = $('#cameraComboGrid');
+  if (!row || !CameraSettings) return;
+  row.innerHTML = '';
+  for (const combo of CameraSettings.CAMERA_COMBOS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'camera-combo' + (cameraMatchesSettings(combo.settings) ? ' active' : '');
+    btn.innerHTML = `<b>${escapeHtml(combo.label)}</b><span>${escapeHtml(combo.note || '')}</span>`;
+    btn.addEventListener('click', () => applyCameraCombo(combo.id));
+    row.appendChild(btn);
   }
-  const centered = active.offsetLeft - ((nav.clientWidth - active.offsetWidth) / 2);
-  nav.scrollTo({
-    left: Math.max(0, centered),
-    behavior: animate ? 'smooth' : 'auto',
+}
+
+function updateCameraWheelActiveState(key) {
+  const wheel = $(`[data-camera-wheel="${key}"]`);
+  if (!wheel) return;
+  wheel.querySelectorAll('.camera-wheel-item').forEach((item) => {
+    item.classList.toggle('active', item.dataset.value === state.cameraSettings[key]);
   });
-  syncPromptPresetCategoryOverflow();
 }
 
-function activatePromptPresetCategory(categoryId, options = {}) {
-  const nextId = String(categoryId || 'all');
-  const valid = nextId === 'all' || $$('#promptPresetCategoryNav [data-preset-category-tab]')
-    .some((button) => button.dataset.presetCategoryTab === nextId);
-  activePromptPresetCategoryId = valid ? nextId : 'all';
-  $$('#promptPresetCategoryNav [data-preset-category-tab]').forEach((button) => {
-    const active = button.dataset.presetCategoryTab === activePromptPresetCategoryId;
-    button.classList.toggle('active', active);
-    if (active) button.setAttribute('aria-current', 'location');
-    else button.removeAttribute('aria-current');
-  });
-  syncPromptPresetCategoryIndicator({ animate: options.animate !== false });
-  if (options.focus) focusPromptPresetCategory(activePromptPresetCategoryId);
-}
-
-function cancelPromptPresetCategoryNavigation() {
-  promptPresetCategoryNavigationTarget = '';
-  clearTimeout(promptPresetCategoryNavigationTimer);
-  promptPresetCategoryNavigationTimer = 0;
-}
-
-function navigatePromptPresetCategory(categoryId, options = {}) {
-  const list = $('#promptPresetCategories');
-  if (!list) return;
-  const nextId = String(categoryId || 'all');
-  const target = nextId === 'all'
-    ? null
-    : $$('#promptPresetCategories .preset-category')
-      .find((section) => section.dataset.presetCategory === nextId);
-  activatePromptPresetCategory(target ? nextId : 'all', options);
-  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  const top = target
-    ? list.scrollTop + target.getBoundingClientRect().top - list.getBoundingClientRect().top
-    : 0;
-  cancelPromptPresetCategoryNavigation();
-  if (options.animate !== false && !reduceMotion) {
-    promptPresetCategoryNavigationTarget = target ? nextId : 'all';
-    promptPresetCategoryNavigationTimer = window.setTimeout(() => {
-      cancelPromptPresetCategoryNavigation();
-      schedulePromptPresetCategoryScrollSync();
-    }, 700);
+function cameraWheelOptions(key) {
+  if (key === 'camera') {
+    return CameraSettings.CAMERA_PRESETS.map((item) => ({
+      value: item.id,
+      label: item.label,
+      sub: item.tag || '',
+    }));
   }
-  list.scrollTo({
-    top: Math.max(0, top),
-    behavior: options.animate === false || reduceMotion ? 'auto' : 'smooth',
-  });
+  if (key === 'lens') {
+    return CameraSettings.LENS_PRESETS.map((item) => ({
+      value: item.id,
+      label: item.label,
+      sub: item.tag || '',
+    }));
+  }
+  if (key === 'focalLength') {
+    return CameraSettings.FOCAL_LENGTHS.map((value) => ({ value, label: value, sub: 'mm' }));
+  }
+  if (key === 'aperture') {
+    return CameraSettings.APERTURES.map((value) => ({ value, label: `f/${value}`, sub: 'aperture' }));
+  }
+  if (key === 'shutter') {
+    return CameraSettings.SHUTTERS.map((value) => ({ value, label: `${value}s`, sub: 'shutter' }));
+  }
+  if (key === 'iso') {
+    return CameraSettings.ISOS.map((value) => ({ value, label: `ISO ${value}`, sub: 'sensitivity' }));
+  }
+  return [];
 }
 
-function syncPromptPresetCategoryFromScroll(options = {}) {
-  const list = $('#promptPresetCategories');
-  const sections = $$('#promptPresetCategories .preset-category');
-  if (!list || !sections.length || promptPresetSearchQuery) return;
-  if (promptPresetCategoryNavigationTarget) {
-    const target = promptPresetCategoryNavigationTarget === 'all'
-      ? null
-      : sections.find((section) => (
-        section.dataset.presetCategory === promptPresetCategoryNavigationTarget
-      ));
-    const reached = target
-      ? Math.abs(target.getBoundingClientRect().top - list.getBoundingClientRect().top) <= 10
-        || (target === sections.at(-1)
-          && list.scrollTop + list.clientHeight >= list.scrollHeight - 4)
-      : list.scrollTop <= 8;
-    if (!reached) return;
-    cancelPromptPresetCategoryNavigation();
-  }
-  let nextId = 'all';
-  if (list.scrollTop > 8) {
-    const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 4;
-    if (atEnd) {
-      nextId = sections.at(-1).dataset.presetCategory;
-    } else {
-      const threshold = list.getBoundingClientRect().top + Math.min(96, list.clientHeight * .22);
-      for (const section of sections) {
-        if (section.getBoundingClientRect().top > threshold) break;
-        nextId = section.dataset.presetCategory;
-      }
+function selectCameraWheelFromScroll(list) {
+  const items = [...list.querySelectorAll('.camera-wheel-item')];
+  if (!items.length) return null;
+  const listRect = list.getBoundingClientRect();
+  const center = listRect.top + (listRect.height / 2);
+  let closest = items[0];
+  let closestDistance = Infinity;
+  for (const item of items) {
+    const rect = item.getBoundingClientRect();
+    const itemCenter = rect.top + (rect.height / 2);
+    const distance = Math.abs(itemCenter - center);
+    if (distance < closestDistance) {
+      closest = item;
+      closestDistance = distance;
     }
   }
-  if (nextId === activePromptPresetCategoryId && options.force !== true) return;
-  activatePromptPresetCategory(nextId, { animate: options.animate !== false });
+  return closest.dataset.value || null;
 }
 
-function schedulePromptPresetCategoryScrollSync() {
-  cancelAnimationFrame(promptPresetCategoryScrollFrame);
-  promptPresetCategoryScrollFrame = requestAnimationFrame(() => {
-    promptPresetCategoryScrollFrame = 0;
-    syncPromptPresetCategoryFromScroll();
+function commitCameraWheelScroll(key, list) {
+  if (!CameraSettings) return;
+  const value = selectCameraWheelFromScroll(list);
+  if (!value || state.cameraSettings[key] === value) return;
+  state.cameraSettings = CameraSettings.normalizeSettings(Object.assign({}, state.cameraSettings, { [key]: value }));
+  updateCameraWheelActiveState(key);
+  renderCameraCombos();
+  updateCameraPreview();
+  saveForm();
+}
+
+function centerCameraWheels() {
+  clearCameraWheelScrollTimers();
+  cameraWheelSyncing = true;
+  requestAnimationFrame(() => {
+    $$('.camera-wheel-list').forEach((list) => {
+      const active = list.querySelector('.camera-wheel-item.active');
+      if (!active) return;
+      list.scrollTop = Math.max(0, active.offsetTop - ((list.clientHeight - active.clientHeight) / 2));
+    });
+    setTimeout(() => {
+      cameraWheelSyncing = false;
+    }, 140);
   });
+}
+
+function renderCameraWheel(key) {
+  const wheel = $(`[data-camera-wheel="${key}"]`);
+  if (!wheel || !CameraSettings) return;
+  const list = wheel.querySelector('.camera-wheel-list');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const option of cameraWheelOptions(key)) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.value = option.value;
+    btn.className = 'camera-wheel-item' + (state.cameraSettings[key] === option.value ? ' active' : '');
+    btn.innerHTML = `<b>${escapeHtml(option.label)}</b><span>${escapeHtml(option.sub || '')}</span>`;
+    btn.addEventListener('click', () => setCameraSetting(key, option.value));
+    list.appendChild(btn);
+  }
+  if (list.dataset.cameraScrollWired !== '1') {
+    list.dataset.cameraScrollWired = '1';
+    list.addEventListener('scroll', () => {
+      if (cameraWheelSyncing) return;
+      clearTimeout(cameraWheelScrollTimers[key]);
+      cameraWheelScrollTimers[key] = setTimeout(() => commitCameraWheelScroll(key, list), 90);
+    }, { passive: true });
+  }
 }
 
 function renderCameraPicker() {
-  const container = $('#promptPresetCategories');
-  if (!container || !CameraSettings) return;
-  const packs = promptPresetPackCatalog();
-  if (!packs.some((pack) => pack.id === activePromptPresetPackId)) {
-    activePromptPresetPackId = packs[0]?.id || '';
-  }
-  const activePack = packs.find((pack) => pack.id === activePromptPresetPackId);
-  const categories = activePack?.categories || [];
-  const previousCategoryPackId = container.dataset.promptPresetPack || '';
-  const hadCategoryContent = !!container.querySelector('.preset-category');
-  const previousCategoryScrollTop = hadCategoryContent ? container.scrollTop : 0;
-  if (previousCategoryPackId && previousCategoryPackId !== activePack?.id) {
-    cancelPromptPresetCategoryNavigation();
-  }
-  if (activePromptPresetCategoryId !== 'all'
-    && !categories.some((category) => category.id === activePromptPresetCategoryId)) {
-    activePromptPresetCategoryId = 'all';
-  }
-  const requestedCategoryId = activePromptPresetCategoryId;
-  container.dataset.promptPresetPack = activePack?.id || '';
-  const browser = $('#promptPresetPackBrowser');
-  const detail = $('#promptPresetPackDetail');
-  browser.hidden = promptPresetPackView !== 'catalog';
-  detail.hidden = promptPresetPackView !== 'detail';
-  const packNav = $('#promptPresetPackNav');
-  packNav.replaceChildren();
-  packs.forEach((pack, index) => {
-    const appliedCount = allSelectedPromptPresets()
-      .filter((preset) => preset?.packId === pack.id).length;
-    const item = document.createElement('div');
-    item.className = 'preset-pack-grid-item';
-    item.setAttribute('role', 'listitem');
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'preset-pack-card';
-    card.dataset.presetPackTab = pack.id;
-    card.setAttribute('aria-label', `Open ${pack.name}${appliedCount ? `, ${appliedCount} preset${appliedCount === 1 ? '' : 's'} applied` : ''}`);
-    card.innerHTML = `
-      <span class="preset-pack-card-media">${promptPresetPackThumbnail(pack)}</span>
-      <span class="preset-pack-card-copy">
-        <strong title="${escapeHtml(pack.name)}"><span>${escapeHtml(pack.name)}</span></strong>
-        <small>${escapeHtml(promptPackCategoryLabel(pack))}</small>
-        <span>${appliedCount
-    ? `${appliedCount} preset${appliedCount === 1 ? '' : 's'} applied`
-    : `${pack.categories.length} categor${pack.categories.length === 1 ? 'y' : 'ies'}`}</span>
-      </span>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`;
-    card.addEventListener('click', () => {
-      promptPresetSearchQuery = '';
-      activePromptPresetPackId = pack.id;
-      activePromptPresetCategoryId = 'all';
-      promptPresetPackView = 'detail';
-      renderCameraPicker();
-      $('#promptPresetPackBack')?.focus({ preventScroll: true });
-    });
-    card.addEventListener('keydown', (event) => {
-      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
-      event.preventDefault();
-      const columns = promptPresetPackGridColumns();
-      const step = event.key === 'ArrowUp' ? -columns
-        : event.key === 'ArrowDown' ? columns
-          : event.key === 'ArrowLeft' ? -1 : 1;
-      const next = event.key === 'Home' ? 0
-        : event.key === 'End' ? packs.length - 1
-          : (index + step + packs.length) % packs.length;
-      focusPromptPresetPack(packs[next].id);
-    });
-    item.appendChild(card);
-    packNav.appendChild(item);
-  });
-  requestAnimationFrame(syncPromptPresetPackNameOverflow);
-  if (promptPresetPackView === 'catalog') {
-    container.replaceChildren();
-    return;
-  }
-  $('#promptPresetPackTitle').textContent = activePack?.name || '';
-  $('#promptPresetPackDescription').textContent = activePack?.description
-    || `${activePack?.categories?.length || 0} categor${activePack?.categories?.length === 1 ? 'y' : 'ies'}`;
-  const categoryNav = $('#promptPresetCategoryNav');
-  const categoryIndicator = document.createElement('span');
-  categoryIndicator.className = 'preset-category-filter-indicator';
-  categoryIndicator.setAttribute('aria-hidden', 'true');
-  categoryNav.replaceChildren(categoryIndicator);
-  const categoryFilters = [
-    { id: 'all', label: 'All' },
-    ...categories.map((category) => ({ id: category.id, label: category.label, category })),
-  ];
-  categoryFilters.forEach((filter, index) => {
-    const active = filter.id === activePromptPresetCategoryId;
-    const applied = filter.id === 'all'
-      ? allSelectedPromptPresets().some((preset) => preset?.packId === activePromptPresetPackId)
-      : selectedPromptPresets(filter.id)
-        .some((preset) => preset?.packId === activePromptPresetPackId);
-    const tab = document.createElement('button');
-    tab.type = 'button';
-    tab.className = 'preset-category-tab' + (active ? ' active' : '');
-    tab.dataset.presetCategoryTab = filter.id;
-    tab.dataset.applied = String(applied);
-    if (active) tab.setAttribute('aria-current', 'location');
-    tab.setAttribute('aria-controls', filter.id === 'all'
-      ? 'promptPresetCategories'
-      : `promptPresetPanel-${filter.id}`);
-    tab.setAttribute('aria-label', `${filter.label}${applied ? ', includes an applied preset' : ''}`);
-    tab.innerHTML = `<span>${escapeHtml(filter.label)}</span>`;
-    tab.addEventListener('click', () => {
-      promptPresetSearchQuery = '';
-      navigatePromptPresetCategory(filter.id, { focus: true });
-    });
-    tab.addEventListener('keydown', (event) => {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-      event.preventDefault();
-      const next = event.key === 'Home' ? 0
-        : event.key === 'End' ? categoryFilters.length - 1
-          : (index + (event.key === 'ArrowRight' ? 1 : -1) + categoryFilters.length) % categoryFilters.length;
-      navigatePromptPresetCategory(categoryFilters[next].id, { focus: true });
-    });
-    categoryNav.appendChild(tab);
-  });
-  $('#promptPresetCategorySelector').hidden = !!promptPresetSearchQuery || categories.length === 0;
-  container.replaceChildren();
-  if (promptPresetSearchQuery) {
-    const entries = promptPresetSearchEntries(activePack ? [activePack] : [], promptPresetSearchQuery);
-    const section = document.createElement('section');
-    section.className = 'preset-search-results';
-    section.setAttribute('role', 'region');
-    section.setAttribute('aria-label', 'Preset search results');
-    if (entries.length) {
-      section.innerHTML = `
-        <header class="preset-category-head preset-search-results-head">
-          <div>
-            <h4>Search results</h4>
-            <p>Matches in ${escapeHtml(activePack?.name || 'this Mix Pack')}.</p>
-          </div>
-        </header>
-        <div class="camera-preset-grid preset-search-grid" role="group" aria-label="Matching presets"></div>`;
-      const grid = section.querySelector('.camera-preset-grid');
-      entries.forEach(({ pack, category, preset }) => {
-        grid.appendChild(createPromptPresetCard(preset, category, {
-          context: `${pack.name} · ${category.label}`,
-        }));
-      });
-    } else {
-      section.innerHTML = `
-        <div class="preset-search-empty">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.4"/><path d="m16 16 4 4"/></svg>
-          <strong>No presets found</strong>
-          <p>Try a pack, category, style, or visual detail.</p>
-          <button type="button">Clear search</button>
-        </div>`;
-      section.querySelector('button').addEventListener('click', () => clearPromptPresetSearch());
-    }
-    container.appendChild(section);
-    syncPromptPresetSearchControl(entries.length);
-  } else {
-    syncPromptPresetSearchControl();
-    for (const category of categories) {
-      const selected = selectedPromptPresets(category.id);
-      const selectedInPack = selected.filter((preset) => preset.packId === activePromptPresetPackId);
-      const selectedElsewhere = selected.filter((preset) => preset.packId !== activePromptPresetPackId);
-      const section = document.createElement('section');
-      section.className = 'preset-category';
-      section.dataset.presetCategory = category.id;
-      section.id = `promptPresetPanel-${category.id}`;
-      section.setAttribute('role', 'region');
-      const headingId = `promptPresetCategory-${category.id}`;
-      section.setAttribute('aria-labelledby', headingId);
-      section.innerHTML = `
-        <header class="preset-category-head">
-          <div>
-            <h4 id="${escapeHtml(headingId)}">${escapeHtml(category.label)}</h4>
-            ${category.description ? `<p>${escapeHtml(category.description)}</p>` : ''}
-          </div>
-          ${selectedInPack.length
-    ? `<span class="preset-category-state" data-state="applied">${selectedInPack.length === 1 ? 'Applied' : `${selectedInPack.length} applied`}</span>`
-    : selectedElsewhere.length
-      ? `<span class="preset-category-state" data-state="other">${selectedElsewhere.length === 1
-        ? `Using ${escapeHtml(selectedElsewhere[0].packName || 'another pack')}`
-        : `Using ${selectedElsewhere.length} from other packs`}</span>`
-      : ''}
-        </header>
-        <div class="camera-preset-grid" role="group" aria-label="${escapeHtml(category.label)} presets"></div>`;
-      const grid = section.querySelector('.camera-preset-grid');
-      for (const preset of category.presets) grid.appendChild(createPromptPresetCard(preset, category));
-      container.appendChild(section);
-    }
-  }
-  renderPromptPresetSummary();
-  requestAnimationFrame(() => {
-    syncPromptPresetCategoryOverflow();
-    if (promptPresetSearchQuery) return;
-    const canRestoreScroll = previousCategoryPackId === activePack?.id && hadCategoryContent;
-    if (canRestoreScroll) {
-      container.scrollTop = previousCategoryScrollTop;
-      syncPromptPresetCategoryFromScroll({ force: true, animate: false });
-    } else if (requestedCategoryId !== 'all') {
-      navigatePromptPresetCategory(requestedCategoryId, { animate: false });
-    } else {
-      container.scrollTop = 0;
-      activatePromptPresetCategory('all', { animate: false });
-    }
-  });
-}
-
-function createPromptPresetCard(preset, category, options = {}) {
-  const active = selectedPromptPresets(category.id).some((selected) => (
-    selected.presetId === preset.presetId && selected.packId === preset.packId
-  ));
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'camera-preset-card' + (active ? ' active' : '');
-  button.dataset.presetId = preset.presetId;
-  button.dataset.presetPack = preset.packId;
-  button.dataset.presetAccent = preset.accent || category.accent || 'violet';
-  button.setAttribute('role', 'checkbox');
-  button.setAttribute('aria-checked', active ? 'true' : 'false');
-  button.title = `${preset.label} · ${preset.packName}`;
-  button.innerHTML = `
-    <span class="camera-preset-image">
-      <img src="${escapeHtml(preset.thumbnail)}" alt="${escapeHtml(preset.thumbnailAlt || '')}" loading="lazy">
-      <span class="camera-preset-check" aria-hidden="true">✓</span>
-    </span>
-    <span class="camera-preset-copy">
-      <strong>${escapeHtml(preset.label)}</strong>
-      <small>${escapeHtml(preset.note || preset.packName || '')}</small>
-      ${options.context ? `<span class="preset-search-context" title="${escapeHtml(options.context)}">${escapeHtml(options.context)}</span>` : ''}
-    </span>`;
-  const image = button.querySelector('img');
-  image.addEventListener('error', () => button.classList.add('image-missing'), { once: true });
-  button.addEventListener('click', () => {
-    applyPromptPresetSelection(category.id, preset);
-  });
-  return button;
-}
-
-function focusPromptPresetCard(packId, categoryId, presetId) {
-  requestAnimationFrame(() => {
-    const card = $$('#promptPresetCategories .camera-preset-card').find((candidate) => (
-      candidate.dataset.presetPack === packId
-      && candidate.dataset.presetId === presetId
-      && candidate.closest('[data-preset-category]')?.dataset.presetCategory === categoryId
-    ));
-    if (!card) return;
-    card.focus({ preventScroll: true });
-    card.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
-  });
-}
-
-async function openCameraPicker(options = {}) {
   if (!CameraSettings) return;
-  const packId = String(options.packId || '');
-  const categoryId = String(options.categoryId || '');
-  const presetId = String(options.presetId || '');
-  promptPresetPackView = packId || categoryId || presetId ? 'detail' : 'catalog';
-  if (packId) activePromptPresetPackId = packId;
-  if (packId || categoryId) activePromptPresetCategoryId = categoryId || 'all';
-  if (packId || categoryId || presetId) promptPresetSearchQuery = '';
+  state.cameraSettings = CameraSettings.normalizeSettings(state.cameraSettings);
+  clearCameraWheelScrollTimers();
+  renderCameraCombos();
+  CAMERA_WHEEL_KEYS.forEach(renderCameraWheel);
+  updateCameraPreview();
+  centerCameraWheels();
+}
+
+function openCameraPicker() {
+  if (!CameraSettings) return;
   renderCameraPicker();
   $('#cameraSheet').classList.add('show');
-  await loadPromptPacks();
-  if (packId && promptPresetPackCatalog().some((pack) => pack.id === packId)) {
-    activePromptPresetPackId = packId;
-    activePromptPresetCategoryId = categoryId || 'all';
-  }
-  renderCameraPicker();
-  if (packId && categoryId && presetId) focusPromptPresetCard(packId, categoryId, presetId);
 }
 
-function stripAppliedPromptPreset(prompt, phrase) {
-  const source = String(prompt || '');
-  const value = String(phrase || '').trim();
-  if (!value) return source.trim();
-  const escaped = escapePromptPattern(value);
-  const atEnd = new RegExp(`\\s*,\\s*${escaped}\\s*$`, 'i');
-  const stripped = atEnd.test(source)
-    ? source.replace(atEnd, '')
-    : source.replace(new RegExp(escaped, 'i'), '');
-  return stripped
-    .replace(/\s*,\s*,\s*/g, ', ')
-    .replace(/^\s*[,.;]\s*|\s*[,.;]\s*$/g, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
-
-function applyPromptPresetSelection(categoryId, preset) {
-  if (!preset) return;
-  const current = selectedPromptPresets(categoryId);
-  const key = promptPresetSelectionKey(preset);
-  const active = current.some((candidate) => promptPresetSelectionKey(candidate) === key);
-  let value = promptDraft();
-  if (active) {
-    value = stripAppliedPromptPreset(value, preset.value);
-  } else if (preset.value) {
-    const base = value.trim().replace(/[\s,]+$/, '');
-    value = base && !base.includes(preset.value) ? `${base}, ${preset.value}` : (base || preset.value);
-    activePromptPresetPackId = preset.packId || activePromptPresetPackId;
-  }
-  const next = active
-    ? current.filter((candidate) => promptPresetSelectionKey(candidate) !== key)
-    : [...current, preset];
-  state.promptPresetSelections = Object.assign({}, state.promptPresetSelections, {
-    [categoryId]: next.map(promptPresetSelectionPayload),
-  });
+function applyCameraPrompt() {
+  if (!CameraSettings) return;
+  const value = CameraSettings.applyCameraPrompt(promptDraft(), state.cameraSettings);
   setPromptDraft(value);
   if (Object.prototype.hasOwnProperty.call(state.prompts, state.view)) {
     state.prompts[state.view] = value;
@@ -9839,41 +8453,12 @@ function applyPromptPresetSelection(categoryId, preset) {
   updatePromptClear();
   renderPromptSuggestions();
   saveForm();
-  renderCameraPicker();
-  const categoryLabel = preset.categoryLabel || 'Visual';
-  toast(`${categoryLabel} preset ${active ? 'removed' : 'applied'}`);
+  $('#cameraSheet').classList.remove('show');
+  toast('Camera settings added');
 }
 
-$('#cameraPromptBtn').addEventListener('click', () => openCameraPicker());
-window.addEventListener('resize', () => {
-  syncPromptPresetPackNameOverflow();
-  syncPromptPresetCategoryOverflow();
-});
-$('#promptPresetCategoryNav').addEventListener('scroll', syncPromptPresetCategoryOverflow, { passive: true });
-$('#promptPresetCategories').addEventListener('scroll', schedulePromptPresetCategoryScrollSync, { passive: true });
-$('#promptPresetCategories').addEventListener('pointerdown', cancelPromptPresetCategoryNavigation, { passive: true });
-$('#promptPresetCategories').addEventListener('touchstart', cancelPromptPresetCategoryNavigation, { passive: true });
-$('#promptPresetCategories').addEventListener('wheel', cancelPromptPresetCategoryNavigation, { passive: true });
-$('#promptPresetCategoryPrev').addEventListener('click', () => scrollPromptPresetCategories(-1));
-$('#promptPresetCategoryNext').addEventListener('click', () => scrollPromptPresetCategories(1));
-$('#promptPresetPackBack').addEventListener('click', () => {
-  promptPresetSearchQuery = '';
-  promptPresetPackView = 'catalog';
-  renderCameraPicker();
-  requestAnimationFrame(() => {
-    $('#promptPresetPackNav .preset-pack-card')?.focus({ preventScroll: true });
-  });
-});
-$('#promptPresetSearch').addEventListener('input', (event) => {
-  promptPresetSearchQuery = String(event.target.value || '').trimStart();
-  renderCameraPicker();
-});
-$('#promptPresetSearch').addEventListener('keydown', (event) => {
-  if (event.key !== 'Escape' || !promptPresetSearchQuery) return;
-  event.preventDefault();
-  clearPromptPresetSearch();
-});
-$('#promptPresetSearchClear').addEventListener('click', () => clearPromptPresetSearch());
+$('#cameraPromptBtn').addEventListener('click', openCameraPicker);
+$('#cameraApply').addEventListener('click', applyCameraPrompt);
 
 /* ------------------------------------------------------------------ */
 /* Video camera motion                                                 */
@@ -9897,7 +8482,7 @@ function cameraMotionReferenceSelected() {
 }
 
 function cameraMotionAvailableForEngine(engine = state.vidEngine) {
-  return !['h3', 'scail'].includes(engine);
+  return engine !== 'scail';
 }
 
 function cameraMotionsForEngine(engine = state.vidEngine) {
@@ -10281,42 +8866,18 @@ function renderAspects() {
     });
     row.appendChild(native);
   }
-  if (h3ResolutionActive() && state.vidH3Mode === 'frames' && h3SourceAspectRatio() > 0) {
-    const sourceRatio = h3SourceAspectRatio();
-    const sourceDimensions = H3Resolution.dimensions(sourceRatio, 1, h3ResolutionSize());
-    const source = document.createElement('button');
-    source.type = 'button';
-    source.className = 'aspect-chip create-match-aspect' + (h3MatchSourceActive() ? ' active' : '');
-    source.setAttribute('aria-pressed', String(h3MatchSourceActive()));
-    source.setAttribute('aria-label', `Match the first frame aspect at ${sourceDimensions.width} by ${sourceDimensions.height}`);
-    const maxSide = 22;
-    const iconWidth = sourceRatio >= 1 ? maxSide : Math.max(7, Math.round(maxSide * sourceRatio));
-    const iconHeight = sourceRatio >= 1 ? Math.max(7, Math.round(maxSide / sourceRatio)) : maxSide;
-    source.innerHTML = `<span class="ar-box" style="width:${iconWidth}px;height:${iconHeight}px"></span><span>Match frame</span><small class="aspect-output-dims">${derivedAspectLabel(state.vidRef.w, state.vidRef.h)} · ${sourceDimensions.width} × ${sourceDimensions.height}</small>`;
-    source.addEventListener('click', () => {
-      state.vidH3MatchSource = true;
-      state.customDims = false;
-      computeDims();
-      renderAspects();
-      renderDims();
-      saveForm();
-    });
-    row.appendChild(source);
-  }
   for (const a of ASPECTS) {
     const btn = document.createElement('button');
-    const selected = a.label === state.aspect && !state.customDims && !h3MatchSourceActive();
+    const selected = a.label === state.aspect && !state.customDims;
     btn.className = 'aspect-chip' + (selected ? ' active' : '');
     btn.setAttribute('aria-pressed', String(selected));
     btn.dataset.aspect = a.label;
     const maxSide = 22;
     const w = a.ar >= 1 ? maxSide : Math.round(maxSide * a.ar);
     const h = a.ar >= 1 ? Math.round(maxSide / a.ar) : maxSide;
-    const h3Dimensions = h3ResolutionActive() ? H3Resolution.dimensions(a.ar, 1, h3ResolutionSize()) : null;
-    btn.innerHTML = `<span class="ar-box" style="width:${w}px;height:${h}px"></span><span>${a.label}</span>${h3Dimensions ? `<small class="aspect-output-dims">${h3Dimensions.width} × ${h3Dimensions.height}</small>` : ''}`;
+    btn.innerHTML = `<span class="ar-box" style="width:${w}px;height:${h}px"></span>${a.label}`;
     btn.addEventListener('click', () => {
       state.aspect = a.label;
-      if (h3ResolutionActive()) state.vidH3MatchSource = false;
       state.createMatchSource = false;
       state.createMatchNative = false;
       state.customDims = false;
@@ -10329,24 +8890,9 @@ function renderAspects() {
   }
 }
 function renderDims() {
-  const h3Resolution = h3ResolutionActive();
-  const h3FrameMatch = h3MatchSourceActive();
-  const widthInput = $('#wInput');
-  const heightInput = $('#hInput');
-  widthInput.value = state.width;
-  heightInput.value = state.height;
-  widthInput.readOnly = h3Resolution;
-  heightInput.readOnly = h3Resolution;
-  widthInput.setAttribute('aria-readonly', String(h3Resolution));
-  heightInput.setAttribute('aria-readonly', String(h3Resolution));
-  widthInput.title = h3Resolution ? 'MiniMax H3 sets this from the selected aspect ratio' : '';
-  heightInput.title = h3Resolution ? 'MiniMax H3 sets this from the selected aspect ratio' : '';
-  $('#sizeSeg').hidden = false;
-  $('#h3ResolutionWarning').hidden = !h3Resolution || !state.vidH3Xl;
-  $('#sizeSeg [data-h3-xl]').hidden = !h3Resolution;
-  $('#resSummary').textContent = h3Resolution
-    ? `${h3FrameMatch ? `First frame · ${derivedAspectLabel(state.vidRef.w, state.vidRef.h)}` : state.aspect} · ${state.vidH3Xl ? 'XL' : createSizeLabel()} · ${state.width} × ${state.height}`
-    : state.view === 'create' && state.createMode === 'image' && state.createMatchSource && matchedCreateOutputDimensions()
+  $('#wInput').value = state.width;
+  $('#hInput').value = state.height;
+  $('#resSummary').textContent = state.view === 'create' && state.createMode === 'image' && state.createMatchSource && matchedCreateOutputDimensions()
     ? `${state.aspect} · ${state.createMatchNative ? 'Native image' : `Match image ${createSizeLabel()}`} · ${state.width} × ${state.height}`
     : (state.customDims
       ? `custom · ${state.width} × ${state.height}`
@@ -10362,10 +8908,8 @@ function renderDims() {
     icon.style.height = `${h}px`;
   }
   $$('#sizeSeg button').forEach((b) => {
-    const selected = h3Resolution
-      ? (b.hasAttribute('data-h3-xl') ? state.vidH3Xl : (!state.vidH3Xl && Number(b.dataset.mp) === state.mp))
-      : (!b.hasAttribute('data-h3-xl') && Number(b.dataset.mp) === state.mp
-        && (!state.customDims || (state.createMatchSource && !state.createMatchNative)));
+    const selected = Number(b.dataset.mp) === state.mp
+      && (!state.customDims || (state.createMatchSource && !state.createMatchNative));
     b.classList.toggle('active', selected);
     b.setAttribute('aria-pressed', String(selected));
   });
@@ -10561,7 +9105,6 @@ function renderEditOutpaint() {
   const toggle = $('#editOutpaintToggle');
   toggle.setAttribute('aria-checked', String(enabled));
   const body = $('#editOutpaintBody');
-  if (!enabled) moveFocusOutOf(body);
   body.classList.toggle('expanded', enabled);
   body.setAttribute('aria-hidden', String(!enabled));
   body.inert = !enabled;
@@ -10771,7 +9314,6 @@ function renderEditUpscale() {
     ? `${expanded ? 'Hide' : 'Show'} upscale settings`
     : 'Enable Upscale from the switch to configure its settings');
   $('#editUpscaleSummary').textContent = enabled ? `SeedVR2 · ${settings.resolution === 3840 ? '4K' : `${settings.resolution}p`}` : 'Off';
-  if (!expanded) moveFocusOutOf(body, details);
   body.classList.toggle('expanded', expanded);
   body.inert = !expanded;
   body.setAttribute('aria-hidden', String(!expanded));
@@ -10814,7 +9356,6 @@ $$('#editUpscaleNoise .chip').forEach((button) => button.addEventListener('click
 }));
 $('#editAspectToggle').addEventListener('click', () => {
   const open = $('#editAspectToggle').getAttribute('aria-expanded') !== 'true';
-  if (!open) moveFocusOutOf($('#editAspectBody'), $('#editAspectToggle'));
   $('#editAspectToggle').setAttribute('aria-expanded', String(open));
   $('#editAspectBody').setAttribute('aria-hidden', String(!open));
   $('#editAspectBody').inert = !open;
@@ -10848,23 +9389,9 @@ $$('#editSizeSeg button').forEach((button) => button.addEventListener('click', (
   renderEditAspects();
   saveForm();
 }));
-$$('#sizeSeg button').forEach((b) => b.addEventListener('click', async () => {
-  if (b.hasAttribute('data-h3-xl')) {
-    if (!h3ResolutionActive()) return;
-    if (!state.vidH3Xl) {
-      const confirmed = await askConfirm({
-        title: 'Use H3 XL direct resolution?',
-        message: 'XL renders a larger canvas directly (1920 × 1088 at 16:9) and uses roughly twice the pixels of L. It can take substantially longer or run out of memory. L followed by RTX upscale is the more reliable route.',
-        confirmLabel: 'Use XL',
-      });
-      if (!confirmed) return;
-    }
-    state.vidH3Xl = true;
-  } else {
-    state.vidH3Xl = false;
-    state.mp = Number(b.dataset.mp);
-  }
-  const keepImageMatch = !h3ResolutionActive() && state.createMatchSource && !!state.createRef;
+$$('#sizeSeg button').forEach((b) => b.addEventListener('click', () => {
+  const keepImageMatch = state.createMatchSource && !!state.createRef;
+  state.mp = Number(b.dataset.mp);
   if (keepImageMatch) {
     applyCreateMatchedDimensions();
   } else {
@@ -10879,7 +9406,6 @@ $$('#sizeSeg button').forEach((b) => b.addEventListener('click', async () => {
 }));
 for (const id of ['#wInput', '#hInput']) {
   $(id).addEventListener('change', () => {
-    if (h3ResolutionActive()) return;
     state.createMatchSource = false;
     state.createMatchNative = false;
     state.customDims = true;
@@ -10910,7 +9436,7 @@ function compatibleLoraCategories() {
   if (state.view === 'edit') {
     if (state.editEngine === 'qwen') return ['qwen-edit', 'unknown'];
     if (state.editEngine === 'klein9') return ['klein9', 'unknown'];
-    if (['krea2', 'krea2ref', 'krea2remix'].includes(state.editEngine)) return ['krea2', 'unknown'];
+    if (state.editEngine === 'krea2') return ['krea2', 'unknown'];
     return ['klein4', 'unknown'];
   }
   return ['krea2', 'unknown'];
@@ -10924,7 +9450,7 @@ function loraOptionsFor(selected) {
 
 function incompatibleSelectedLoras() {
   const allowed = new Set(compatibleLoraCategories());
-  return curLoras().filter((l) => l && l.on && l.name && !l.managed && !allowed.has(loraCategory(l.name)));
+  return curLoras().filter((l) => l && l.on && l.name && !allowed.has(loraCategory(l.name)));
 }
 
 function loraContextProfile(name) {
@@ -11046,13 +9572,8 @@ function generationDefaultsFromControls() {
   return {
     create: { steps: Number($('#defaultCreateSteps').value), cfg: Number($('#defaultCreateCfg').value), batch: Number($('#defaultCreateBatch').value) },
     edit: { steps: Number($('#defaultEditSteps').value), cfg: Number($('#defaultEditCfg').value), batch: Number($('#defaultEditBatch').value), denoise: Number($('#defaultEditDenoise').value) },
-    krea2Edit: { steps: Number($('#defaultKrea2EditSteps').value), cfg: Number($('#defaultKrea2EditCfg').value) },
     video: { duration: Number($('#defaultVideoDuration').value), motionFreedom: Number($('#defaultVideoMotion').value) },
     seed: { mode: $('#defaultSeedMode .active')?.dataset.seedMode || 'random', value: Number($('#defaultSeedValue').value) || 0 },
-    visualPresets: {
-      useVisualTreatment: mediaPreferenceControlValue('defaultPresetVisualTreatment'),
-      showCards: mediaPreferenceControlValue('defaultPresetCards'),
-    },
   };
 }
 
@@ -11092,67 +9613,6 @@ function renderNegativePromptControl() {
   hint.textContent = availability.hint;
 }
 
-function normalizedH3Steps(value = state.vidH3Steps) {
-  return Math.max(1, Math.min(100, Math.round(Number(value) || 20)));
-}
-
-function videoStepSpecification() {
-  if (state.vidEngine === 'h3') {
-    return { value: normalizedH3Steps(), editable: true, hint: 'MiniMax H3 sampler · adjustable' };
-  }
-  if (state.vidEngine === 'wan') {
-    const full = $('#vidQuality')?.classList.contains('active');
-    return full
-      ? { value: 20, editable: false, hint: 'Full Quality · fixed two-model handoff' }
-      : { value: 4, editable: false, hint: 'Fast distilled schedule · fixed' };
-  }
-  if (state.vidEngine === 'scail') {
-    return { value: 6, editable: false, hint: 'SCAIL distilled schedule · fixed' };
-  }
-  if (state.vidEngine === 'eros') {
-    if (state.vidSigma === 'custom') {
-      return { value: '', editable: false, placeholder: 'Custom', hint: 'Set by the custom base and refinement sigma lists' };
-    }
-    return state.vidSigma === 'dmd'
-      ? { value: 12, editable: false, hint: '8 base + 4 refinement · fixed sigmas' }
-      : { value: 12, editable: false, hint: '9 base + 3 refinement · fixed sigmas' };
-  }
-  if (state.vidEngine === 'ltx' && state.vidFace && !state.vidRef) {
-    return { value: 8, editable: false, hint: 'Face ID base schedule · fixed' };
-  }
-  return {
-    value: 11,
-    editable: false,
-    hint: state.vidEngine === 'ltx-edit'
-      ? '8 base + 3 refinement · fixed LTX Edit schedule'
-      : '8 base + 3 refinement · fixed LTX 2.3 schedule',
-  };
-}
-
-function renderVideoStepControl() {
-  const input = $('#stepsInput');
-  const hint = $('#advancedStepsHint');
-  if (!input || !hint) return;
-  if (state.view !== 'video') {
-    input.readOnly = false;
-    input.removeAttribute('aria-readonly');
-    input.classList.remove('fixed-sampling');
-    input.placeholder = '';
-    hint.hidden = true;
-    hint.textContent = '';
-    return;
-  }
-  const spec = videoStepSpecification();
-  input.value = spec.value;
-  input.placeholder = spec.placeholder || '';
-  input.readOnly = !spec.editable;
-  input.setAttribute('aria-readonly', String(!spec.editable));
-  input.classList.toggle('fixed-sampling', !spec.editable);
-  input.title = spec.editable ? 'Sampling steps for MiniMax H3' : spec.hint;
-  hint.textContent = spec.hint;
-  hint.hidden = false;
-}
-
 function negativePromptForGeneration() {
   return negativePromptAvailability().supported
     ? String($('#negativePromptInput')?.value || '').trim().slice(0, 4000)
@@ -11162,7 +9622,7 @@ function negativePromptForGeneration() {
 function defaultGenerationTuning(mode) {
   if (mode === 'video') {
     return {
-      steps: 20,
+      steps: 1,
       cfg: 1,
       batch: 1,
       denoise: undefined,
@@ -11204,7 +9664,7 @@ function captureGenerationTuning(mode = generationTuningMode()) {
   const previous = state.generationTuning[mode] || defaultGenerationTuning(mode);
   const qwenLocked = mode === 'edit' && state.editEngine === 'qwen';
   state.generationTuning[mode] = normalizeGenerationTuning(mode, {
-    steps: mode === 'video' ? normalizedH3Steps() : (qwenLocked ? previous.steps : ($('#stepsInput').value || previous.steps)),
+    steps: qwenLocked ? previous.steps : ($('#stepsInput').value || previous.steps),
     cfg: qwenLocked ? previous.cfg : ($('#cfgInput').value === '' ? previous.cfg : $('#cfgInput').value),
     batch: $('#batchInput').value || previous.batch,
     denoise: mode === 'edit' ? $('#denoiseInput').value : undefined,
@@ -11226,7 +9686,6 @@ function restoreGenerationTuning(mode = generationTuningMode()) {
     $('#denoiseVal').textContent = Number(tuning.denoise).toFixed(2);
   }
   renderNegativePromptControl();
-  renderVideoStepControl();
   renderKrea2Mode();
 }
 
@@ -11235,11 +9694,7 @@ function resetGenerationControl(control) {
   if (!mode || !control) return;
   const defaults = defaultGenerationTuning(mode);
   const key = control.dataset.defaultReset;
-  if (mode === 'video' && key === 'steps') {
-    if (state.vidEngine !== 'h3') return renderVideoStepControl();
-    state.vidH3Steps = 20;
-    control.value = 20;
-  } else if (key === 'seed') control.value = defaults.seed;
+  if (key === 'seed') control.value = defaults.seed;
   else if (Object.prototype.hasOwnProperty.call(defaults, key)) control.value = defaults[key];
   if (key === 'denoise') $('#denoiseVal').textContent = Number(control.value).toFixed(2);
   captureGenerationTuning(mode);
@@ -11256,14 +9711,9 @@ function renderGenerationDefaults() {
   $('#defaultEditCfg').value = d.edit.cfg;
   $('#defaultEditBatch').value = d.edit.batch;
   $('#defaultEditDenoise').value = d.edit.denoise;
-  const krea2Edit = d.krea2Edit || { steps: 10, cfg: 1 };
-  $('#defaultKrea2EditSteps').value = krea2Edit.steps;
-  $('#defaultKrea2EditCfg').value = krea2Edit.cfg;
   $('#defaultVideoDuration').value = d.video.duration;
   $('#defaultVideoMotion').value = d.video.motionFreedom;
   $('#defaultSeedValue').value = d.seed.value;
-  setMediaPreferenceControl('defaultPresetVisualTreatment', d.visualPresets?.useVisualTreatment === true);
-  setMediaPreferenceControl('defaultPresetCards', d.visualPresets?.showCards !== false);
   $$('#defaultSeedMode button').forEach((button) => button.classList.toggle('active', button.dataset.seedMode === d.seed.mode));
   $('#defaultSeedValueField').hidden = d.seed.mode !== 'fixed';
 }
@@ -11281,10 +9731,7 @@ function applyCurrentGenerationDefaults() {
   if (!mode) return;
   state.generationTuning[mode] = defaultGenerationTuning(mode);
   restoreGenerationTuning(mode);
-  if (mode === 'edit') {
-    renderQwenQuality();
-    applyKrea2IdentityEditSamplingPreset();
-  }
+  if (mode === 'edit') renderQwenQuality();
   if (mode === 'video') {
     $('#vidDur').value = state.userDefaults.video.duration;
     $('#vidFree').value = state.userDefaults.video.motionFreedom;
@@ -11302,7 +9749,6 @@ async function loadUserPreferences() {
     state.contextOverrides = prefs.contextOverrides || {};
     renderGenerationDefaults();
     applyGenerationDefaults();
-    renderPromptComposer();
   } catch { /* profile gate handles auth */ }
 }
 
@@ -11316,7 +9762,6 @@ async function saveUserPreferences(options = {}) {
   state.contextOverrides = prefs.contextOverrides;
   renderGenerationDefaults();
   applyGenerationDefaults();
-  renderPromptComposer();
   if (options.refreshContext !== false) await refreshLoraContext();
   else renderPromptSuggestions();
 }
@@ -11516,7 +9961,7 @@ function wireLoraCard(card, l, idx, arr) {
       { label: 'Set thumbnail', icon: 'image', action: () => setLoraThumb(l.name) },
       state.view !== 'video' && !l.managed ? {
         label: l.strengthHunt ? 'Strength Hunt: On' : 'Strength Hunt: Off',
-        detail: l.strengthHunt ? 'Tap to remove this LoRA from the comparison' : `Compare from 0 to ${Number(l.strength).toFixed(2)} (maximum magnitude 2)`,
+        detail: l.strengthHunt ? 'Tap to remove this LoRA from the comparison' : 'Compare strengths from 0.2 through 2.0',
         icon: 'process',
         action: () => {
           if (!l.strengthHunt) {
@@ -11548,13 +9993,10 @@ function wireLoraCard(card, l, idx, arr) {
         const v = await askText({
           title: 'LoRA strength',
           confirmLabel: 'Set strength',
-          input: {
-            label: 'Strength · -100 to 100', value: l.strength, type: 'number',
-            min: -100, max: 100, step: 0.05, inputMode: 'decimal',
-          },
+          input: { label: 'Strength · 0 to 2', value: l.strength, type: 'number' },
         });
         if (v == null) return;
-        l.strength = normalizeLoraStrength(v, 0);
+        l.strength = Math.max(0, Math.min(2, Number(v) || 0));
         managedLoraChanged(l);
         renderLoras();
         saveForm();
@@ -11591,7 +10033,7 @@ function wireLoraCard(card, l, idx, arr) {
     startY = e.clientY;
     lastY = e.clientY;
     pointerId = e.pointerId;
-    startStrength = normalizeLoraSliderStrength(l.strength, 0);
+    startStrength = Number(l.strength) || 0;
     holdTimer = setTimeout(() => {
       adjusting = true;
       card.classList.add('adjusting');
@@ -11605,7 +10047,7 @@ function wireLoraCard(card, l, idx, arr) {
     if (e.cancelable) e.preventDefault();
     if (adjusting) {
       const dy = startY - e.clientY; // up = stronger
-      l.strength = normalizeLoraSliderStrength(Math.round((startStrength + dy / 40) * 20) / 20, 0);
+      l.strength = Math.max(0, Math.min(2, Math.round((startStrength + dy / 90) * 20) / 20));
       adjustEl.textContent = l.strength.toFixed(2);
       strengthEl.textContent = l.strength.toFixed(2);
     } else {
@@ -11834,7 +10276,6 @@ function prettyLora(name) { return name.replace(/\.safetensors$/i, '').split(/[\
 function editEngineLabel(engine) {
   if (engine === 'krea2') return 'Krea2';
   if (engine === 'krea2ref') return 'Krea 2 Edit';
-  if (engine === 'krea2remix') return 'Krea 2 Remix';
   if (engine === 'qwen') return 'Qwen Edit';
   if (engine === 'klein9') return 'Flux Klein 9B';
   return 'Flux Klein 4B';
@@ -11846,12 +10287,6 @@ const VIDEO_ENGINE_TASKS = {
     detail: 'Text or image + audio',
     copy: 'Create from a prompt or first frame, with native audio and Face ID.',
     preview: { type: 'video', src: '/guides/ltx-motorcycle-highway.mp4' },
-  },
-  h3: {
-    task: 'Omni Video', model: 'MiniMax H3',
-    detail: 'Text, frames, references + stereo audio',
-    copy: 'Generate video and synced audio together from text, keyframes, or multimodal references.',
-    preview: { type: 'motion', tone: 'h3' },
   },
   'ltx-edit': {
     task: 'Video Editing', model: 'LTX Edit',
@@ -11894,12 +10329,8 @@ const EDIT_ENGINE_TASKS = {
     copy: 'Combine references and create multi-angle image sets.',
   },
   krea2ref: {
-    task: 'Identity Editing', model: 'Krea 2 Edit',
-    copy: 'Edit or restage a subject while holding identity and reference detail.',
-  },
-  krea2remix: {
-    task: 'Reference Remix', model: 'Krea 2 Remix',
-    copy: 'Rebuild a scene from several identity, style, and composition references.',
+    task: 'Reference Remix', model: 'Krea 2 Edit',
+    copy: 'Rebuild the scene from reference identity and composition.',
   },
   krea2: {
     task: 'Inpaint + Outpaint', model: 'Krea 2',
@@ -11958,13 +10389,7 @@ function renderEngineInfoList(kind = 'video') {
     button.dataset.engine = engine;
     button.classList.toggle('active', engine === current);
     button.setAttribute('aria-pressed', String(engine === current));
-    const capability = editing ? { supported: true, reason: '' } : videoEngineCapability(engine);
-    button.disabled = capability.supported === false;
     button.setAttribute('aria-label', `Use ${definition.model}${definition.experimental ? ' (experimental)' : ''} for ${definition.task}`);
-    if (button.disabled) {
-      button.setAttribute('aria-label', `${definition.model} is unavailable. ${capability.reason}`);
-      button.title = capability.reason;
-    }
     const hasPreview = !!definition.preview;
     button.classList.toggle('text-only', !hasPreview);
     if (hasPreview) button.appendChild(createEngineInfoPreview(definition.preview));
@@ -11981,22 +10406,10 @@ function renderEngineInfoList(kind = 'video') {
       badge.textContent = 'Experimental';
       titleRow.appendChild(badge);
     }
-    if (capability.nvidiaOnly) {
-      const badge = document.createElement('span');
-      badge.className = 'gpu-badge nvidia';
-      badge.textContent = 'NVIDIA only';
-      titleRow.appendChild(badge);
-    }
-    if (button.disabled) {
-      const badge = document.createElement('span');
-      badge.className = 'model-status-badge unsupported';
-      badge.textContent = 'Unavailable';
-      titleRow.appendChild(badge);
-    }
     const model = document.createElement('small');
     model.textContent = `${definition.task}${definition.detail ? ` · ${definition.detail}` : ''}`;
     const description = document.createElement('p');
-    description.textContent = button.disabled ? capability.reason : definition.copy;
+    description.textContent = definition.copy;
     copy.append(titleRow, model, description);
     const check = document.createElement('i');
     check.className = 'engine-info-check';
@@ -12034,7 +10447,6 @@ function collapseRes(open) {
   const expand = open === true;
   const body = $('#resBody');
   $('#resPanel').classList.toggle('expanded', expand);
-  if (!expand) moveFocusOutOf(body, $('#resHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#resHeader').setAttribute('aria-expanded', String(expand));
@@ -12050,11 +10462,12 @@ $('#sizeSeg').addEventListener('click', (e) => {
 function setVideoOptionsExpanded(open) {
   const expand = open === true;
   const body = $('#vidOptsBody');
+  const header = $('#vidOptsHeader');
   $('#vidOptsPanel').classList.toggle('expanded', expand);
-  if (!expand) moveFocusOutOf(body, $('#vidOptsHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
-  $('#vidOptsHeader').setAttribute('aria-expanded', String(expand));
+  header.setAttribute('aria-expanded', String(expand));
+  if (!expand && header) header.focus();
 }
 $('#vidOptsHeader').addEventListener('click', () => {
   setVideoOptionsExpanded(!$('#vidOptsPanel').classList.contains('expanded'));
@@ -12063,11 +10476,12 @@ $('#vidOptsHeader').addEventListener('click', () => {
 function setVideoModelExpanded(open) {
   const expand = open === true;
   const body = $('#vidModelBody');
+  const header = $('#vidModelHeader');
   $('#vidModelPanel').classList.toggle('expanded', expand);
-  if (!expand) moveFocusOutOf(body, $('#vidModelHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
-  $('#vidModelHeader').setAttribute('aria-expanded', String(expand));
+  header.setAttribute('aria-expanded', String(expand));
+  if (!expand && header) header.focus();
 }
 $('#vidModelHeader').addEventListener('click', () => {
   setVideoModelExpanded(!$('#vidModelPanel').classList.contains('expanded'));
@@ -12077,12 +10491,13 @@ function setDirectorModelExpanded(open) {
   const expand = open === true;
   const panel = $('#directorModelPanel');
   const body = $('#directorModelBody');
+  const header = $('#directorModelHeader');
   if (!panel || !body) return;
   panel.classList.toggle('expanded', expand);
-  if (!expand) moveFocusOutOf(body, $('#directorModelHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
-  $('#directorModelHeader').setAttribute('aria-expanded', String(expand));
+  header.setAttribute('aria-expanded', String(expand));
+  if (!expand && header) header.focus();
 }
 
 function renderDirectorModelChoices() {
@@ -12490,7 +10905,6 @@ function setDirectorResolutionExpanded(expanded) {
   if (!picker || !header || !body) return;
   picker.classList.toggle('expanded', expanded);
   header.setAttribute('aria-expanded', String(expanded));
-  if (!expanded) moveFocusOutOf(body, header);
   body.setAttribute('aria-hidden', String(!expanded));
   body.inert = !expanded;
 }
@@ -12610,7 +11024,7 @@ function directorLoras() {
     .map((lora) => ({
       ...lora,
       name: String(lora.name).slice(0, 512),
-      strength: normalizeLoraStrength(lora.strength),
+      strength: Number.isFinite(Number(lora.strength)) ? Math.max(0, Math.min(2, Number(lora.strength))) : 1,
       on: lora.on !== false,
     }));
   return output.loras;
@@ -12636,13 +11050,13 @@ function renderDirectorLoras() {
     copy.append(name, stateLabel);
     const strength = document.createElement('input');
     strength.type = 'number';
-    strength.min = '-100';
-    strength.max = '100';
+    strength.min = '0';
+    strength.max = '2';
     strength.step = '0.05';
     strength.value = Number(lora.strength).toFixed(2);
     strength.setAttribute('aria-label', `${prettyLora(lora.name)} strength`);
     strength.addEventListener('change', () => {
-      lora.strength = normalizeLoraStrength(strength.value, 0);
+      lora.strength = Math.max(0, Math.min(2, Number(strength.value) || 0));
       strength.value = lora.strength.toFixed(2);
       saveDirectorProject();
     });
@@ -12916,10 +11330,7 @@ function wireDirectorKeyframeDrag(card, list) {
 function directorRefreshGenerationValidation() {
   const error = directorOverlapError(state.directorProject);
   if ($('#directorValidation')) $('#directorValidation').textContent = error;
-  if (state.directorOpen) {
-    $('#generateBtn').disabled = !!error;
-    $('#genLbl').textContent = genLabel();
-  }
+  if ($('#directorGenerate')) $('#directorGenerate').disabled = !!error;
   if ($('#directorPromptValidation')) $('#directorPromptValidation').textContent = error === 'Add an overall or timed direction.' ? error : '';
 }
 
@@ -13250,7 +11661,6 @@ function renderDirector() {
   if (!project || !state.directorOpen) return;
   $('#directorWorkspace').classList.toggle('choosing-workflow', directorChoosingWorkflow);
   $('#directorWorkflowChooser').hidden = !directorChoosingWorkflow;
-  $('#genDock').style.display = directorChoosingWorkflow ? 'none' : '';
   if (!['extend', 'keyframes', 'timeline'].includes(state.directorComposerMode)) state.directorComposerMode = 'timeline';
   const extension = project.extensionSource;
   const extensionEntry = directorExtensionVideo(extension);
@@ -13329,8 +11739,8 @@ function renderDirector() {
   if ($('#directorInspectorValidation')) $('#directorInspectorValidation').textContent = inspectorVisible ? selectedMediaError : '';
   if ($('#directorValidationInline')) $('#directorValidationInline').textContent = directionError || (inspectorVisible && selectedMediaError) ? '' : error;
   $('#directorValidation').textContent = error;
-  $('#generateBtn').disabled = !!error;
-  $('#genLbl').textContent = genLabel();
+  $('#directorGenerate').disabled = !!error;
+  $('#directorGenerate').textContent = extension ? 'Generate Extension' : 'Generate Video';
   if (directorNeedsRangeScroll) {
     directorNeedsRangeScroll = false;
     requestAnimationFrame(() => {
@@ -13373,7 +11783,7 @@ function openDirectorMode(project, options = {}) {
   renderDirectorModelChoices();
   setDirectorModelExpanded(false);
   directorUseComfortableTimelineScale();
-  $('#genDock').style.display = '';
+  $('#genDock').style.display = 'none';
   renderDirector();
   saveDirectorProject();
   directorCheckAssets();
@@ -13598,8 +12008,6 @@ function closeDirectorMode() {
   $('#directorWorkspace').hidden = true;
   document.body.classList.remove('director-open');
   if (state.view !== 'gallery') $('#genDock').style.display = '';
-  $('#generateBtn').disabled = false;
-  $('#genLbl').textContent = genLabel();
   saveForm();
 }
 
@@ -14205,9 +12613,9 @@ async function generateDirector() {
   const activeLoras = directorLoras()
     .filter((lora) => lora.on && lora.name)
     .map((lora) => ({ name: lora.name, strength: Number(lora.strength), on: true }));
-  const button = $('#generateBtn');
+  const button = $('#directorGenerate');
   button.disabled = true;
-  $('#genLbl').textContent = 'Queueing…';
+  button.textContent = 'Queueing…';
   try {
     setGenerating(true, 'Queued…');
     const baseSeed = project.output.seed === '' ? Math.floor(Math.random() * 0x7fffffff) : Number(project.output.seed);
@@ -14234,17 +12642,23 @@ async function generateDirector() {
     if (Array.isArray(requestError.missingAssets)) requestError.missingAssets.forEach((name) => directorMissingAssets.add(name));
     toast(requestError.message, true);
   } finally {
+    button.textContent = project.extensionSource ? 'Generate Extension' : 'Generate Video';
     renderDirector();
   }
 }
 
 function setDirectorProgressLocation(inDirector) {
   const preview = $('#livePreview');
+  const summary = $('#directorSummary');
   const home = $('#genDock .generate-inner');
-  if (!preview || !home) return;
-  if (preview.parentElement !== home) home.insertBefore(preview, home.firstElementChild);
-  preview.classList.remove('director-live-preview');
-  document.body.classList.toggle('director-shared-generate', inDirector);
+  if (!preview || !summary || !home) return;
+  if (inDirector) {
+    if (preview.parentElement !== $('#directorWorkspace')) summary.before(preview);
+    preview.classList.add('director-live-preview');
+  } else {
+    if (preview.parentElement !== home) home.insertBefore(preview, home.firstElementChild);
+    preview.classList.remove('director-live-preview');
+  }
 }
 
 function setDirectorDisclosure(buttonId, panelId, open) {
@@ -14447,6 +12861,7 @@ $('#directorSmoothRow').addEventListener('click', (event) => {
 });
 for (const id of ['directorFourK', 'directorContinueAudio', 'directorInpaintAudio', 'directorOverrideAudio']) wireDirectorToggle(id, directorUpdateProjectFields);
 wireDirectorToggle('directorSnap');
+$('#directorGenerate').addEventListener('click', generateDirector);
 $('#directorExportBtn').addEventListener('click', () => {
   directorCloseSheet('directorProjectMenuSheet');
   const blob = new Blob([`${JSON.stringify(directorSerializableProject(), null, 2)}\n`], { type: 'application/json' });
@@ -14506,7 +12921,6 @@ function setEditModelExpanded(open) {
   const expand = open === true;
   const body = $('#editModelBody');
   $('#editModelPanel').classList.toggle('expanded', expand);
-  if (!expand) moveFocusOutOf(body, $('#editModelHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#editModelHeader').setAttribute('aria-expanded', String(expand));
@@ -14519,12 +12933,7 @@ function videoDurationMax(engine) {
   if (engine === 'scail') return 60;
   if (engine === 'ltx' && cameraMotionReferenceSelected()) return cameraMotionGuideLimit();
   if (engine === 'ltx') return 20;
-  if (engine === 'h3') return 15;
   return 15;
-}
-
-function videoDurationMin(engine) {
-  return engine === 'h3' ? 5 : 1;
 }
 
 const videoDurationInteraction = {
@@ -14543,7 +12952,7 @@ const videoDurationInteraction = {
 };
 
 function clampVideoDurationInput(input, engine, { preserveRange = false } = {}) {
-  const min = videoDurationMin(engine);
+  const min = Number(input.dataset.fullMin) || 1;
   const step = Math.max(0.001, Number(input.dataset.fullStep) || Number(input.step) || 1);
   const rawMax = videoDurationMax(engine);
   const maxSteps = Math.max(0, Math.floor(((rawMax - min) / step) + 1e-8));
@@ -14947,7 +13356,6 @@ function setLorasExpanded(open) {
   const expand = open === true;
   const body = $('#loraBody');
   $('#loraPanel').classList.toggle('expanded', expand);
-  if (!expand) moveFocusOutOf(body, $('#loraHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#loraHeader').setAttribute('aria-expanded', String(expand));
@@ -14962,7 +13370,6 @@ function setAdvancedExpanded(open) {
   const expand = open === true;
   const body = $('#advBody');
   $('#advPanel').classList.toggle('expanded', expand);
-  if (!expand) moveFocusOutOf(body, $('#advHeader'));
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#advHeader').setAttribute('aria-expanded', String(expand));
@@ -15004,22 +13411,12 @@ Object.entries(generationResetControls).forEach(([id, key]) => {
     }
   });
   control.addEventListener('change', () => {
-    if (id === 'stepsInput' && state.view === 'video' && state.vidEngine === 'h3') {
-      state.vidH3Steps = normalizedH3Steps(control.value);
-    }
     captureGenerationTuning();
-    if (id === 'stepsInput' && state.view === 'video') renderVideoStepControl();
     renderKrea2Mode();
     saveForm();
   });
 });
-$('#stepsInput').addEventListener('input', () => {
-  if (state.view === 'video' && state.vidEngine === 'h3') {
-    const value = Number($('#stepsInput').value);
-    if (Number.isFinite(value) && value >= 1) state.vidH3Steps = normalizedH3Steps(value);
-  }
-  renderKrea2Mode();
-});
+$('#stepsInput').addEventListener('input', renderKrea2Mode);
 $('#negativePromptInput').addEventListener('change', () => {
   captureGenerationTuning();
   saveForm();
@@ -15146,18 +13543,13 @@ $('#loraPresetsBtn').addEventListener('click', () => {
 /* Reference images (edit mode)                                        */
 /* ------------------------------------------------------------------ */
 
-function editReferenceCapacity() {
-  if (state.editEngine === 'krea2' || editOutpaintActive()) return 1;
-  if (state.editEngine === 'krea2ref') return 2;
-  return state.refs.length;
-}
-
 function renderRefs({ preservePromptComposer = false } = {}) {
   const row = $('#refRow');
   row.innerHTML = '';
   // Begin with one source image. Multi-reference engines reveal additional
   // slots only when requested, keeping this flow aligned with Create.
-  const maxSlots = editReferenceCapacity();
+  const kreaEdit = state.editEngine === 'krea2';
+  const maxSlots = kreaEdit || (OUTPAINT_EDIT_ENGINES.has(state.editEngine) && state.editOutpaint) ? 1 : state.refs.length;
   const populatedSlots = state.refs.reduce((highest, ref, index) => ref ? Math.max(highest, index + 1) : highest, 1);
   const requestedSlots = Math.max(1, Math.min(3, Math.round(Number(state.editRefSlots) || 1)));
   const visibleSlots = Math.max(1, Math.min(maxSlots, Math.max(requestedSlots, populatedSlots)));
@@ -15171,13 +13563,6 @@ function renderRefs({ preservePromptComposer = false } = {}) {
     num.className = 'ref-num';
     num.textContent = String(idx + 1);
     slot.appendChild(num);
-    if (state.editEngine === 'krea2ref') {
-      const role = document.createElement('span');
-      role.className = 'ref-role';
-      role.textContent = idx === 0 ? 'Source / scene' : 'Subject';
-      slot.appendChild(role);
-      slot.setAttribute('aria-label', `${role.textContent} input ${idx + 1}`);
-    }
     if (ref) {
       const img = document.createElement('img');
       img.src = (idx === 0 && ref.displayUrl) || ref.url;
@@ -15234,7 +13619,7 @@ function renderRefs({ preservePromptComposer = false } = {}) {
 }
 
 $('#addEditReference').addEventListener('click', () => {
-  const maxSlots = editReferenceCapacity();
+  const maxSlots = state.editEngine === 'krea2' || editOutpaintActive() ? 1 : state.refs.length;
   if (state.editRefSlots >= maxSlots) return;
   state.editRefSlots += 1;
   renderRefs();
@@ -15301,13 +13686,13 @@ function pickRef(idx) {
 
 async function sendToVideoTab(item, role = 'start') {
   try {
-    const enabled = supportedVideoEngines();
-    if (role === 'end' && !['ltx', 'h3', 'eros'].includes(state.vidEngine)) {
-      const endEngine = ['ltx', 'h3', 'eros'].find((engine) => enabled.includes(engine));
-      if (!endEngine) throw new Error('Enable MiniMax H3, LTX 2.3, or 10Eros to use a gallery image as the last frame');
+    const enabled = enabledVideoEngines();
+    if (role === 'end' && !['ltx', 'eros'].includes(state.vidEngine)) {
+      const endEngine = ['ltx', 'eros'].find((engine) => enabled.includes(engine));
+      if (!endEngine) throw new Error('Enable LTX 2.3 or 10Eros to use a gallery image as the last frame');
       state.vidEngine = endEngine;
     } else if (role === 'start' && state.vidEngine === 'ltx-edit') {
-      state.vidEngine = ['ltx', 'h3', 'eros', 'wan', 'scail'].find((engine) => enabled.includes(engine)) || state.vidEngine;
+      state.vidEngine = ['ltx', 'eros', 'wan', 'scail'].find((engine) => enabled.includes(engine)) || state.vidEngine;
     }
     const blob = await (await fetch('/images/' + item.file)).blob();
     const buf = await blob.arrayBuffer();
@@ -15318,7 +13703,7 @@ async function sendToVideoTab(item, role = 'start') {
     });
     const frame = { name: res.name, url: '/images/' + item.file, w: item.width || 1024, h: item.height || 1024, srcItemId: item.id };
     if (role === 'end') state.vidEnd = frame;
-    else setVideoFirstFrame(frame);
+    else state.vidRef = frame;
     closeAnimateRouteSheet();
     closeLightbox();
     setView('video');
@@ -15408,7 +13793,7 @@ async function galleryItemEditReference(item) {
 
 async function useAsRef(item) {
   try {
-    const capacity = editReferenceCapacity();
+    const capacity = state.editEngine === 'krea2' || editOutpaintActive() ? 1 : state.refs.length;
     const occupied = state.refs.slice(0, capacity)
       .map((reference, index) => ({ reference, index }))
       .filter(({ reference }) => reference);
@@ -15456,6 +13841,8 @@ async function useGalleryItemAsGuide(item, mode = 'image') {
   try {
     await setCreateImageGuideAsset(await galleryItemEditReference(item), mode);
     closeLightbox();
+    state.createMode = 'image';
+    setView('image');
     toast(mode === 'depth' ? 'Added as a depth guide' : 'Added as an image guide');
   } catch (error) { toast(error.message, true); }
 }
@@ -15517,7 +13904,6 @@ function dismissLivePreview(direction = 1) {
   preview.style.opacity = '0';
   livePreviewDismissTimer = setTimeout(() => {
     preview.classList.remove('show');
-    document.body.classList.remove('live-preview-visible');
     resetLivePreviewMotion();
   }, 180);
 }
@@ -15584,353 +13970,11 @@ $('#denoiseInput').addEventListener('input', () => {
 });
 
 /* Video tab: inline source-image attachment */
-function h3References() {
-  if (!state.vidH3References || typeof state.vidH3References !== 'object') {
-    state.vidH3References = { images: [], videos: [], audios: [] };
-  }
-  for (const kind of ['images', 'videos', 'audios']) {
-    if (!Array.isArray(state.vidH3References[kind])) state.vidH3References[kind] = [];
-  }
-  return state.vidH3References;
-}
-
-const H3_REFERENCE_LIMITS = Object.freeze({ images: 9, videos: 3, audios: 3 });
-
-function h3ReferenceCount() {
-  return Object.values(h3References()).reduce((count, assets) => count + assets.length, 0);
-}
-
-function h3PromptReferenceEntries() {
-  const refs = h3References();
-  const entries = [];
-  let audioIndex = 0;
-  refs.images.forEach((asset, index) => entries.push({
-    asset, kind: 'images', index, mediaKind: 'image', role: 'primary',
-    tag: `<Picture ${index + 1}>`, label: `Picture ${index + 1}`,
-  }));
-  refs.videos.forEach((asset, index) => {
-    entries.push({
-      asset, kind: 'videos', index, mediaKind: 'video', role: 'primary',
-      tag: `<Video ${index + 1}>`, label: `Video ${index + 1}`,
-    });
-    if (asset.hasAudio) {
-      audioIndex += 1;
-      entries.push({
-        asset, kind: 'videos', index, mediaKind: 'audio', role: 'embedded-audio',
-        tag: `<Audio ${audioIndex}>`, label: `Audio ${audioIndex}`,
-      });
-    }
-  });
-  refs.audios.forEach((asset, index) => {
-    audioIndex += 1;
-    entries.push({
-      asset, kind: 'audios', index, mediaKind: 'audio', role: 'primary',
-      tag: `<Audio ${audioIndex}>`, label: `Audio ${audioIndex}`,
-    });
-  });
-  return entries;
-}
-
-function insertH3ReferenceTag(tag) {
-  insertPromptH3Reference(tag);
-}
-
-function h3ReferenceAccept() {
-  const refs = h3References();
-  return Object.entries(H3_REFERENCE_LIMITS)
-    .filter(([kind, limit]) => refs[kind].length < limit)
-    .map(([kind]) => `${kind.slice(0, -1)}/*`)
-    .join(',');
-}
-
-function h3ReferenceKind(asset) {
-  if (['image', 'video', 'audio'].includes(asset?.kind)) return `${asset.kind}s`;
-  const source = `${asset?.name || ''} ${asset?.label || ''}`;
-  if (/\.(?:mp4|mov|mkv|webm|avi|m4v)(?:\s|$)/i.test(source)) return 'videos';
-  if (/\.(?:mp3|wav|flac|m4a|aac|ogg|opus)(?:\s|$)/i.test(source)) return 'audios';
-  return 'images';
-}
-
-function addH3Reference(asset) {
-  if (!asset) return;
-  const kind = h3ReferenceKind(asset);
-  const refs = h3References();
-  if (refs[kind].length >= H3_REFERENCE_LIMITS[kind]) {
-    toast(`H3 already has the maximum number of ${kind}`, true);
-    return;
-  }
-  refs[kind].push(asset);
-  state.vidH3RefSlots = Math.max(1, Number(state.vidH3RefSlots) || 1, h3ReferenceCount());
-  renderH3References();
-  renderPromptComposer();
-  saveForm();
-}
-
-function pickH3Reference() {
-  const accept = h3ReferenceAccept();
-  if (!accept) return toast('H3 reference inputs are full', true);
-  pickUpload(accept, addH3Reference, 'Choose H3 reference input');
-}
-
-function removeH3Reference(kind, index) {
-  const before = h3PromptReferenceEntries();
-  h3References()[kind].splice(index, 1);
-  const after = h3PromptReferenceEntries();
-  const remap = new Map(before.map((entry) => {
-    const replacement = after.find((candidate) => candidate.asset === entry.asset && candidate.role === entry.role);
-    return [entry.tag, replacement?.tag || ''];
-  }));
-  const nextPrompt = promptDraft().replace(/<(?:Picture|Video|Audio) \d+>/g, (tag) => remap.has(tag) ? remap.get(tag) : tag)
-    .replace(/[ \t]{2,}/g, ' ');
-  state.vidH3RefSlots = Math.max(1, Math.max(h3ReferenceCount(), (Number(state.vidH3RefSlots) || 1) - 1));
-  setPromptDraft(nextPrompt);
-  renderH3References();
-  saveForm();
-}
-
-let h3ReferenceReorder = null;
-
-function clearH3ReferenceReorder() {
-  const drag = h3ReferenceReorder;
-  if (!drag) return;
-  clearTimeout(drag.timer);
-  if (drag.source?.hasPointerCapture?.(drag.pointerId)) {
-    try { drag.source.releasePointerCapture(drag.pointerId); } catch {}
-  }
-  $$('#vidH3ReferenceList .ref-slot.ref-drop-target, #vidH3ReferenceList .ref-slot.ref-reordering')
-    .forEach((slot) => slot.classList.remove('ref-drop-target', 'ref-reordering'));
-  h3ReferenceReorder = null;
-}
-
-function swapH3References(kind, fromIndex, targetIndex) {
-  const assets = h3References()[kind];
-  if (!Array.isArray(assets)
-    || !Number.isInteger(fromIndex)
-    || !Number.isInteger(targetIndex)
-    || fromIndex === targetIndex
-    || !assets[fromIndex]
-    || !assets[targetIndex]) return false;
-  [assets[fromIndex], assets[targetIndex]] = [assets[targetIndex], assets[fromIndex]];
-  renderH3References();
-  renderPromptComposer();
-  saveForm();
-  toast('Reference inputs swapped');
-  return true;
-}
-
-function wireH3ReferenceReorder(slot, entry) {
-  if (!entry || h3References()[entry.kind].length < 2) return;
-  const { kind, index } = entry;
-  slot.tabIndex = 0;
-  slot.dataset.h3RefKind = kind;
-  slot.dataset.h3RefIndex = String(index);
-  slot.setAttribute('aria-roledescription', 'draggable H3 reference input');
-  slot.title = 'Drag onto another matching reference to swap them';
-  slot.addEventListener('pointerdown', (event) => {
-    if (event.target.closest('.ref-x')) return;
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    clearH3ReferenceReorder();
-    if (event.pointerType === 'mouse') event.preventDefault();
-    const drag = {
-      pointerId: event.pointerId,
-      source: slot,
-      kind,
-      from: index,
-      target: index,
-      startX: event.clientX,
-      startY: event.clientY,
-      active: false,
-      timer: null,
-    };
-    h3ReferenceReorder = drag;
-    try { slot.setPointerCapture(event.pointerId); } catch {}
-    const activate = () => {
-      if (h3ReferenceReorder !== drag) return;
-      drag.active = true;
-      slot.classList.add('ref-reordering');
-    };
-    if (event.pointerType === 'mouse') activate();
-    else drag.timer = setTimeout(activate, 280);
-  });
-  slot.addEventListener('pointermove', (event) => {
-    const drag = h3ReferenceReorder;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    if (!drag.active) {
-      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 8) clearH3ReferenceReorder();
-      return;
-    }
-    event.preventDefault();
-    const target = document.elementFromPoint(event.clientX, event.clientY)
-      ?.closest('#vidH3ReferenceList .ref-slot.filled');
-    const targetKind = target?.dataset.h3RefKind;
-    const targetIndex = Number(target?.dataset.h3RefIndex);
-    $$('#vidH3ReferenceList .ref-slot.ref-drop-target')
-      .forEach((candidate) => candidate.classList.remove('ref-drop-target'));
-    if (targetKind !== drag.kind || !Number.isInteger(targetIndex)) {
-      drag.target = drag.from;
-      return;
-    }
-    drag.target = targetIndex;
-    if (targetIndex !== drag.from) target.classList.add('ref-drop-target');
-  });
-  const finish = (event) => {
-    const drag = h3ReferenceReorder;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const shouldSwap = drag.active && drag.target !== drag.from;
-    const { kind: dragKind, from, target } = drag;
-    clearH3ReferenceReorder();
-    if (shouldSwap) swapH3References(dragKind, from, target);
-  };
-  slot.addEventListener('pointerup', finish);
-  slot.addEventListener('pointercancel', clearH3ReferenceReorder);
-  slot.addEventListener('keydown', (event) => {
-    if (!event.altKey || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-    const target = index + (event.key === 'ArrowLeft' ? -1 : 1);
-    if (!h3References()[kind][target]) return;
-    event.preventDefault();
-    swapH3References(kind, index, target);
-  });
-}
-
-function renderH3References() {
-  clearH3ReferenceReorder();
-  const h3 = state.vidEngine === 'h3';
-  const referenceMode = h3 && state.vidH3Mode === 'reference';
-  $('#vidH3ModePanel').hidden = !h3;
-  $('#vidH3ReferencePanel').hidden = !referenceMode;
-  $('#vidStandardInputs').hidden = referenceMode;
-  $('#vidStandardInputs').classList.toggle('h3-frame-inputs', h3 && !referenceMode);
-  $('#vidH3ModeRow').style.setProperty('--h3-mode-index', referenceMode ? '1' : '0');
-  $$('#vidH3ModeRow [data-h3-mode]').forEach((button) => {
-    const active = button.dataset.h3Mode === state.vidH3Mode;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-pressed', String(active));
-  });
-  $$('#vidH3RefSize [data-h3-ref-size]').forEach((button) => {
-    const active = button.dataset.h3RefSize === state.vidH3RefImageSize;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-pressed', String(active));
-  });
-  const refs = h3References();
-  const list = $('#vidH3ReferenceList');
-  list.replaceChildren();
-  let audioIndex = 0;
-  const assets = [];
-  refs.images.forEach((asset, index) => assets.push({ kind: 'images', asset, index, tag: `<Picture ${index + 1}>` }));
-  refs.videos.forEach((asset, index) => {
-    const extraTag = asset.hasAudio ? `<Audio ${++audioIndex}>` : '';
-    assets.push({ kind: 'videos', asset, index, tag: `<Video ${index + 1}>`, extraTag });
-  });
-  refs.audios.forEach((asset, index) => assets.push({ kind: 'audios', asset, index, tag: `<Audio ${++audioIndex}>` }));
-  const requestedSlots = Math.max(1, Math.min(15, Math.round(Number(state.vidH3RefSlots) || 1)));
-  const visibleSlots = Math.max(assets.length, requestedSlots);
-  state.vidH3RefSlots = visibleSlots;
-  list.dataset.slots = String(visibleSlots);
-
-  for (let slotIndex = 0; slotIndex < visibleSlots; slotIndex += 1) {
-    const entry = assets[slotIndex];
-    const slot = document.createElement('div');
-    slot.className = `ref-slot${entry ? ' filled' : ''}`;
-    slot.dataset.h3RefSlot = String(slotIndex);
-    const num = document.createElement('span');
-    num.className = 'ref-num';
-    num.textContent = String(slotIndex + 1);
-    slot.appendChild(num);
-    if (entry) {
-      const { kind, asset, index, tag, extraTag = '' } = entry;
-      if (kind === 'images') {
-        const image = document.createElement('img');
-        image.src = asset.url || `/api/input?name=${encodeURIComponent(asset.name)}`;
-        image.alt = '';
-        image.draggable = false;
-        slot.appendChild(image);
-      } else if (kind === 'videos') {
-        const video = document.createElement('video');
-        video.src = asset.url || `/api/input?name=${encodeURIComponent(asset.name)}`;
-        video.muted = true;
-        video.playsInline = true;
-        video.preload = 'metadata';
-        video.draggable = false;
-        slot.appendChild(video);
-      } else {
-        const audio = document.createElement('span');
-        audio.className = 'h3-reference-audio-art';
-        audio.setAttribute('aria-hidden', 'true');
-        audio.textContent = '♫';
-        slot.appendChild(audio);
-      }
-      const role = document.createElement('span');
-      role.className = 'ref-role';
-      role.textContent = `${tag.replace(/[<>]/g, '')}${extraTag ? ` · ${extraTag.replace(/[<>]/g, '')}` : ''}`;
-      const remove = document.createElement('button');
-      remove.className = 'ref-x';
-      remove.type = 'button';
-      remove.textContent = '✕';
-      remove.setAttribute('aria-label', `Remove ${asset.label || 'H3 reference input'}`);
-      remove.addEventListener('click', (event) => {
-        event.stopPropagation();
-        removeH3Reference(kind, index);
-      });
-      slot.append(role, remove);
-      slot.setAttribute('aria-label', `${role.textContent}, ${asset.label || asset.name}`);
-      wireH3ReferenceReorder(slot, entry);
-    } else {
-      const choose = document.createElement('button');
-      choose.className = 'h3-reference-empty-add';
-      choose.type = 'button';
-      choose.setAttribute('aria-label', `Choose H3 reference input ${slotIndex + 1}`);
-      choose.innerHTML = '<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M11 13H5v-2h6V5h2v6h6v2h-6v6h-2v-6Z"/></svg>';
-      choose.addEventListener('click', pickH3Reference);
-      slot.appendChild(choose);
-      if (visibleSlots > 1) {
-        const remove = document.createElement('button');
-        remove.className = 'ref-x';
-        remove.type = 'button';
-        remove.textContent = '✕';
-        remove.setAttribute('aria-label', `Remove empty H3 reference input ${slotIndex + 1}`);
-        remove.addEventListener('click', (event) => {
-          event.stopPropagation();
-          state.vidH3RefSlots = Math.max(1, visibleSlots - 1);
-          renderH3References();
-          saveForm();
-        });
-        slot.appendChild(remove);
-      }
-    }
-    list.appendChild(slot);
-  }
-  $('#vidH3AddReference').hidden = visibleSlots >= 15 || !h3ReferenceAccept();
-}
-
-$$('#vidH3ModeRow [data-h3-mode]').forEach((button) => button.addEventListener('click', () => {
-  state.vidH3Mode = button.dataset.h3Mode === 'reference' ? 'reference' : 'frames';
-  renderVidAttach();
-  updateVideoPanels();
-  renderPromptComposer();
-  saveForm();
-}));
-$$('#vidH3RefSize [data-h3-ref-size]').forEach((button) => button.addEventListener('click', () => {
-  state.vidH3RefImageSize = button.dataset.h3RefSize === 'max' ? 'max' : 'match';
-  renderH3References();
-  saveForm();
-}));
-$('#vidH3AddReference').addEventListener('click', () => {
-  if (state.vidH3RefSlots >= 15 || !h3ReferenceAccept()) return;
-  state.vidH3RefSlots += 1;
-  renderH3References();
-  saveForm();
-});
-
 function renderVidAttach() {
-  if (h3ResolutionActive()) {
-    computeDims();
-    renderAspects();
-    renderDims();
-  }
   const has = !!state.vidRef;
   const editAnything = state.vidEngine === 'ltx-edit';
   const scail = state.vidEngine === 'scail';
-  const canSuggestMotion = !editAnything && !scail && !h3ReferenceModeActive() && has;
+  const canSuggestMotion = !editAnything && !scail && has;
   $('#vidAttachBtn').hidden = editAnything || has || !!state.vidFace;
   $('#vidAttachThumb').hidden = editAnything || !has;
   $('#vidMotionPromptRow').hidden = !canSuggestMotion;
@@ -15940,15 +13984,13 @@ function renderVidAttach() {
     $('#vidAttachDims').textContent = `${state.vidRef.w} × ${state.vidRef.h}`;
   }
   if (typeof updateSwapChip === 'function') updateSwapChip();
-  renderH3References();
   renderVidFace();
   schedulePromptIntentHint();
 }
 
 function syncVideoAutoMotionUi() {
   const armed = state.vidAutoMotionPrompt && !!state.vidRef
-    && !['ltx-edit', 'scail'].includes(state.vidEngine)
-    && !h3ReferenceModeActive();
+    && !['ltx-edit', 'scail'].includes(state.vidEngine);
   const toggle = $('#vidAutoMotionToggle');
   const action = $('#vidMotionPromptBtn');
   const label = $('#vidMotionPromptLabel');
@@ -15969,7 +14011,6 @@ function syncVideoAutoMotionUi() {
 /* LTX Face ID: a reference face whose identity drives a text-to-video gen */
 function renderVidFace() {
   const ltx = state.vidEngine === 'ltx';
-  const h3 = state.vidEngine === 'h3';
   const ltxEdit = state.vidEngine === 'ltx-edit';
   const ltxFamily = ltx || ltxEdit;
   const has = !!state.vidFace;
@@ -15990,10 +14031,8 @@ function renderVidFace() {
   // RIFE can smooth any LTX, Wan, or SCAIL output. Motion freedom stays
   // specific to standard LTX only.
   const wanOrScail = state.vidEngine === 'wan' || state.vidEngine === 'scail';
-  $('#vidFpsRow').hidden = h3 || !(ltxFamily || wanOrScail);
-  $('#vidFreeField').hidden = h3 || wanOrScail || ltxEdit || faceMode;
-  $('#vidAudioChip').hidden = h3;
-  $('#vidAudioTrim').hidden = h3 || !state.vidAudio;
+  $('#vidFpsRow').hidden = !(ltxFamily || wanOrScail);
+  $('#vidFreeField').hidden = wanOrScail || ltxEdit || faceMode;
   renderVideoFpsChoices();
   // Face ID + audio = frozen-audio lipsync: the joint AV denoise conforms the
   // face to the locked recording. Make the audio chip say so.
@@ -16015,7 +14054,6 @@ function renderVidFace() {
   $('#vidEngineSelected').textContent = definition.model;
   $('#vidEngineBadge').hidden = !definition.experimental;
   $('#vidEngineNote').textContent = faceMode ? 'Character Performance' : definition.task;
-  renderVideoStepControl();
   updateVideoTuningSummary();
 }
 
@@ -16043,22 +14081,6 @@ $('#vidFaceCrop').addEventListener('click', (event) => {
 $('#vidFaceX').addEventListener('click', () => {
   state.vidFace = null;
   renderVidAttach();
-});
-$('#vidAudioX').addEventListener('click', (event) => {
-  event.stopPropagation();
-  if (state.vidAudio) stopPreview();
-  state.vidAudio = null;
-  setAudioChipVisual($('#vidAudioChip'), false);
-  $('#vidAudioTrim').hidden = true;
-  saveForm();
-});
-$('#animAudioX').addEventListener('click', (event) => {
-  event.stopPropagation();
-  if (state.animAudio) stopPreview();
-  state.animAudio = null;
-  setAudioChipVisual($('#animAudioChip'), false);
-  $('#animAudioTrim').hidden = true;
-  saveForm();
 });
 
 /* ---------------- Face ID library (named, reusable faces) ------------ */
@@ -16163,102 +14185,55 @@ $('#vidAttachCrop').addEventListener('click', (event) => {
   event.stopPropagation();
   if (!state.vidRef) return;
   openInputImageCrop(state.vidRef, (next) => {
-    setVideoFirstFrame(next);
+    state.vidRef = next;
     renderVidAttach();
     updateVideoPanels();
     saveForm();
   }, state.vidEngine === 'scail' ? 'Crop reference image' : 'Crop first frame');
 });
 $('#vidAttachX').addEventListener('click', () => {
-  setVideoFirstFrame(null, { matchH3Source: false });
+  state.vidRef = null;
   renderVidAttach();
   updateVideoPanels();
   saveForm();
 });
-let preparedMotionPromptCache = null;
-let motionPromptRequest = null;
-
-function motionPromptContext(prompt) {
-  return {
-    imageName: state.vidRef ? state.vidRef.name : '',
-    engine: state.vidEngine,
-    seconds: Number($('#vidDur').value) || 5,
-    input: String(prompt || '').trim(),
-  };
-}
-
-function sameMotionPromptContext(left, right, includeInput = true) {
-  return !!left && !!right
-    && left.imageName === right.imageName
-    && left.engine === right.engine
-    && left.seconds === right.seconds
-    && (!includeInput || left.input === right.input);
-}
-
-async function requestMotionPromptFromFirstFrame(initialPrompt) {
-  const context = motionPromptContext(initialPrompt);
-  if (preparedMotionPromptCache
-    && sameMotionPromptContext(preparedMotionPromptCache, context, false)
-    && (context.input === preparedMotionPromptCache.input || context.input === preparedMotionPromptCache.output)) {
-    return preparedMotionPromptCache.output;
-  }
-  const key = JSON.stringify(context);
-  if (motionPromptRequest && motionPromptRequest.key === key) return motionPromptRequest.promise;
-
-  state.motionPromptRequestsPending += 1;
-  $('#genLbl').textContent = genLabel();
-  const promise = api('/api/motionprompt', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      imageName: context.imageName,
-      prompt: context.input,
-      engine: context.engine,
-      seconds: context.seconds,
-    }),
-  }).then((res) => {
-    if (!res.prompt) throw new Error('Vision model returned no usable motion prompt');
-    preparedMotionPromptCache = Object.assign({}, context, { output: String(res.prompt).trim() });
-    return preparedMotionPromptCache.output;
-  });
-  motionPromptRequest = { key, promise };
-  try {
-    return await promise;
-  } finally {
-    if (motionPromptRequest && motionPromptRequest.promise === promise) motionPromptRequest = null;
-    state.motionPromptRequestsPending = Math.max(0, state.motionPromptRequestsPending - 1);
-    $('#genLbl').textContent = genLabel();
-  }
-}
-
-async function createMotionPromptFromFirstFrame() {
-  if (!state.vidRef || state.vidEngine === 'ltx-edit' || h3ReferenceModeActive()) return;
+async function createMotionPromptFromFirstFrame({ automatic = false } = {}) {
+  if (!state.vidRef || state.vidEngine === 'ltx-edit') return;
   const btn = $('#vidMotionPromptBtn');
   const label = $('#vidMotionPromptLabel');
-  const initialPrompt = promptDraft().trim();
   btn.disabled = true;
   btn.classList.add('is-loading');
   label.textContent = 'Reading frame';
   try {
-    toast('Reading the start frame…');
-    const preparedPrompt = await requestMotionPromptFromFirstFrame(initialPrompt);
-    const currentPrompt = promptDraft().trim();
-    if (currentPrompt !== initialPrompt && currentPrompt !== preparedPrompt) {
-      throw new Error('The prompt changed while the frame was being read. Review it and try again.');
-    }
-    state.prompts.video = preparedPrompt;
-    setPromptDraft(preparedPrompt);
+    if (!automatic) toast('Reading the start frame…');
+    const res = await api('/api/motionprompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageName: state.vidRef.name, prompt: promptDraft().trim() }),
+    });
+    if (!res.prompt) throw new Error('Vision model returned no usable motion prompt');
+    state.prompts.video = res.prompt;
+    setPromptDraft(res.prompt);
     updatePromptClear();
     saveForm();
-    toast('Motion prompt created from the start frame');
-    return preparedPrompt;
+    toast(automatic ? 'Motion prompt added automatically' : 'Motion prompt created from the start frame');
   } catch (e) {
     if (!isJobCancellation(e)) toast(e.message, true);
-    return '';
   } finally {
     btn.disabled = false;
     btn.classList.remove('is-loading');
     syncVideoAutoMotionUi();
+  }
+}
+async function maybeCreateAutomaticMotionPrompt() {
+  if (!state.vidAutoMotionPrompt || !state.vidRef || promptDraft().trim()
+    || state.activeJobs.size || state.motionPromptRequestsPending) return;
+  try {
+    const queue = await refreshQueue();
+    if ((queue.running || []).length || (queue.pending || []).length) return;
+  } catch { return; }
+  if (state.vidAutoMotionPrompt && state.vidRef && !promptDraft().trim()) {
+    createMotionPromptFromFirstFrame({ automatic: true });
   }
 }
 $('#vidMotionPromptBtn').addEventListener('click', () => createMotionPromptFromFirstFrame());
@@ -16266,19 +14241,16 @@ $('#vidAutoMotionToggle').addEventListener('click', () => {
   state.vidAutoMotionPrompt = !state.vidAutoMotionPrompt;
   renderVidAttach();
   saveForm();
+  if (state.vidAutoMotionPrompt) maybeCreateAutomaticMotionPrompt();
 });
 function pickVidRef() {
   pickUpload('image/*', (file) => {
-    setVideoFirstFrame(file);
+    state.vidRef = file;
     renderVidAttach();
     updateVideoPanels();
+    maybeCreateAutomaticMotionPrompt();
     saveForm();
   }, 'Choose first frame');
-}
-
-function setVideoFirstFrame(asset, { matchH3Source = !!asset } = {}) {
-  state.vidRef = asset || null;
-  if (asset && matchH3Source) state.vidH3MatchSource = true;
 }
 const videoDurationRange = $('#vidDur');
 function scheduleVideoDurationFineHold(event) {
@@ -16661,8 +14633,6 @@ $('#vidDriveFrameChip').addEventListener('click', () => {
 $('#vidQuality').addEventListener('click', () => {
   $('#vidQuality').classList.toggle('active');
   renderNegativePromptControl();
-  renderVideoStepControl();
-  saveForm();
 });
 $('#animQuality').addEventListener('click', () => $('#animQuality').classList.toggle('active'));
 
@@ -16690,8 +14660,7 @@ function modelOrderButtons(rowId, visibleOnly = false) {
 
 function firstEnabledModel(config) {
   return normalizeEngineOrder(state[config.orderKey], config.engines)
-    .find((engine) => featureEnabled(config.features[engine])
-      && (config.kind !== 'Video' || videoEngineSupported(engine)));
+    .find((engine) => featureEnabled(config.features[engine]));
 }
 
 function syncModelOrderDefault(rowId) {
@@ -16709,7 +14678,6 @@ function syncModelOrderDefault(rowId) {
     button.setAttribute('aria-label', isDefault ? `${label}, default model` : label);
     button.setAttribute('aria-roledescription', 'draggable model');
     button.title = isDefault ? `${label} · default for the next session` : 'Hold and drag to reorder';
-    if (rowId === 'vidEngineRow') applyVideoCapability(button);
   });
 }
 
@@ -16945,39 +14913,24 @@ function wireEngineRow(rowId, noteWork) {
   }));
 }
 wireEngineRow('vidEngineRow', (engine) => {
-  const previousEngine = state.vidEngine;
   state.vidEngine = engine;
-  if (engine === 'h3') {
-    const sageCapable = lastMeta?.dependencies?.sageAttention?.installable !== false;
-    if (!sageCapable && state.vidH3SageAttention !== false) {
-      state.vidH3SageAttention = false;
-    }
-  }
-  const h3 = engine === 'h3';
   const wan = engine === 'wan';
   const scail = engine === 'scail';
   const ltxEdit = engine === 'ltx-edit';
   const ltxFamily = engine === 'ltx' || ltxEdit;
-  $('#vidFreeField').hidden = h3 || wan || scail || ltxEdit;
+  $('#vidFreeField').hidden = wan || scail || ltxEdit;
   $('#vidQuality').hidden = !wan;
   $('#vidSigmaRow').hidden = engine !== 'eros';
-  $('#vidFpsRow').hidden = h3 || !(ltxFamily || wan || scail);
-  $('#vidExtras').hidden = wan || scail || ltxEdit || (h3 && state.vidH3Mode === 'reference');
+  $('#vidFpsRow').hidden = !(ltxFamily || wan || scail);
+  $('#vidExtras').hidden = wan || scail || ltxEdit;
   // The Edit Anything workflow is trained on literal edit captions; do not
   // send those captions through the creative prompt enhancer.
   $('#enhanceBtn').hidden = ltxEdit;
-  if (h3 || previousEngine === 'h3') {
-    state.customDims = false;
-    computeDims();
-    renderAspects();
-    renderDims();
-  }
   renderScailChunkControls();
   syncVideoDurationLimit();
   renderVidDrive();
   renderVidFace();
   updateVideoPanels();
-  renderEnhance();
   saveForm();
   setTimeout(() => setVideoModelExpanded(false), 120);
 });
@@ -16996,14 +14949,11 @@ $('#directorModelOption').addEventListener('click', () => {
 });
 wireEngineRow('animEngineRow', (engine) => {
   state.animEngine = engine;
-  const h3 = engine === 'h3';
   const wan = engine === 'wan';
-  $('#animFreeField').hidden = wan || h3;
+  $('#animFreeField').hidden = wan;
   $('#animQuality').hidden = !wan;
   $('#animSigmaRow').hidden = engine !== 'eros';
   $('#animExtras').hidden = wan;
-  $('#animAudioChip').hidden = h3;
-  $('#animEnhance').hidden = h3;
   syncAnimateDurationLimit();
 });
 wireEngineRow('editEngineRow', (engine) => {
@@ -17016,7 +14966,6 @@ wireEngineRow('editEngineRow', (engine) => {
   }
   renderRefs();
   updateVideoPanels();
-  applyKrea2IdentityEditSamplingPreset();
   renderLoras();
   saveForm();
   setTimeout(() => setEditModelExpanded(false), 120);
@@ -17036,19 +14985,10 @@ $('#generateBtn').addEventListener('click', async () => {
     $('#genLbl').textContent = genLabel();
     return;
   }
-  if (state.directorOpen) {
-    await generateDirector();
-    return;
-  }
   const rawPrompt = promptForGeneration().trim();
-  let prompt = state.view === 'video' ? cameraMotionPromptForEngine(rawPrompt) : rawPrompt;
-  const promptTemplateBeforeAutoMotion = promptDraft().trim();
+  const prompt = state.view === 'video' ? cameraMotionPromptForEngine(rawPrompt) : rawPrompt;
   const promptIntent = currentPromptIntent();
-  // Video prompts naturally mention motion, matching, and following. Those
-  // words can resemble a SCAIL motion-transfer request, but an advisory hint
-  // must not replace the user's Generate action with an animated tutorial.
-  // The visible "Show me" action remains available for deliberate guidance.
-  if (promptIntent && state.view !== 'video' && offerPromptIntentGuide(promptIntent)) return;
+  if (promptIntent && offerPromptIntentGuide(promptIntent)) return;
   if (contextualGuide?.id === 'first-image-generate' && prompt === FIRST_IMAGE_TUTORIAL_PROMPT) {
     firstImageTutorialPhase = 'submitting';
   }
@@ -17059,8 +14999,7 @@ $('#generateBtn').addEventListener('click', async () => {
   const autoMotionPrompt = state.view === 'video'
     && state.vidAutoMotionPrompt
     && !!state.vidRef
-    && !['ltx-edit', 'scail'].includes(state.vidEngine)
-    && !h3ReferenceModeActive();
+    && !['ltx-edit', 'scail'].includes(state.vidEngine);
   const promptOptional = (state.view === 'video' && (state.vidEngine === 'scail' || autoMotionPrompt)) || outpaintActive;
   if (!prompt && !promptOptional && !hasRegionPrompts && !qwenAngleExports.length) return toast('Type a prompt first', true);
   if (qwenAngleExports.length && !state.refs[0]) return toast('Camera variations need a source image in reference slot 1', true);
@@ -17068,17 +15007,8 @@ $('#generateBtn').addEventListener('click', async () => {
   if (outpaintActive && !editOutpaintGeometry().valid) return toast('Reduce Source on canvas below 100%, or choose a different Resolution ratio', true);
 
   if (state.view === 'video') {
-    const capability = videoEngineCapability(state.vidEngine);
-    if (capability.supported === false) {
-      return toast(capability.reason || 'This video model is not supported on the connected generation device.', true);
-    }
     const ltxEdit = state.vidEngine === 'ltx-edit';
-    const h3Reference = state.vidEngine === 'h3' && state.vidH3Mode === 'reference';
-    const h3ReferenceCount = Object.values(h3References()).reduce((count, assets) => count + assets.length, 0);
-    if (h3Reference && !h3ReferenceCount) {
-      return toast('MiniMax H3 Reference mode needs at least one image, video, or audio reference', true);
-    }
-    if (!ltxEdit && !['ltx', 'h3'].includes(state.vidEngine) && !state.vidRef) {
+    if (!ltxEdit && state.vidEngine !== 'ltx' && !state.vidRef) {
       const lbl = { wan: 'Wan 2.2', eros: '10Eros DMD', scail: 'SCAIL 2' }[state.vidEngine];
       return toast(`${lbl} needs a source image — add one, or switch to LTX 2.3 for text-to-video`, true);
     }
@@ -17097,33 +15027,11 @@ $('#generateBtn').addEventListener('click', async () => {
     const seedRaw = $('#seedInput').value.trim();
     const baseSeed = seedRaw === '' ? undefined : Number(seedRaw);
     const batch = Math.max(1, Math.min(8, Number($('#batchInput').value) || 1));
-    
-    // Check memory for 5-second H3 video (5-second = 124 frames at 24fps)
-    const isH3FiveSec = state.vidEngine === 'h3' && Number($('#vidDur').value) <= 5;
-    const currentVramUtil = state.telemetry?.vram?.utilization || 0;
-    if (isH3FiveSec && currentVramUtil > 0.75) {
-      const confirm = await askConfirm({
-        title: 'High VRAM usage detected',
-        message: `VRAM is at ${Math.round(currentVramUtil * 100)}% — generating a 5-second H3 video may cause instability. Continue?`,
-        confirmLabel: 'Generate anyway',
-        cancelLabel: 'Cancel',
-      });
-      if (!confirm) return;
-    }
-    
     const body = {
       prompt,
-      promptTemplate: promptTemplateBeforeAutoMotion || undefined,
-      promptPresets: promptPresetMetadataForGeneration(),
       negativePrompt: negativePromptForGeneration(),
-      // Automatic motion prompting stays inside this animate request. The
-      // server reads this request's captured first frame, then queues the
-      // matching video with the generated prompt. Never route automatic mode
-      // through the manual helper, which mutates the shared prompt editor.
       autoMotionPrompt,
-      preparedMotionPrompt: false,
       engine: state.vidEngine,
-      steps: state.vidEngine === 'h3' ? normalizedH3Steps() : undefined,
       seconds: Number($('#vidDur').value) || 5,
       enhance: ltxEdit ? false : state.enhance,
       fourK: $('#vid4k').classList.contains('active'),
@@ -17136,19 +15044,8 @@ $('#generateBtn').addEventListener('click', async () => {
       scailStableTracking: state.vidEngine === 'scail' ? state.vidScailStableTracking !== false : undefined,
       scailChunkFrames: state.vidEngine === 'scail' ? state.vidScailChunkFrames : undefined,
       scailChunkOverlap: state.vidEngine === 'scail' ? state.vidScailChunkOverlap : undefined,
-      sourceItemId: !h3Reference && state.vidRef ? state.vidRef.srcItemId : undefined,
-      loras: state.vidEngine === 'h3' ? [] : state.videoLoras,
-      h3Mode: state.vidEngine === 'h3' ? state.vidH3Mode : undefined,
-      h3ResolutionSize: state.vidEngine === 'h3' ? h3ResolutionSize() : undefined,
-      h3AspectRatio: state.vidEngine === 'h3' ? h3ResolutionAspectRatio() : undefined,
-      h3MatchSource: state.vidEngine === 'h3' && state.vidH3Mode === 'frames'
-        ? h3MatchSourceActive() : undefined,
-      sageAttention: state.vidEngine === 'h3' ? state.vidH3SageAttention !== false : undefined,
-      h3RefImageSize: h3Reference ? state.vidH3RefImageSize : undefined,
-      h3References: h3Reference ? Object.fromEntries(Object.entries(h3References()).map(([kind, assets]) => [
-        kind,
-        assets.map((asset) => ({ name: asset.name, label: asset.label || '', hasAudio: asset.hasAudio === true })),
-      ])) : undefined,
+      sourceItemId: state.vidRef ? state.vidRef.srcItemId : undefined,
+      loras: state.videoLoras,
       cameraMotions: cameraMotionsForEngine(),
       cameraGuideVideoName: cameraMotionReferenceActive() && state.videoCameraGuide ? state.videoCameraGuide.name : undefined,
       cameraGuideStartSeconds: cameraMotionReferenceActive() && state.videoCameraGuide
@@ -17162,38 +15059,20 @@ $('#generateBtn').addEventListener('click', async () => {
       driveStartSeconds: (state.vidEngine === 'scail' || ltxEdit) && state.vidDrive ? state.vidDrive.trimStart || 0 : undefined,
       driveDurSeconds: (state.vidEngine === 'scail' || ltxEdit) && state.vidDrive && state.vidDrive.dur
         ? Math.max(0.5, (state.vidDrive.trimEnd || state.vidDrive.dur) - (state.vidDrive.trimStart || 0)) : undefined,
-      endImageName: state.vidEnd && !h3Reference ? state.vidEnd.name : undefined,
-      imageName: state.vidRef && !h3Reference ? state.vidRef.name : undefined,
-      width: state.vidEngine === 'h3'
-        ? state.width
-        : ltxEdit && state.vidDrive
-        ? (state.vidDrive.w || state.width)
-        : (!h3Reference && state.vidRef ? state.vidRef.w : state.width),
-      height: state.vidEngine === 'h3'
-        ? state.height
-        : ltxEdit && state.vidDrive
-        ? (state.vidDrive.h || state.height)
-        : (!h3Reference && state.vidRef ? state.vidRef.h : state.height),
+      endImageName: state.vidEnd ? state.vidEnd.name : undefined,
+      imageName: state.vidRef ? state.vidRef.name : undefined,
+      width: ltxEdit && state.vidDrive ? (state.vidDrive.w || state.width) : (state.vidRef ? state.vidRef.w : state.width),
+      height: ltxEdit && state.vidDrive ? (state.vidDrive.h || state.height) : (state.vidRef ? state.vidRef.h : state.height),
       seed: baseSeed,
     };
-    if (autoMotionPrompt) {
-      state.motionPromptRequestsPending += 1;
-      $('#genLbl').textContent = genLabel();
-    }
     try {
-      setGenerating(true, autoMotionPrompt ? 'Reading frame, then queueing video…' : 'Queued…');
+      setGenerating(true, 'Queued…');
+      state.motionPromptRequestsPending += autoMotionPrompt ? batch : 0;
+      $('#genLbl').textContent = genLabel();
       const requests = Array.from({ length: batch }, (_, index) => Object.assign({}, body, {
         seed: baseSeed == null ? undefined : baseSeed + index,
       }));
-      // Submit the batch strictly sequentially. The server serializes all
-      // ComfyUI submissions anyway, and firing N video requests at once would
-      // stack N reference-upload buffers in memory before the first job even
-      // reaches the queue. Each request returns only after its own
-      // reference-upload + graph-build completes, so a for-loop is the safe
-      // order: one upload in flight at a time.
-      const results = [];
-      const failures = [];
-      for (const request of requests) {
+      const results = await Promise.all(requests.map(async (request) => {
         try {
           const result = await api('/api/animate', {
             method: 'POST',
@@ -17201,27 +15080,18 @@ $('#generateBtn').addEventListener('click', async () => {
             body: JSON.stringify(request),
           });
           state.activeJobs.add(result.jobId);
-          results.push(result);
-        } catch (error) {
-          failures.push(error);
+          return result;
+        } finally {
+          if (request.autoMotionPrompt) state.motionPromptRequestsPending = Math.max(0, state.motionPromptRequestsPending - 1);
+          $('#genLbl').textContent = genLabel();
         }
-      }
-      if (!results.length && failures.length) throw failures[0];
+      }));
       $('#genLbl').textContent = genLabel();
       queueRefreshSoon();
-      if (failures.length) {
-        const detail = failures[0] && failures[0].message ? ` · ${failures[0].message}` : '';
-        toast(`${results.length} queued · ${failures.length} failed${detail}`, true);
-      } else if (results.length > 1) toast(`${results.length} videos queued`);
+      if (results.length > 1) toast(`${results.length} videos queued`);
     } catch (e) {
       setGenerating(false);
       if (!isJobCancellation(e)) toast(e.message, true);
-    } finally {
-      if (autoMotionPrompt) {
-        state.motionPromptRequestsPending = Math.max(0, state.motionPromptRequestsPending - 1);
-        if (!state.activeJobs.size && !state.motionPromptRequestsPending) setGenerating(false);
-        else $('#genLbl').textContent = genLabel();
-      }
     }
     return;
   }
@@ -17293,16 +15163,12 @@ $('#generateBtn').addEventListener('click', async () => {
     mode,
     editEngine: mode === 'edit' ? state.editEngine : undefined,
     qwenQuality: mode === 'edit' && state.editEngine === 'qwen' ? state.qwenQuality : undefined,
-    krea2RefBoost: mode === 'edit'
-      && (state.editEngine === 'krea2ref' || (state.editEngine === 'krea2' && outpaintActive))
-      ? state.krea2RefBoost : undefined,
     krea2Turbo: !krea2Raw,
     krea2RawTurboLora: krea2Raw ? state.krea2RawTurboLora : undefined,
     composite: mode === 'edit' ? nativePreserve : undefined,
     prompt: sequenceSteps.length ? sequenceSteps[0] : prompt,
     negativePrompt: negativePromptForGeneration(),
-    promptTemplate: promptDraft().trim() || undefined,
-    promptPresets: promptPresetMetadataForGeneration(),
+    promptTemplate: mode === 'edit' ? promptDraft().trim() : undefined,
     editOutpaint: outpaintActive || undefined,
     editOutpaintPosition: outpaintActive ? state.editOutpaintPosition : undefined,
     editOutpaintOffsetX: outpaintActive ? editOutpaintGeometry().offsetX : undefined,
@@ -17331,7 +15197,7 @@ $('#generateBtn').addEventListener('click', async () => {
     seed: seedRaw === '' ? undefined : Number(seedRaw),
     loras: mode === 'edit' ? state.editLoras : state.loras,
     refImages: mode === 'edit'
-      ? state.refs.slice(0, editReferenceCapacity()).filter(Boolean).map((r) => r.name)
+      ? state.refs.slice(0, state.editEngine === 'krea2' || outpaintActive ? 1 : 3).filter(Boolean).map((r) => r.name)
       : [],
     imageName: createImageGuideName,
     imageGuideMode: createImageGuide ? state.createGuideMode : undefined,
@@ -17442,7 +15308,6 @@ function setGenerating(on, statusText) {
     $('#liveStatusText').onclick = null;
     renderDesktopStageGenerating(statusText || 'Working…');
     $('#livePreview').classList.add('show');
-    document.body.classList.add('live-preview-visible');
     startLivePreviewSimulation(state.view === 'video' ? 'video' : 'image');
     $('#liveStatusText').innerHTML = `<span class="spin"></span> ${statusText || 'Working…'}`;
     $('#livePct').textContent = '';
@@ -18016,17 +15881,6 @@ function connectEvents() {
   es.addEventListener('status', (ev) => {
     renderGenerationStatus(JSON.parse(ev.data));
   });
-  es.addEventListener('oomDetected', (ev) => {
-    const d = JSON.parse(ev.data);
-    if (d.jobId && state.activeJobs.has(d.jobId)) {
-      const stage = d.telemetry?.stage || d.stage || 'unknown';
-      const vramPct = d.telemetry?.vram?.utilization;
-      const message = vramPct
-        ? `OOM detected at ${stage} — VRAM ${Math.round(vramPct * 100)}% utilized`
-        : `OOM detected during ${stage}`;
-      renderGenerationStatus({ jobId: d.jobId, profileId: d.profileId, text: message, isSampling: false });
-    }
-  });
   es.addEventListener('preview', (ev) => {
     const d = JSON.parse(ev.data);
     if (state.activeJobs.size && (!d.jobId || state.activeJobs.has(d.jobId))) {
@@ -18044,15 +15898,6 @@ function connectEvents() {
     toast(`Step ${d.completedStep} complete · running ${d.nextStep} of ${d.total}`);
     refreshGallery(true);
     queueRefreshSoon();
-  });
-  es.addEventListener('retry', (ev) => {
-    const d = JSON.parse(ev.data);
-    if (d.code === 'ltx_oom_retry' && d.jobId && state.activeJobs.has(d.jobId)) {
-      const text = d.retry
-        ? `VRAM pressure — retrying at ${d.retry.width}×${d.retry.height}, ${d.retry.frames} frames…`
-        : 'VRAM pressure — retrying at reduced size…';
-      renderGenerationStatus({ jobId: d.jobId, profileId: d.profileId, text, isSampling: false });
-    }
   });
   es.addEventListener('jobDone', (ev) => {
     const d = JSON.parse(ev.data);
@@ -18216,50 +16061,6 @@ function connectEvents() {
     queueRefreshSoon();
   });
   es.onerror = () => { /* browser auto-reconnects */ };
-  
-  const memTelemetry = new EventSource('/api/telemetry/memory');
-  memTelemetry.onmessage = (ev) => {
-    try {
-      const data = JSON.parse(ev.data);
-      state.telemetry = {
-        ram: data.ram,
-        vram: data.vram,
-        offloadConfig: data.offloadConfig,
-        timestamp: data.timestamp,
-      };
-      updateMemoryTelemetryDisplay();
-    } catch { /* ignore malformed telemetry */ }
-  };
-  memTelemetry.onerror = () => { /* auto-reconnect */ };
-}
-function updateMemoryTelemetryDisplay() {
-  const telemetry = state.telemetry;
-  if (!telemetry) return;
-  
-  const ramUtil = telemetry.ram?.utilization ?? 0;
-  const vramUtil = telemetry.vram?.utilization ?? 0;
-  const maxVram = telemetry.vram?.totalGb ?? 0;
-  const freeVram = telemetry.vram?.freeGb ?? 0;
-  
-  const statusEl = $('#memoryStatus') || (() => {
-    const el = document.createElement('div');
-    el.id = 'memoryStatus';
-    el.style.cssText = 'position: fixed; top: 8px; right: 8px; background: rgba(0,0,0,0.7); color: #fff; padding: 6px 10px; border-radius: 8px; font-size: 12px; z-index: 10000;';
-    document.body.appendChild(el);
-    return el;
-  })();
-  
-  const ramColor = ramUtil > 85 ? '#ff4444' : ramUtil > 60 ? '#ffaa00' : '#44aa44';
-  const vramColor = vramUtil > 85 ? '#ff4444' : vramUtil > 60 ? '#ffaa00' : '#44aa44';
-  
-  statusEl.innerHTML = `
-    <div style="display: flex; gap: 12px; align-items: center;">
-      <span style="color: ${ramColor}">RAM: ${ramUtil.toFixed(0)}%</span>
-      <span style="color: ${vramColor}">VRAM: ${vramUtil.toFixed(0)}%${maxVram ? ` (${freeVram}GB/${maxVram}GB)` : ''}</span>
-      <span style="opacity: 0.6;">|</span>
-      <span style="opacity: 0.6">${telemetry.offloadConfig?.device || 'unknown'}: ${telemetry.offloadConfig?.offloadMode || 'unknown'}</span>
-    </div>
-  `;
 }
 function isUpscaleJob() { return state.upscaling.size > 0; }
 
@@ -18569,7 +16370,6 @@ function videoEngineLabel(engine, info) {
   if (info?.workflow === 'director') return 'LTX 2.3 Director';
   return {
     ltx: 'LTX 2.3',
-    h3: 'MiniMax H3',
     'ltx-edit': 'LTX Edit',
     eros: '10Eros DMD',
     wan: 'Wan 2.2',
@@ -18999,8 +16799,8 @@ const DESKTOP_INPUT_STATE_KEYS = [
   'editAspectOverride', 'editAspect', 'editMp', 'editWidth', 'editHeight', 'editOutpaint', 'editOutpaintPosition', 'editOutpaintOffsetX', 'editOutpaintOffsetY', 'editOutpaintScale', 'editOutpaintFeather', 'editOutpaintMaskOffset',
   'editUpscaleEnabled', 'editUpscaleResolution', 'editUpscaleProfile', 'editUpscaleNoise', 'editUpscaleExpanded', 'editSequential',
   'createUpscaleEnabled', 'createUpscaleResolution', 'createUpscaleProfile', 'createUpscaleNoise', 'createUpscaleExpanded',
-  'qwenAngles', 'qwenAnglesMode', 'qwenAngleElevations', 'qwenAngleDistances', 'qwenQuality', 'krea2RefBoost',
-  'prompts', 'promptPresetSelections', 'loras', 'videoLoras', 'editLoras', 'editLorasByEngine', 'editEngine', 'refs', 'promptSourceImage', 'promptAssistantUseSource',
+  'qwenAngles', 'qwenAnglesMode', 'qwenAngleElevations', 'qwenAngleDistances', 'qwenQuality',
+  'prompts', 'loras', 'videoLoras', 'editLoras', 'editLorasByEngine', 'editEngine', 'refs', 'promptSourceImage', 'promptAssistantUseSource',
   'createRef', 'createImageGuideOpen', 'createGuideMode', 'createGuideActive', 'createMatchSource', 'createMatchNative',
   'createInfluence', 'createDepthStrength', 'createStyleStrength', 'createDepthPreview', 'createDepthPreviewShown', 'krea2Turbo', 'krea2RawTurboLora',
   'regions', 'activeRegionId', 'kreaMask', 'kreaMaskPreview', 'kreaMaskDirty', 'kreaMaskErase', 'kreaMaskTool', 'kreaMaskKind',
@@ -19008,7 +16808,6 @@ const DESKTOP_INPUT_STATE_KEYS = [
   'kreaBrush', 'kreaMaskFeather', 'editMaskInfluence', 'editMaskExpand', 'kreaMaskInvert', 'kreaMaskPoints',
   'kreaMaskPointForeground', 'kreaMaskPointDeleteMode', 'kreaMaskPreviewCutout', 'kreaMaskViewMode',
   'vidRef', 'vidEnd', 'vidDrive', 'vidFace', 'vidAudio', 'vidEngine', 'vidSigma', 'vidSmooth',
-  'vidH3Mode', 'vidH3MatchSource', 'vidH3Xl', 'vidH3SageAttention', 'vidH3Steps', 'vidH3RefImageSize', 'vidH3RefSlots', 'vidH3References',
   'vidScailMode', 'vidScailFps', 'vidScailStableTracking', 'vidScailChunkFrames', 'vidScailChunkOverlap', 'vidAutoMotionPrompt',
   'videoCameraMotions', 'videoCameraMotionPhrase', 'videoCameraGuide',
   'generationTuning',
@@ -19160,14 +16959,6 @@ function resetActiveGenerationForm() {
     renderQwenAngleTool();
   } else if (mode === 'video') {
     state.vidRef = null;
-    state.vidH3Mode = 'frames';
-    state.vidH3MatchSource = true;
-    state.vidH3Xl = false;
-    state.vidH3SageAttention = true;
-    state.vidH3Steps = 20;
-    state.vidH3RefImageSize = 'match';
-    state.vidH3RefSlots = 1;
-    state.vidH3References = { images: [], videos: [], audios: [] };
     state.vidEnd = null;
     state.vidDrive = null;
     state.vidFace = null;
@@ -19177,7 +16968,7 @@ function resetActiveGenerationForm() {
     state.videoCameraMotions = [];
     state.videoCameraMotionPhrase = '';
     state.videoCameraGuide = null;
-    state.vidEngine = supportedVideoEngines()[0] || state.videoEngineDefault || 'ltx';
+    state.vidEngine = enabledVideoEngines()[0] || state.videoEngineDefault || 'ltx';
     $('#vidDriveVideo').removeAttribute('src');
     $('#vidDriveTrimChip').classList.remove('active');
     setAudioChipVisual($('#vidAudioChip'), false);
@@ -19193,7 +16984,6 @@ function resetActiveGenerationForm() {
     syncCameraMotionTool();
   } else {
     state.loras = [];
-    state.promptPresetSelections = { camera: [] };
     state.regions = [];
     state.activeRegionId = null;
     state.promptSourceImage = null;
@@ -20113,16 +17903,13 @@ function strengthHuntStrengthLabel(value) {
 }
 
 function strengthHuntValues(maximum) {
-  const requested = Number(maximum) || 0;
-  const direction = requested < 0 ? -1 : 1;
-  const ceiling = Math.min(2, Math.abs(requested));
+  const ceiling = Math.max(0, Math.min(2, Number(maximum) || 0));
   const values = [0];
   for (let value = 0.2; value < ceiling - 0.001; value += 0.2) {
-    values.push(direction * Math.round(value * 100) / 100);
+    values.push(Math.round(value * 100) / 100);
   }
-  const endpoint = direction * ceiling;
-  if (ceiling > 0 && Math.abs(values[values.length - 1] - endpoint) > 0.001) {
-    values.push(direction * Math.round(ceiling * 100) / 100);
+  if (ceiling > 0 && Math.abs(values[values.length - 1] - ceiling) > 0.001) {
+    values.push(Math.round(ceiling * 100) / 100);
   }
   return values;
 }
@@ -21394,7 +19181,6 @@ $('#libraryGroupBack').addEventListener('click', closeDesktopLibraryGroup);
 let desktopGalleryDrag = null;
 const DESKTOP_GALLERY_DROP_SELECTOR = [
   '.lora-card[data-lora-name]',
-  '#vidH3ReferenceList',
   '.ref-slot',
   '#createImageGuideToggle', '#createImageGuideAdd', '#createImageGuideFilled',
   '#regionRefBtn', '#regionRefPreview',
@@ -21539,8 +19325,6 @@ async function applyDirectorGalleryDrop(target, drag, event) {
 }
 
 function desktopGalleryDropTarget(node) {
-  const h3References = node && node.closest ? node.closest('#vidH3ReferenceList') : null;
-  if (h3References?.getClientRects().length) return h3References;
   const target = node && node.closest ? node.closest(DESKTOP_GALLERY_DROP_SELECTOR) : null;
   return target && target.getClientRects().length ? target : null;
 }
@@ -21550,14 +19334,8 @@ function desktopGalleryDropTargets(drag = desktopGalleryDrag) {
   return $$(DESKTOP_GALLERY_DROP_SELECTOR).filter((target) => {
     if (!target.getClientRects().length) return false;
     if (target.closest('[inert], [aria-hidden="true"]')) return false;
-    if (target.matches('#vidH3ReferenceList .ref-slot')) return false;
     if (target.closest('#directorWorkspace') && !directorGalleryDropTargetAllowed(target, drag)) return false;
     if (target.matches('.lora-card[data-lora-name]') && (drag.video || !drag.item?.file)) return false;
-    if (target.matches('#vidH3ReferenceList')) {
-      const kind = drag.video ? 'videos' : 'images';
-      return state.vidEngine === 'h3' && state.vidH3Mode === 'reference'
-        && h3References()[kind].length < H3_REFERENCE_LIMITS[kind];
-    }
     if ((target.id === 'vidDriveBtn' || target.id === 'vidDriveThumb') && !drag.video) return false;
     if ((target.id === 'regionRefBtn' || target.id === 'regionRefPreview') && !selectedRegion()) return false;
     return true;
@@ -21651,14 +19429,6 @@ async function applyDesktopGalleryDrop(target, drag, event) {
   if (await applyDirectorGalleryDrop(target, drag, event)) return;
   if (target.matches('.lora-card[data-lora-name]')) {
     await setLoraThumbFromGallery(target.dataset.loraName, item);
-    return;
-  }
-  if (target.matches('#vidH3ReferenceList')) {
-    const kind = video ? 'video' : 'image';
-    const reference = await directorGalleryDropAsset(drag, kind);
-    reference.kind = kind;
-    addH3Reference(reference);
-    toast(`Gallery ${kind} added as an H3 reference`);
     return;
   }
   if (target.matches('.ref-slot')) {
@@ -23257,14 +21027,9 @@ function openLightbox(id, mediaSel, options = {}) {
   };
   if (selVideo) {
     const info = selVideo.info || {};
-    const usedPromptPresets = promptPresetsForItem(info);
     const model = videoEngineLabel(info.engine);
     const workflowModel = info.workflow === 'director' ? videoEngineLabel(info.engine, info) : model;
     meta.push(`<b>Model:</b> ${escapeHtml(workflowModel)}`);
-    if (info.attentionBackend) {
-      meta.push(`<b>Attention:</b> ${info.attentionBackend === 'sageattention' ? 'SageAttention (verified)' : 'Standard PyTorch'}`);
-    }
-    if (hasDocumentationValue(info.steps)) meta.push(`<b>Steps:</b> ${escapeHtml(String(info.steps))}`);
     const recordedVideoWidth = Math.round(Number(info.width));
     const recordedVideoHeight = Math.round(Number(info.height));
     const fallbackVideoWidth = Math.round(Number(it.width));
@@ -23273,28 +21038,20 @@ function openLightbox(id, mediaSel, options = {}) {
     const videoHeight = recordedVideoWidth > 0 && recordedVideoHeight > 0 ? recordedVideoHeight : fallbackVideoHeight;
     if (videoWidth > 0 && videoHeight > 0) meta.push(`<b>Size:</b> ${videoWidth}×${videoHeight}`);
     meta.push(copyableMeta('Motion', info.motionPrompt || ''));
-    const h3ReferenceMarkup = h3ReferenceGenerationInfoMarkup(info);
-    if (h3ReferenceMarkup) meta.push(h3ReferenceMarkup);
-    if (usedPromptPresets.length) meta.push(promptPresetGenerationInfoMarkup(usedPromptPresets));
     if (info.negativePrompt) meta.push(copyableMeta('Negative prompt', info.negativePrompt));
     if (info.refinedMotionPrompt) meta.push(copyableMeta('Enhanced motion', info.refinedMotionPrompt));
     if (info.durationMs) meta.push(`<b>Generated in:</b> ${formatDuration(info.durationMs)}`);
     if (info.frames && info.fps) {
       const scailFlags = [info.scailMode && `SCAIL ${info.scailMode}`, info.scailFps && `${info.scailFps} fps generation`, info.scailMode === 'chunked' && info.scailStableTracking && 'stable', info.scailMode === 'chunked' && info.scailChunkFrames && `${info.scailChunkFrames}f chunks`, info.scailMode === 'chunked' && info.scailChunkOverlap && `${info.scailChunkOverlap}f overlap`].filter(Boolean).join(', ');
-      const flags = [info.composite && 'side-by-side', info.faceId && 'Face ID', info.processed === 'upscale' && 'RTX upscale', info.processed === 'interpolate' && 'RIFE pass', info.processed === 'extend' && 'extended', info.smooth && `RIFE ${info.smooth}×`, info.fourK && 'RTX 4K', info.engine === 'wan' && info.fast && '4-step', info.sigmaPreset && `sigmas: ${info.sigmaPreset}`, scailFlags, info.drivenAudio && 'audio-driven', info.continuedAudio && 'continued sound', info.preservedAudio && 'audio kept', info.endFrame && 'end frame', info.motionVideo && !info.composite && 'motion transfer'].filter(Boolean).join(' · ');
+      const flags = [info.composite && 'side-by-side', info.faceId && 'Face ID', info.processed === 'upscale' && 'upscale', info.processed === 'interpolate' && 'RIFE pass', info.processed === 'extend' && 'extended', info.smooth && `RIFE ${info.smooth}×`, info.fourK && '4K', info.engine === 'wan' && info.fast && '4-step', info.sigmaPreset && `sigmas: ${info.sigmaPreset}`, scailFlags, info.drivenAudio && 'audio-driven', info.continuedAudio && 'continued sound', info.preservedAudio && 'audio kept', info.endFrame && 'end frame', info.motionVideo && !info.composite && 'motion transfer'].filter(Boolean).join(' · ');
       meta.push(`<b>Playback:</b> ${(info.frames / info.fps).toFixed(1)}s @ ${info.fps}fps${flags ? ' · ' + flags : ''} &nbsp; ${copyableMeta('Seed', info.seed)}`);
       if (info.loras && info.loras.length) meta.push('<b>Video LoRAs:</b> ' + info.loras.map((l) => `${prettyLora(l.name)} (${Number(l.strength).toFixed(2)})`).join(', '));
     } else if (info.seed != null) meta.push(copyableMeta('Seed', info.seed));
   } else {
     const model = galleryImageModelLabel(it);
-    const usedPromptPresets = promptPresetsForItem(it);
     if (model) meta.push(`<b>Model:</b> ${escapeHtml(model)}`);
     if (it.editEngine === 'qwen') meta.push(`<b>Sampling:</b> ${it.qwenQuality === 'fast' || (it.qwenQuality == null && Number(it.steps) <= 4) ? 'Fast' : 'Quality'}`);
-    if (it.editEngine === 'krea2ref' && Number.isFinite(Number(it.krea2RefBoost))) {
-      meta.push(`<b>Reference fidelity:</b> ${Number(it.krea2RefBoost).toFixed(2)}`);
-    }
     meta.push(copyableMeta('Prompt', it.prompt || ''));
-    if (usedPromptPresets.length) meta.push(promptPresetGenerationInfoMarkup(usedPromptPresets));
     if (it.negativePrompt) meta.push(copyableMeta('Negative prompt', it.negativePrompt));
     if (selComposite) meta.push(`<b>Composite:</b> ${escapeHtml(selComposite.label || 'Before + after')}`);
     else if (it.mode === 'composite' && it.compositeInfo) meta.push(`<b>Composite:</b> ${escapeHtml(it.compositeInfo.label || 'Saved composite')}`);
@@ -23322,12 +21079,6 @@ function openLightbox(id, mediaSel, options = {}) {
     }
   }
   $('#lbMeta').innerHTML = meta.join('<br>');
-  $$('#lbMeta .lightbox-preset-chip img, #lbMeta .lightbox-reference-chip img, #lbMeta .lightbox-reference-chip video').forEach((media) => {
-    media.addEventListener('error', () => {
-      media.hidden = true;
-      media.closest('.lightbox-preset-chip, .lightbox-reference-chip')?.classList.add('image-missing');
-    }, { once: true });
-  });
   $$('#lbMeta [data-copy-meta]').forEach((button) => button.addEventListener('click', async () => {
     const copy = metaCopyValues[Number(button.dataset.copyMeta)];
     if (!copy) return;
@@ -23921,7 +21672,7 @@ $('#animateGo').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    toast(`Video queued — ${videoEngineLabel(state.animEngine)}`);
+    toast('Video queued — LTX 2.3');
   } catch (e) {
     state.animating.delete(it.id);
     renderGrid();
@@ -24125,7 +21876,7 @@ function restoredLoraList(loras) {
 }
 
 function restoredEditEngine(engine) {
-  return ['qwen', 'klein9', 'krea2', 'krea2ref', 'krea2remix'].includes(engine) ? engine : 'klein4';
+  return ['qwen', 'klein9', 'krea2', 'krea2ref'].includes(engine) ? engine : 'klein4';
 }
 
 function restoredEditAspect(width, height) {
@@ -24264,8 +22015,6 @@ async function reuseItem(it, useEnhanced) {
   const targetView = it.mode === 'edit' ? 'edit' : 'create';
   const restoringEdit = targetView === 'edit';
   const restoredPrompt = reusableItemPrompt(it, useEnhanced);
-  if (!state.promptPacksLoaded) await loadPromptPacks();
-  state.promptPresetSelections = promptPresetSelectionsForReuse(it, restoredPrompt);
   const restoredRegions = Array.isArray(it.regions) ? it.regions.map((region) => Object.assign({}, region, {
     description: useEnhanced
       ? (region.refinedDescription || region.description || '')
@@ -24325,14 +22074,11 @@ async function reuseItem(it, useEnhanced) {
       ? Math.max(0, Math.min(25, Math.round(Number(it.editOutpaint.feather)))) : 12;
     state.editOutpaintMaskOffset = Number.isFinite(Number(it.editOutpaint?.maskOffset))
       ? Math.max(-15, Math.min(15, Math.round(Number(it.editOutpaint.maskOffset)))) : 0;
-    state.editRefSlots = Math.max(1, Math.min(editReferenceCapacity(),
-      (Array.isArray(it.refImages) ? it.refImages.filter(Boolean).length : 0) || 1));
+    state.editRefSlots = Math.max(1, Math.min(3, (Array.isArray(it.refImages) ? it.refImages.filter(Boolean).length : 0) || 1));
     if (state.editEngine === 'qwen') {
       state.qwenQuality = it.qwenQuality === 'fast' || (it.qwenQuality == null && Number(it.steps) <= 4)
         ? 'fast' : 'quality';
     }
-    state.krea2RefBoost = Number.isFinite(Number(it.krea2RefBoost))
-      ? Math.max(0, Math.min(12, Number(it.krea2RefBoost))) : 4;
     state.editLoras = restoredLoraList(it.loras);
     state.editLorasByEngine[state.editEngine] = state.editLoras;
     state.editAspectOverride = it.editAspectOverride === true;
@@ -24429,10 +22175,7 @@ async function reuseItem(it, useEnhanced) {
 async function reuseVideo(it, v) {
   const options = arguments[2] || {};
   const info = v.info || {};
-  const engine = ['h3', 'wan', 'eros', 'scail'].includes(info.engine) ? info.engine : 'ltx';
-  const savedH3MatchSource = engine === 'h3' && typeof info.h3MatchSource === 'boolean'
-    ? info.h3MatchSource
-    : null;
+  const engine = ['wan', 'eros', 'scail'].includes(info.engine) ? info.engine : 'ltx';
   if (state.directorOpen && !(info.workflow === 'director' && info.directorProject)) closeDirectorMode();
   if (!options.preserveLightbox) closeLightbox();
   setView('video');
@@ -24470,14 +22213,6 @@ async function reuseVideo(it, v) {
 
   // Clear current attachments + their UI
   state.vidRef = null;
-  state.vidH3Mode = engine === 'h3' && info.h3Mode === 'reference' ? 'reference' : 'frames';
-  state.vidH3MatchSource = savedH3MatchSource === true;
-  state.vidH3Xl = engine === 'h3' && (Number(info.h3ResolutionSize) >= H3Resolution.XL_SIZE
-    || Math.max(Number(info.width) || 0, Number(info.height) || 0) > 1536);
-  state.vidH3SageAttention = engine === 'h3' ? info.attentionBackend !== 'standard' : true;
-  state.vidH3RefImageSize = info.h3RefImageSize === 'max' ? 'max' : 'match';
-  state.vidH3RefSlots = 1;
-  state.vidH3References = { images: [], videos: [], audios: [] };
   state.vidEnd = null;
   state.vidDrive = null;
   state.vidFace = null;
@@ -24488,16 +22223,6 @@ async function reuseVideo(it, v) {
   $('#vidAudioTrim').hidden = true;
   $('#vidDriveTrimChip').classList.remove('active');
   $('#vidDriveVideo').removeAttribute('src');
-
-  if (engine === 'h3') {
-    state.mp = normalizeResolutionMegapixels(info.h3ResolutionSize, state.mp);
-    const outputRatio = Number(info.h3AspectRatio)
-      || (Number(info.width) / Math.max(1, Number(info.height)))
-      || selectedAspectRatio();
-    state.aspect = ASPECTS.reduce((best, aspect) => (
-      Math.abs(aspect.ar - outputRatio) < Math.abs(best.ar - outputRatio) ? aspect : best
-    ), ASPECTS[0]).label;
-  }
 
   // Engine chip (drives dependent UI: sigma row, extras, duration max…)
   const echip = $(`#vidEngineRow .chip[data-engine="${engine}"]`);
@@ -24518,10 +22243,9 @@ async function reuseVideo(it, v) {
   // Prompt + toggles
   const reusedCameraMotions = CameraMotion ? CameraMotion.normalizeCameraMotions(info.cameraMotions) : [];
   const reusedCameraMotionPhrase = CameraMotion ? CameraMotion.cameraMotionPhrase(reusedCameraMotions) : '';
-  const canReuseCameraMotion = cameraMotionAvailableForEngine(engine);
-  state.videoCameraMotions = canReuseCameraMotion ? reusedCameraMotions : [];
-  state.videoCameraMotionPhrase = canReuseCameraMotion ? reusedCameraMotionPhrase : '';
-  state.prompts.video = !canReuseCameraMotion && CameraMotion
+  state.videoCameraMotions = engine === 'scail' ? [] : reusedCameraMotions;
+  state.videoCameraMotionPhrase = engine === 'scail' ? '' : reusedCameraMotionPhrase;
+  state.prompts.video = engine === 'scail' && CameraMotion
     ? CameraMotion.stripCameraMotionPhrase(info.motionPrompt || '', reusedCameraMotionPhrase)
     : (info.motionPrompt || '');
   setPromptDraft(state.prompts.video);
@@ -24530,17 +22254,15 @@ async function reuseVideo(it, v) {
   state.generationTuning.video = normalizeGenerationTuning('video', {
     seed: $('#seedInput').value,
     batch: 1,
-    steps: info.steps || 20,
+    steps: 1,
     cfg: 1,
     negativePrompt: info.negativePrompt || '',
   });
-  state.vidH3Steps = engine === 'h3' ? normalizedH3Steps(info.steps || 20) : state.vidH3Steps;
   $('#negativePromptInput').value = state.generationTuning.video.negativePrompt || '';
   state.enhance = !!info.enhance;
   renderEnhance();
   $('#vid4k').classList.toggle('active', !!info.fourK);
   $('#vidQuality').classList.toggle('active', engine === 'wan' && info.fast === false);
-  renderVideoStepControl();
   if (info.motionFreedom !== undefined && info.motionFreedom !== null) {
     $('#vidFree').value = info.motionFreedom;
   }
@@ -24560,7 +22282,7 @@ async function reuseVideo(it, v) {
   };
 
   // Source image
-  if (!info.t2v && !(engine === 'h3' && state.vidH3Mode === 'reference')) {
+  if (!info.t2v) {
     try {
       if (it.mode !== 'video') {
         // grouped under a real image item -> reuse the item image (keeps grouping)
@@ -24583,42 +22305,12 @@ async function reuseVideo(it, v) {
         missing.push('source image');
       }
     } catch { missing.push('source image'); }
-    if (engine === 'h3' && state.vidRef) {
-      const sourceRatio = h3SourceAspectRatio();
-      const outputRatio = Number(info.h3AspectRatio)
-        || (Number(info.width) / Math.max(1, Number(info.height)));
-      state.vidH3MatchSource = savedH3MatchSource == null
-        ? sourceRatio > 0 && outputRatio > 0 && Math.abs(sourceRatio - outputRatio) / sourceRatio <= 0.025
-        : savedH3MatchSource;
-    }
   } else {
     state.customDims = true;
     state.width = info.width || 704;
     state.height = info.height || 1280;
     renderAspects();
     renderDims();
-  }
-
-  if (engine === 'h3' && state.vidH3Mode === 'reference' && info.h3References) {
-    for (const kind of ['images', 'videos', 'audios']) {
-      for (const asset of Array.isArray(info.h3References[kind]) ? info.h3References[kind] : []) {
-        try {
-          const blob = await inputBlob(asset.name);
-          if (!reuseRequestCurrent(options)) return;
-          state.vidH3References[kind].push({
-            kind: kind.slice(0, -1),
-            name: asset.name,
-            label: asset.label || `reused ${kind.slice(0, -1)} reference`,
-            hasAudio: asset.hasAudio === true,
-            url: URL.createObjectURL(blob),
-          });
-        } catch { missing.push(`H3 ${kind.slice(0, -1)} reference`); }
-      }
-    }
-    state.vidH3RefSlots = Math.max(1, h3ReferenceCount());
-    // The prompt is rendered before these async assets finish restoring.
-    // Redraw it now so its H3 cards recover their image thumbnails.
-    renderPromptComposer();
   }
 
   // Audio (already trimmed at original upload -> reused as-is, no re-upload)
@@ -24888,8 +22580,6 @@ function documentationMetadata(item) {
   add('model', 'Model', galleryImageModelLabel(item));
   const prompt = documentationAnglePrompt(item) || item.refinedPrompt || item.prompt;
   add('prompt', 'Prompt', prompt);
-  const promptPresets = promptPresetsForItem(item);
-  if (promptPresets.length) add('promptPresets', 'Mix Pack presets', promptPresetNames(promptPresets).join(', '));
   add('negativePrompt', 'Negative prompt', item.negativePrompt);
   if (item.prompt && prompt && prompt !== item.prompt) add('originalPrompt', 'Original prompt', item.prompt);
   if (hasDocumentationValue(item.width) && hasDocumentationValue(item.height)) add('size', 'Size', `${item.width} × ${item.height}`);
@@ -25277,57 +22967,17 @@ function saveDocumentationImage() {
 
 let documentationVideoRun = null;
 
-const DOCUMENTATION_VIDEO_ASPECTS = Object.freeze({
-  auto: null,
-  '16:9': Object.freeze({ width: 1280, height: 720, label: 'Landscape' }),
-  '4:3': Object.freeze({ width: 1280, height: 960, label: 'Classic landscape' }),
-  '1:1': Object.freeze({ width: 1080, height: 1080, label: 'Square' }),
-  '4:5': Object.freeze({ width: 1024, height: 1280, label: 'Social feed' }),
-  '3:4': Object.freeze({ width: 960, height: 1280, label: 'Portrait' }),
-  '9:16': Object.freeze({ width: 720, height: 1280, label: 'Story / Reel' }),
-});
-let documentationVideoAspect = (() => {
-  try {
-    const saved = localStorage.getItem('ks-documentation-video-aspect') || 'auto';
-    return Object.prototype.hasOwnProperty.call(DOCUMENTATION_VIDEO_ASPECTS, saved) ? saved : 'auto';
-  } catch { return 'auto'; }
-})();
-
 function documentationVideoMimeType() {
   if (!window.MediaRecorder) return '';
   return [
-    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-    'video/mp4;codecs=avc1.42E01E',
-    'video/mp4',
     'video/webm;codecs=vp9',
     'video/webm;codecs=vp8',
     'video/webm',
+    'video/mp4;codecs=avc1.42E01E',
   ].find((type) => MediaRecorder.isTypeSupported(type)) || '';
 }
 
-async function convertDocumentationVideoToMp4(blob, signal) {
-  const response = await fetch('/api/video/convert-mp4', {
-    method: 'POST',
-    headers: { 'Content-Type': blob.type || 'video/webm', Accept: 'video/mp4' },
-    body: blob,
-    signal,
-  });
-  if (!response.ok) {
-    const details = await response.json().catch(() => ({}));
-    if (response.status === 401 && details.code === 'auth') showProfileGate();
-    const error = new Error(details.error || `MP4 conversion failed (${response.status})`);
-    error.code = details.code || '';
-    error.status = response.status;
-    throw error;
-  }
-  const converted = await response.blob();
-  if (!converted.size) throw new Error('MP4 conversion returned an empty video');
-  return converted.type === 'video/mp4' ? converted : new Blob([converted], { type: 'video/mp4' });
-}
-
-function documentationVideoDimensions(width, height, aspect = 'auto') {
-  const preset = DOCUMENTATION_VIDEO_ASPECTS[aspect];
-  if (preset) return { width: preset.width, height: preset.height };
+function documentationVideoDimensions(width, height) {
   const ratio = Math.max(.25, Math.min(4, (Number(width) || 16) / (Number(height) || 9)));
   const even = (value) => Math.max(2, Math.round(value / 2) * 2);
   const portrait = ratio < (1 / 1.08);
@@ -25335,43 +22985,6 @@ function documentationVideoDimensions(width, height, aspect = 'auto') {
   return boardRatio >= 1
     ? { width: 1280, height: even(1280 / boardRatio) }
     : { width: even(1280 * boardRatio), height: 1280 };
-}
-
-function syncDocumentationVideoAspectControls(run = documentationVideoRun) {
-  const selected = run?.aspect || documentationVideoAspect;
-  const locked = !run || ['recording', 'converting', 'done', 'error'].includes(run.phase);
-  $$('#documentationVideoAspects [data-documentation-video-aspect]').forEach((button) => {
-    const active = button.dataset.documentationVideoAspect === selected;
-    button.setAttribute('aria-checked', String(active));
-    button.disabled = locked;
-  });
-  const preset = DOCUMENTATION_VIDEO_ASPECTS[selected];
-  const dimensions = run?.video
-    ? documentationVideoDimensions(run.video.videoWidth, run.video.videoHeight, selected)
-    : preset;
-  $('#documentationVideoAspectNote').textContent = preset
-    ? `${selected} · ${dimensions.width} × ${dimensions.height} · ${preset.label}`
-    : (dimensions
-      ? `Auto · ${dimensions.width} × ${dimensions.height} · fitted to this result`
-      : 'Auto chooses a frame that fits the generated result.');
-  $('#documentationVideoStart').disabled = run?.phase !== 'ready';
-}
-
-function applyDocumentationVideoAspect(run, aspect) {
-  if (!run || !Object.prototype.hasOwnProperty.call(DOCUMENTATION_VIDEO_ASPECTS, aspect)) return;
-  if (run.phase === 'recording' || run.phase === 'converting') return;
-  run.aspect = aspect;
-  documentationVideoAspect = aspect;
-  try { localStorage.setItem('ks-documentation-video-aspect', aspect); } catch { /* preference remains in memory */ }
-  if (run.video) {
-    const canvas = $('#documentationVideoCanvas');
-    const dimensions = documentationVideoDimensions(run.video.videoWidth, run.video.videoHeight, aspect);
-    canvas.width = dimensions.width;
-    canvas.height = dimensions.height;
-    syncDocumentationVideoInputs(run.inputs || [], run.video.currentTime || 0);
-    drawDocumentationVideoFrame(canvas.getContext('2d'), canvas, run.inputs || [], run.item, run.videoRecord, run.video);
-  }
-  syncDocumentationVideoAspectControls(run);
 }
 
 function drawContainedMedia(ctx, media, x, y, width, height) {
@@ -25426,17 +23039,13 @@ function documentationVideoInputSpecs(item, video) {
       fallbackSrc: name ? fallbackSrc : '',
     }, options));
   };
-  const addVideo = (label, name, accent, startAt = 0, duration = 0, src = '', options = {}) => {
+  const addVideo = (label, name, accent, startAt = 0, duration = 0, src = '') => {
     if (!name && !src) return;
-    specs.push(Object.assign({
+    specs.push({
       type: 'video', label, accent, src: name ? inputUrl(name) : src,
       startAt: Math.max(0, Number(startAt) || 0),
       duration: Math.max(0, Number(duration) || 0),
-    }, options));
-  };
-  const addAudio = (label, name, accent, options = {}) => {
-    if (!name) return;
-    specs.push(Object.assign({ type: 'audio', label, accent, src: inputUrl(name) }, options));
+    });
   };
 
   if (info.processed && info.parentVideoId) {
@@ -25447,17 +23056,6 @@ function documentationVideoInputSpecs(item, video) {
 
   if (engine === 'ltx-edit') {
     addVideo('Source Video', info.driveVideoName, '#00bcd4', info.driveStartSeconds, info.driveDurSeconds);
-    return specs;
-  }
-
-  if (engine === 'h3' && info.h3Mode === 'reference') {
-    h3GenerationReferenceDescriptors(info).forEach((reference) => {
-      const label = reference.assetLabel && reference.assetLabel !== reference.inputLabel
-        ? `${reference.inputLabel} · ${reference.assetLabel}` : reference.inputLabel;
-      if (reference.kind === 'image') addImage(label, reference.name, '#8b6cff', '', { reference: true });
-      else if (reference.kind === 'video') addVideo(label, reference.name, '#ec5c99', 0, 0, '', { reference: true });
-      else addAudio(label, reference.name, '#4fc3f7', { reference: true });
-    });
     return specs;
   }
 
@@ -25483,28 +23081,6 @@ function documentationVideoInputSpecs(item, video) {
 }
 
 function loadDocumentationMedia(spec, src = spec.src) {
-  if (spec.type === 'audio') {
-    const canvas = document.createElement('canvas');
-    canvas.width = 640;
-    canvas.height = 360;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#080a10';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const bars = 34;
-    const seed = String(spec.label || '').split('').reduce((total, char) => total + char.charCodeAt(0), 0);
-    for (let index = 0; index < bars; index += 1) {
-      const height = 34 + ((seed + index * 29) % 98);
-      const x = 58 + index * 15;
-      const y = (canvas.height - height) / 2;
-      ctx.fillStyle = index % 3 === 0 ? 'rgba(79,195,247,.92)' : 'rgba(139,108,255,.68)';
-      ctx.fillRect(x, y, 7, height);
-    }
-    ctx.fillStyle = 'rgba(255,255,255,.72)';
-    setDocumentationFont(ctx, 650, 18);
-    ctx.textBaseline = 'bottom';
-    ctx.fillText('AUDIO REFERENCE', 58, canvas.height - 34);
-    return Promise.resolve(canvas);
-  }
   if (spec.type === 'video') {
     const media = document.createElement('video');
     media.preload = 'auto';
@@ -25542,7 +23118,6 @@ async function loadDocumentationVideoInputs(item, video) {
 
 function documentationVideoDetails(item, video, inputMedia = [], resultMedia = null) {
   const info = video.info || {};
-  const promptPresets = promptPresetsForItem(info);
   const prompt = info.refinedMotionPrompt || info.motionPrompt || item.refinedPrompt || item.prompt || 'Untitled generation';
   const width = info.width || info.srcWidth || item.width;
   const height = info.height || info.srcHeight || item.height;
@@ -25562,7 +23137,7 @@ function documentationVideoDetails(item, video, inputMedia = [], resultMedia = n
     info.endFrame && 'Last-frame guidance',
     info.motionVideo && 'Motion transfer',
     info.smooth > 1 && `RIFE ${info.smooth}×`,
-    info.fourK && 'RTX 4K',
+    info.fourK && '4K',
     info.engine === 'wan' && info.fast && '4-step',
     info.sigmaPreset && `Sigmas: ${info.sigmaPreset}`,
     info.engine === 'scail' && info.scailMode && `SCAIL ${info.scailMode}`,
@@ -25576,13 +23151,8 @@ function documentationVideoDetails(item, video, inputMedia = [], resultMedia = n
     ['Size', width && height ? `${width} × ${height}` : ''],
     ['Playback', seconds ? `${seconds.toFixed(1)}s${info.fps ? ` · ${info.fps} fps` : ''}` : ''],
     ['Inputs', inputSummary],
-    ['Attention', info.attentionBackend === 'sageattention'
-      ? 'SageAttention (verified)'
-      : (info.attentionBackend === 'standard' ? 'Standard PyTorch' : '')],
     ['Options', options],
-    ['Mix Pack presets', promptPresetNames(promptPresets).join(', ')],
     ['Seed', hasDocumentationValue(info.seed) ? info.seed : ''],
-    ['Steps', hasDocumentationValue(info.steps) ? info.steps : ''],
     ['Generated in', info.durationMs ? formatDuration(info.durationMs) : ''],
   ].filter(([, value]) => hasDocumentationValue(value));
   if (Array.isArray(info.loras) && info.loras.length) {
@@ -25593,28 +23163,25 @@ function documentationVideoDetails(item, video, inputMedia = [], resultMedia = n
 
 function documentationVideoInputBoxes(area, count, gap) {
   if (!count || !area.width || !area.height) return [];
-  const columns = count > 8 ? 3 : (count > 3 ? 2 : 1);
-  const rows = Math.ceil(count / columns);
-  const itemGap = count > 1 ? Math.max(5, Math.round(gap * .46)) : 0;
-  const itemWidth = (area.width - itemGap * (columns - 1)) / columns;
-  const itemHeight = (area.height - itemGap * (rows - 1)) / rows;
+  const itemGap = count > 1 ? Math.max(6, Math.round(gap * .58)) : 0;
+  const itemHeight = (area.height - itemGap * (count - 1)) / count;
   return Array.from({ length: count }, (_, index) => ({
-    x: area.x + (index % columns) * (itemWidth + itemGap),
-    y: area.y + Math.floor(index / columns) * (itemHeight + itemGap),
-    width: itemWidth,
+    x: area.x,
+    y: area.y + index * (itemHeight + itemGap),
+    width: area.width,
     height: itemHeight,
   }));
 }
 
 function documentationVideoLayout(width, height, mediaRatio = width / height, inputCount = 1, storyboardCount = 0) {
   const safeMediaRatio = Math.max(.25, Math.min(4, Number(mediaRatio) || width / height));
-  const stacked = width / height < 1.08;
+  const portrait = safeMediaRatio < (1 / 1.08);
   const pad = Math.max(18, Math.round(Math.min(width, height) * .04));
   const gap = Math.max(12, Math.round(pad * .62));
   const sourceCount = Math.max(0, Math.round(Number(inputCount) || 0));
   const storyboardHeight = storyboardCount ? Math.max(64, Math.min(118, Math.round(height * .115))) : 0;
   const storyboardGap = storyboardHeight ? gap : 0;
-  if (stacked) {
+  if (portrait) {
     const lowerWidth = width - pad * 2;
     const resultHeight = Math.min(
       lowerWidth / safeMediaRatio,
@@ -25673,17 +23240,17 @@ function drawDocumentationVideoMedia(ctx, media, box, label, accent, { quiet = f
     ? Math.max(9, Math.min(12, Math.round(scaledFontSize * .78)))
     : Math.max(9, Math.min(14, scaledFontSize));
   setDocumentationFont(ctx, quiet ? 650 : 700, fontSize);
+  const labelWidth = ctx.measureText(label).width;
   const inset = Math.max(quiet ? 6 : 8, Math.round(fontSize * (quiet ? .58 : .72)));
-  const availableLabelWidth = Math.max(18, box.width - inset * 3.8);
-  const visibleLabel = truncateCanvasText(ctx, label, availableLabelWidth);
-  const labelWidth = ctx.measureText(visibleLabel).width;
   const badgeHeight = Math.round(fontSize * (quiet ? 1.72 : 1.9));
-  const badgeWidth = labelWidth + inset * 2;
+  const badgeWidth = labelWidth + inset * (quiet ? 2.05 : 2.35);
   ctx.fillStyle = quiet ? 'rgba(0,0,0,.62)' : 'rgba(0,0,0,.74)';
   ctx.fillRect(box.x + inset, box.y + inset, badgeWidth, badgeHeight);
+  ctx.fillStyle = accent;
+  ctx.fillRect(box.x + inset * 1.45, box.y + inset + badgeHeight * .29, Math.max(2, fontSize * .15), badgeHeight * .42);
   ctx.fillStyle = quiet ? 'rgba(255,255,255,.86)' : '#fff';
   ctx.textBaseline = 'top';
-  ctx.fillText(visibleLabel, box.x + inset * 2, box.y + inset + (badgeHeight - fontSize) * .42);
+  ctx.fillText(label, box.x + inset * 2.05, box.y + inset + (badgeHeight - fontSize) * .42);
 }
 
 function drawDocumentationVideoStoryboard(ctx, inputMedia, box) {
@@ -25740,10 +23307,8 @@ function drawDocumentationVideoDetails(ctx, box, item, video, inputMedia, result
   ctx.fillStyle = 'rgba(255,255,255,.92)';
   setDocumentationFont(ctx, 500, promptSize);
   const availablePromptHeight = Math.max(promptSize * 1.4, box.y + box.height - copyY - details.facts.length * factSize * 1.9);
-  const promptLineHeight = Math.round(promptSize * 1.35);
-  const promptLineLimit = Math.max(2, Math.floor(availablePromptHeight / promptLineHeight));
-  const promptLines = wrapCanvasText(ctx, details.prompt, contentWidth, promptLineLimit);
-  copyY = drawDocumentationLines(ctx, promptLines, box.x + inset, copyY, promptLineHeight);
+  const promptLines = wrapCanvasText(ctx, details.prompt, contentWidth, Math.max(2, Math.min(5, Math.floor(availablePromptHeight / (promptSize * 1.35)))));
+  copyY = drawDocumentationLines(ctx, promptLines, box.x + inset, copyY, Math.round(promptSize * 1.35));
   copyY += Math.round(13 * density);
   const factGap = Math.round(7 * density);
   details.facts.forEach(([label, value]) => {
@@ -25834,7 +23399,6 @@ function closeDocumentationVideoExport() {
   const run = documentationVideoRun;
   if (run) {
     run.cancelled = true;
-    if (run.abortController) run.abortController.abort();
     if (run.recorder && run.recorder.state !== 'inactive') run.recorder.stop();
     cleanupDocumentationVideoRun(run);
   }
@@ -25852,27 +23416,12 @@ async function saveDocumentationVideo(item, video) {
   }
   closeActionMenu();
   closeDocumentationVideoExport();
-  const run = {
-    cancelled: false,
-    phase: 'preparing',
-    aspect: documentationVideoAspect,
-    item,
-    videoRecord: video,
-    mimeType,
-    abortController: new AbortController(),
-    recorder: null,
-    stream: null,
-    resultStream: null,
-    video: null,
-    inputs: [],
-  };
+  const run = { cancelled: false, recorder: null, stream: null, resultStream: null, video: null, inputs: [] };
   documentationVideoRun = run;
   $('#documentationVideoCancel').textContent = 'Cancel';
-  $('#documentationVideoStart').hidden = false;
   $('#documentationVideoSheet').classList.add('show');
   syncSheetScrollLock();
-  syncDocumentationVideoAspectControls(run);
-  updateDocumentationVideoProgress(0, 'Preparing aspect-ratio preview…');
+  updateDocumentationVideoProgress(0, 'Preparing combined documentation view…');
 
   try {
     const inputMedia = await loadDocumentationVideoInputs(item, video);
@@ -25890,37 +23439,11 @@ async function saveDocumentationVideo(item, video) {
     });
     if (run.cancelled || documentationVideoRun !== run) return;
     run.video = result;
+    const dimensions = documentationVideoDimensions(result.videoWidth, result.videoHeight);
+    canvas.width = dimensions.width;
+    canvas.height = dimensions.height;
+    const ctx = canvas.getContext('2d');
     await prepareDocumentationVideoInputs(inputMedia);
-    if (run.cancelled || documentationVideoRun !== run) return;
-    run.phase = 'ready';
-    applyDocumentationVideoAspect(run, run.aspect);
-    updateDocumentationVideoProgress(0, 'Choose an aspect ratio, then export MP4.');
-  } catch (error) {
-    cleanupDocumentationVideoRun(run);
-    if (run.cancelled || error?.name === 'AbortError') return;
-    run.phase = 'error';
-    if (documentationVideoRun === run) documentationVideoRun = null;
-    syncDocumentationVideoAspectControls(run);
-    updateDocumentationVideoProgress(0, 'Could not prepare the documentation video');
-    $('#documentationVideoStart').hidden = true;
-    $('#documentationVideoCancel').textContent = 'Close';
-    toast(error.message, true);
-  }
-}
-
-async function recordDocumentationVideo(run) {
-  if (!run || run !== documentationVideoRun || run.phase !== 'ready' || !run.video) return;
-  const canvas = $('#documentationVideoCanvas');
-  const result = run.video;
-  const inputMedia = run.inputs || [];
-  const item = run.item;
-  const video = run.videoRecord;
-  const ctx = canvas.getContext('2d');
-  run.phase = 'recording';
-  syncDocumentationVideoAspectControls(run);
-  updateDocumentationVideoProgress(0, `Recording ${run.aspect === 'auto' ? 'Auto' : run.aspect} documentation video…`);
-
-  try {
     syncDocumentationVideoInputs(inputMedia, 0);
     drawDocumentationVideoFrame(ctx, canvas, inputMedia, item, video, result);
 
@@ -25940,12 +23463,12 @@ async function recordDocumentationVideo(run) {
     (resultStream ? resultStream.getAudioTracks() : []).forEach((track) => stream.addTrack(track));
     run.stream = stream;
     const chunks = [];
-    const recorder = new MediaRecorder(stream, { mimeType: run.mimeType, videoBitsPerSecond: 5_000_000 });
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 5_000_000 });
     run.recorder = recorder;
     const recorded = new Promise((resolve, reject) => {
       recorder.ondataavailable = (event) => { if (event.data && event.data.size) chunks.push(event.data); };
       recorder.onerror = () => reject(new Error('The browser could not record the documentation video'));
-      recorder.onstop = () => resolve(new Blob(chunks, { type: run.mimeType.split(';')[0] }));
+      recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType.split(';')[0] }));
     });
     recorder.start(500);
     while (!run.cancelled && documentationVideoRun === run) {
@@ -25956,53 +23479,26 @@ async function recordDocumentationVideo(run) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
     if (recorder.state !== 'inactive') recorder.stop();
-    const recordedBlob = await recorded;
+    const blob = await recorded;
     cleanupDocumentationVideoRun(run);
     if (run.cancelled || documentationVideoRun !== run) return;
-    let exportBlob = recordedBlob;
-    let extension = 'mp4';
-    let conversionError = null;
-    if (recordedBlob.type !== 'video/mp4') {
-      run.phase = 'converting';
-      syncDocumentationVideoAspectControls(run);
-      updateDocumentationVideoProgress(1, 'Converting WebM recording to MP4…');
-      try {
-        exportBlob = await convertDocumentationVideoToMp4(recordedBlob, run.abortController.signal);
-      } catch (error) {
-        if (run.cancelled || error?.name === 'AbortError') throw error;
-        conversionError = error;
-        extension = 'webm';
-      }
-    }
-    if (run.cancelled || documentationVideoRun !== run) return;
-    run.phase = 'done';
     documentationVideoRun = null;
+    const extension = blob.type === 'video/mp4' ? 'mp4' : 'webm';
     const stem = generationDownloadStem(item, 'mix_studio');
-    const aspectSuffix = run.aspect === 'auto' ? '' : `_${run.aspect.replace(':', 'x')}`;
-    const filename = `${stem}_documentation${aspectSuffix}.${extension}`;
+    const filename = `${stem}_documentation.${extension}`;
     const link = document.createElement('a');
-    link.href = URL.createObjectURL(exportBlob);
+    link.href = URL.createObjectURL(blob);
     link.download = filename;
-    mirrorExportFile(exportBlob, filename);
+    mirrorExportFile(blob, filename);
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 3000);
-    updateDocumentationVideoProgress(1, conversionError
-      ? 'MP4 conversion unavailable; WebM saved instead'
-      : 'Documentation video saved as MP4');
-    syncDocumentationVideoAspectControls(run);
-    $('#documentationVideoStart').hidden = true;
+    updateDocumentationVideoProgress(1, 'Documentation video saved');
     $('#documentationVideoCancel').textContent = 'Close';
-    toast(conversionError
-      ? `WebM saved because MP4 conversion failed: ${conversionError.message}`
-      : 'Documentation video saved as MP4', Boolean(conversionError));
+    toast('Documentation video saved');
   } catch (error) {
     cleanupDocumentationVideoRun(run);
-    if (run.cancelled || error?.name === 'AbortError') return;
-    run.phase = 'error';
     if (documentationVideoRun === run) documentationVideoRun = null;
-    syncDocumentationVideoAspectControls(run);
     updateDocumentationVideoProgress(0, 'Could not build the documentation video');
-    $('#documentationVideoStart').hidden = true;
     $('#documentationVideoCancel').textContent = 'Close';
     toast(error.message, true);
   }
@@ -26010,12 +23506,6 @@ async function recordDocumentationVideo(run) {
 
 $('#documentationVideoClose').addEventListener('click', closeDocumentationVideoExport);
 $('#documentationVideoCancel').addEventListener('click', closeDocumentationVideoExport);
-$('#documentationVideoStart').addEventListener('click', () => recordDocumentationVideo(documentationVideoRun));
-$('#documentationVideoAspects').addEventListener('click', (event) => {
-  const button = event.target.closest('[data-documentation-video-aspect]');
-  if (!button || button.disabled) return;
-  applyDocumentationVideoAspect(documentationVideoRun, button.dataset.documentationVideoAspect);
-});
 
 $('#documentationLayout').addEventListener('click', (event) => {
   const button = event.target.closest('[data-doc-layout]');
@@ -26544,16 +24034,6 @@ const svAttentionOptions = {
   flash_attn_2: { label: 'Flash Attention 2', description: 'Flash Attention compatible GPUs' },
   flash_attn_3: { label: 'Flash Attention 3', description: 'Hopper generation and newer' },
 };
-const svNvidiaOnlyAttention = new Set(['sageattn_2', 'sageattn_3', 'flash_attn_2', 'flash_attn_3']);
-
-function applySvAttnVendorFilter(vendor) {
-  const normalizedVendor = String(vendor || '').toLowerCase();
-  const restrict = !!normalizedVendor && normalizedVendor !== 'nvidia';
-  $$('#svAttnList [role="option"]').forEach((option) => {
-    option.hidden = restrict && svNvidiaOnlyAttention.has(option.dataset.attention);
-  });
-  if (restrict && svNvidiaOnlyAttention.has($('#setSvAttn').value)) setSvAttnValue('sdpa');
-}
 
 function setMediaPreferenceControl(id, enabled) {
   const button = $('#' + id);
@@ -26564,58 +24044,8 @@ function mediaPreferenceControlValue(id) {
   return $('#' + id)?.getAttribute('aria-checked') === 'true';
 }
 
-let externalLlmKeyConfigured = { openai: false, gemini: false };
-let externalLlmKeyStored = { openai: false, gemini: false };
-
-function renderExternalLlmPreferences() {
-  const provider = $('#setExternalLlmProvider').value || 'openai';
-  $$('[data-external-llm-provider]').forEach((section) => {
-    section.hidden = section.dataset.externalLlmProvider !== provider;
-  });
-  const openAiKey = $('#setExternalLlmOpenAiApiKey');
-  const geminiKey = $('#setExternalLlmGeminiApiKey');
-  openAiKey.placeholder = externalLlmKeyConfigured.openai ? 'Saved · paste a new key to replace it' : 'Paste an API key';
-  geminiKey.placeholder = externalLlmKeyConfigured.gemini ? 'Saved · paste a new key to replace it' : 'Paste an API key';
-  $('#clearExternalLlmOpenAiApiKey').hidden = !externalLlmKeyStored.openai || !state.profileIsOwner;
-  $('#clearExternalLlmGeminiApiKey').hidden = !externalLlmKeyStored.gemini || !state.profileIsOwner;
-  const readonly = !state.profileIsOwner;
-  $('#externalLlmSettings').dataset.readonly = String(readonly);
-  [
-    'setExternalLlmProvider', 'setExternalLlmOpenAiApiKey', 'setExternalLlmOpenAiModel',
-    'setExternalLlmGeminiApiKey', 'setExternalLlmGeminiModel', 'setExternalLlmOllamaUrl',
-    'setExternalLlmOllamaModel', 'externalLlmImageRevise', 'externalLlmImageEnhance',
-    'externalLlmVideoRevise', 'externalLlmVideoEnhance', 'testExternalLlm',
-  ].forEach((id) => { $('#' + id).disabled = readonly; });
-}
-
-function applyExternalLlmSettings(settings = {}) {
-  $('#setExternalLlmProvider').value = ['openai', 'gemini', 'ollama'].includes(settings.externalLlmProvider)
-    ? settings.externalLlmProvider : 'openai';
-  $('#setExternalLlmOpenAiApiKey').value = '';
-  $('#setExternalLlmOpenAiModel').value = settings.externalLlmOpenAiModel || 'gpt-5.6-luna';
-  $('#setExternalLlmGeminiApiKey').value = '';
-  $('#setExternalLlmGeminiModel').value = settings.externalLlmGeminiModel || 'gemini-3.6-flash';
-  $('#setExternalLlmOllamaUrl').value = settings.externalLlmOllamaUrl || 'http://127.0.0.1:11434';
-  $('#setExternalLlmOllamaModel').value = settings.externalLlmOllamaModel || 'gemma3';
-  externalLlmKeyConfigured = {
-    openai: settings.externalLlmOpenAiApiKeyConfigured === true,
-    gemini: settings.externalLlmGeminiApiKeyConfigured === true,
-  };
-  externalLlmKeyStored = {
-    openai: settings.externalLlmOpenAiApiKeyStored === true,
-    gemini: settings.externalLlmGeminiApiKeyStored === true,
-  };
-  setMediaPreferenceControl('externalLlmImageRevise', settings.externalLlmImageRevise === true);
-  setMediaPreferenceControl('externalLlmImageEnhance', settings.externalLlmImageEnhance === true);
-  setMediaPreferenceControl('externalLlmVideoRevise', settings.externalLlmVideoRevise === true);
-  setMediaPreferenceControl('externalLlmVideoEnhance', settings.externalLlmVideoEnhance === true);
-  renderExternalLlmPreferences();
-}
-
 const SETTINGS_SERVER_CONTROL_IDS = new Set([
-  'setComfy', 'setHfToken', 'setHfEndpoint', 'galleryPasswordInput', 'setVramProfile', 'setKrea2ModelVariant',
-  'setExternalLlmProvider', 'setExternalLlmOpenAiApiKey', 'setExternalLlmOpenAiModel',
-  'setExternalLlmGeminiApiKey', 'setExternalLlmGeminiModel', 'setExternalLlmOllamaUrl', 'setExternalLlmOllamaModel',
+  'setComfy', 'setHfToken', 'galleryPasswordInput', 'setVramProfile', 'setKrea2ModelVariant',
   'setUnet', 'setKrea2RawUnet', 'setKrea2TurboLora', 'setKrea2DepthLora',
   'setKrea2OutpaintLora', 'setDepthAnythingV3Model', 'setClip', 'setVae',
   'setKlein4Unet', 'setKlein4Clip', 'setKlein4ConsistencyLora', 'setKlein4ConsistencyTrigger',
@@ -26624,7 +24054,6 @@ const SETTINGS_SERVER_CONTROL_IDS = new Set([
   'setDit', 'setSvVae', 'setSysPrompt', 'setLtxCkpt', 'setLtxLora',
   'setLtxCameraLora', 'setLtxEditLora', 'setLtxDirectorLora', 'setLtxTe',
   'setLtxGemmaLora', 'setLtxUps', 'setFaceIdLora', 'setFaceIdDistilled',
-  'setH3Unet', 'setH3RefUnet', 'setH3Clip', 'setH3ClipVariant', 'setH3VideoVae', 'setH3AudioVae',
   'setWanHigh', 'setWanLow', 'setWanClip', 'setWanVae', 'setWanHighLora',
   'setWanLowLora', 'setErosCkpt', 'setErosTe', 'setErosDmd', 'setErosSigF',
   'setErosSigU', 'setScailUnet', 'setScailLora', 'setScailPusaLora',
@@ -26633,7 +24062,6 @@ const SETTINGS_SERVER_CONTROL_IDS = new Set([
 const SETTINGS_PREFERENCE_CONTROL_IDS = new Set([
   'defaultSeedValue', 'defaultCreateSteps', 'defaultCreateCfg', 'defaultCreateBatch',
   'defaultEditSteps', 'defaultEditCfg', 'defaultEditBatch', 'defaultEditDenoise',
-  'defaultKrea2EditSteps', 'defaultKrea2EditCfg',
   'defaultVideoDuration', 'defaultVideoMotion',
 ]);
 
@@ -26650,18 +24078,6 @@ function settingsPayload() {
   return {
     comfyUrl: $('#setComfy').value,
     hfToken: $('#setHfToken').value,
-    hfEndpoint: $('#setHfEndpoint').value,
-    externalLlmProvider: $('#setExternalLlmProvider').value,
-    externalLlmOpenAiApiKey: $('#setExternalLlmOpenAiApiKey').value,
-    externalLlmOpenAiModel: $('#setExternalLlmOpenAiModel').value,
-    externalLlmGeminiApiKey: $('#setExternalLlmGeminiApiKey').value,
-    externalLlmGeminiModel: $('#setExternalLlmGeminiModel').value,
-    externalLlmOllamaUrl: $('#setExternalLlmOllamaUrl').value,
-    externalLlmOllamaModel: $('#setExternalLlmOllamaModel').value,
-    externalLlmImageRevise: mediaPreferenceControlValue('externalLlmImageRevise'),
-    externalLlmImageEnhance: mediaPreferenceControlValue('externalLlmImageEnhance'),
-    externalLlmVideoRevise: mediaPreferenceControlValue('externalLlmVideoRevise'),
-    externalLlmVideoEnhance: mediaPreferenceControlValue('externalLlmVideoEnhance'),
     galleryPassword: $('#galleryPasswordInput').value.trim() || '1234',
     vramProfile: $('#setVramProfile').value,
     krea2ModelVariant: $('#setKrea2ModelVariant').value,
@@ -26695,14 +24111,6 @@ function settingsPayload() {
     ltxCkpt: $('#setLtxCkpt').value,
     ltxDistilledLora: $('#setLtxLora').value,
     ltxCameramanLora: $('#setLtxCameraLora').value,
-    ltxMotionEnhancerLora: $('#setLtxMotionEnhancerLora').value,
-    ltxMotionTrackLora: $('#setLtxMotionTrackLora').value,
-    ltxCinemagraphLora: $('#setLtxCinemagraphLora').value,
-    ltxMsrLora: $('#setLtxMsrLora').value,
-    ltxPixelUpscale2xLora: $('#setLtxPixelUpscale2xLora').value,
-    ltxPixelUpscale4xLora: $('#setLtxPixelUpscale4xLora').value,
-    ltxTextProjection: $('#setLtxTextProjection').value,
-    ltxStoryboardLora: $('#setLtxStoryboardLora').value,
     ltxEditLora: $('#setLtxEditLora').value,
     ltxDirectorIcLora: $('#setLtxDirectorLora').value,
     ltxTextEncoder: $('#setLtxTe').value,
@@ -26710,12 +24118,6 @@ function settingsPayload() {
     ltxUpscaler: $('#setLtxUps').value,
     ltxFaceIdLora: $('#setFaceIdLora').value,
     ltxFaceIdDistilledLora: $('#setFaceIdDistilled').value,
-    h3Unet: $('#setH3Unet').value,
-    h3RefUnet: $('#setH3RefUnet').value,
-    h3Clip: $('#setH3Clip').value,
-    h3ClipVariant: $('#setH3ClipVariant').value,
-    h3VideoVae: $('#setH3VideoVae').value,
-    h3AudioVae: $('#setH3AudioVae').value,
     wanHighUnet: $('#setWanHigh').value,
     wanLowUnet: $('#setWanLow').value,
     wanClip: $('#setWanClip').value,
@@ -26800,7 +24202,6 @@ function flushSettingsAutosave() {
       });
     }
     if (savedSettings) {
-      applyExternalLlmSettings(savedSettings);
       settingsAppRestartRequired = savedSettings.appRestartRequired === true;
       renderSettingsRestartAction();
       loadMeta(true).then(renderHealth).catch(() => { /* health remains available for manual retry */ });
@@ -26890,7 +24291,6 @@ function setSvAttnPickerOpen(open, focusOption = false) {
   const picker = $('#svAttnPicker');
   const list = $('#svAttnList');
   picker.classList.toggle('open', expand);
-  if (!expand) moveFocusOutOf(list, $('#svAttnTrigger'));
   list.inert = !expand;
   list.setAttribute('aria-hidden', String(!expand));
   $('#svAttnTrigger').setAttribute('aria-expanded', String(expand));
@@ -26908,10 +24308,10 @@ $('#svAttnTrigger').addEventListener('keydown', (event) => {
   event.preventDefault();
   setSvAttnPickerOpen(true, true);
   if (event.key === 'ArrowUp' || event.key === 'End') {
-    const options = $$('#svAttnList [role="option"]').filter((option) => !option.hidden);
+    const options = $$('#svAttnList [role="option"]');
     options[options.length - 1]?.focus();
   } else if (event.key === 'Home') {
-    $$('#svAttnList [role="option"]').find((option) => !option.hidden)?.focus();
+    $('#svAttnList [role="option"]')?.focus();
   }
 });
 const svAttnOptionButtons = $$('#svAttnList [role="option"]');
@@ -26931,12 +24331,10 @@ svAttnOptionButtons.forEach((option, index) => {
     }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const visible = svAttnOptionButtons.filter((entry) => !entry.hidden);
-    const current = Math.max(0, visible.indexOf(option));
     const next = event.key === 'Home' ? 0
-      : event.key === 'End' ? visible.length - 1
-        : (current + (event.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length;
-    visible[next]?.focus();
+      : event.key === 'End' ? svAttnOptionButtons.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + svAttnOptionButtons.length) % svAttnOptionButtons.length;
+    svAttnOptionButtons[next].focus();
   });
 });
 document.addEventListener('pointerdown', (event) => {
@@ -27050,7 +24448,7 @@ function renderHardwareInfo(info) {
     gpu.memoryBytes ? `${formatHardwareBytes(gpu.memoryBytes)} ${gpu.memoryKind === 'unified' ? 'unified memory' : 'VRAM'}` : '',
     gpu.driver ? `driver ${gpu.driver}` : '',
     gpuDevices.length > 1 ? `+${gpuDevices.length - 1} more` : '',
-  ].filter(Boolean).join(' · ') : 'No compatible GPU reported by the system';
+  ].filter(Boolean).join(' · ') : 'No GPU reported by the system';
   setHardwareRow('hardwareGpu', 'hardwareGpuDetail', gpu?.name || 'Unavailable', gpuDetail);
 
   const cores = Number(info?.cpu?.logicalCores) || 0;
@@ -27075,38 +24473,6 @@ function renderHardwareInfo(info) {
     [totalLabel ? `of ${totalLabel}` : '', info?.disk?.root ? `${info.disk.root} · Mix Studio export drive` : ''].filter(Boolean).join(' · '),
   );
   $('#hardwareDiskFill').style.width = `${freePercent}%`;
-
-  const performance = info?.performance || {};
-  const runtime = performance.runtime || {};
-  const runtimeValue = runtime.torchVersion ? `PyTorch ${runtime.torchVersion}` : 'Unavailable';
-  const runtimeDetail = [
-    runtime.cudaVersion ? `CUDA ${runtime.cudaVersion}` : '',
-    runtime.pythonVersion ? `Python ${runtime.pythonVersion}` : '',
-    runtime.deviceName && runtime.deviceName !== gpu?.name ? runtime.deviceName : '',
-  ].filter(Boolean).join(' · ');
-  setHardwareRow('hardwareRuntime', 'hardwareRuntimeDetail', runtimeValue, runtimeDetail || 'Connect the local ComfyUI folder to inspect its runtime');
-
-  const h3 = performance.h3 || {};
-  const h3Optimizations = [
-    h3.int8ConvRot ? 'INT8 ConvRot' : '',
-    h3.nvfp4TextEncoder ? 'NVFP4 text encoder' : '',
-    h3.sageAttention ? 'SageAttention' : '',
-  ].filter(Boolean);
-  setHardwareRow(
-    'hardwareH3',
-    'hardwareH3Detail',
-    h3Optimizations.length ? h3Optimizations.join(' · ') : 'Standard runtime',
-    h3.sageAttention
-      ? `Configured H3 route · SageAttention kernel verified${h3.sageVersion ? ` · version ${h3.sageVersion}` : ''}`
-      : (h3.sageReason ? `Configured H3 route · ${h3.sageReason}` : 'Configured H3 route · SageAttention is optional and scoped to H3'),
-  );
-
-  const recommendation = performance.cuda13 || {};
-  const recommendationCard = $('#runtimeRecommendation');
-  recommendationCard.dataset.state = recommendation.state || 'unavailable';
-  $('#runtimeRecommendationTitle').textContent = recommendation.title || 'Runtime status unavailable';
-  $('#runtimeRecommendationDetail').textContent = recommendation.detail || 'Mix Studio could not inspect the CUDA runtime used by ComfyUI.';
-  $('#runtimeUpdateGuide').hidden = !['recommended', 'driver-update', 'check-driver'].includes(recommendation.state);
   $('#hardwareList').setAttribute('aria-busy', 'false');
 }
 
@@ -27122,7 +24488,7 @@ async function loadHardwareInfo(force = false) {
   list.setAttribute('aria-busy', 'true');
   refresh.classList.add('loading');
   refresh.disabled = true;
-  hardwareInfoPromise = api(force ? '/api/hardware?refresh=1' : '/api/hardware').then((info) => {
+  hardwareInfoPromise = api('/api/hardware').then((info) => {
     hardwareInfoCache = info;
     renderHardwareInfo(info);
     return info;
@@ -27133,13 +24499,7 @@ async function loadHardwareInfo(force = false) {
       ['hardwareMemory', 'hardwareMemoryDetail'],
       ['hardwareOs', 'hardwareOsDetail'],
       ['hardwareDisk', 'hardwareDiskDetail'],
-      ['hardwareRuntime', 'hardwareRuntimeDetail'],
-      ['hardwareH3', 'hardwareH3Detail'],
     ]) setHardwareRow(valueId, detailId, 'Unavailable', 'Could not read system information');
-    $('#runtimeRecommendation').dataset.state = 'unavailable';
-    $('#runtimeRecommendationTitle').textContent = 'Runtime status unavailable';
-    $('#runtimeRecommendationDetail').textContent = 'Mix Studio could not inspect the ComfyUI generation environment.';
-    $('#runtimeUpdateGuide').hidden = true;
     list.setAttribute('aria-busy', 'false');
     throw error;
   }).finally(() => {
@@ -27739,7 +25099,7 @@ const GUIDED_TOUR_STEPS = [
     target: '#appMenuBtn',
     advanceOn: '#appMenuBtn',
     title: 'Open the side panel',
-    copy: 'The Mix Studio mark opens navigation, Workspaces, Full screen, updates, and Preferences.',
+    copy: 'The Mix Studio mark opens navigation, Workspaces, Full screen, updates, and Advanced Settings.',
     motion: 'tap',
     simulateOn: '.side-menu-icon',
     demo: 'Tap the Mix Studio mark to open the menu',
@@ -27790,7 +25150,7 @@ const GUIDED_TOUR_STEPS = [
     id: 'prompt-tools',
     target: '#createPromptTools',
     title: 'Add visual direction',
-    copy: 'Image tools add a reference, depth, style, or image-to-prompt source. Revise prompt uses the AI selected in Preferences. Both are optional.',
+    copy: 'Image tools add a reference, depth, style, or image-to-prompt source. Revise prompt uses local AI. Both are optional.',
     motion: 'tap',
     simulateOn: '#createImageGuideToggle',
     demo: 'Tap a tool to add more control',
@@ -28063,7 +25423,7 @@ const CONTEXTUAL_GUIDES = {
     target: '#appMenuBtn',
     kicker: 'App controls',
     title: 'Your side panel',
-    copy: 'Open it for navigation, Workspaces, Full screen, updates, and Preferences.',
+    copy: 'Open it for navigation, Workspaces, Full screen, updates, and Advanced Settings.',
     motion: 'tap',
     simulateOn: '.side-menu-icon',
     demo: 'Tap the Mix Studio mark to open it',
@@ -29514,488 +26874,8 @@ document.addEventListener('scroll', () => {
 }, true);
 renderGuidedTourSetting();
 
-const MAX_PENDING_PROMPT_PACKS = 5;
-const MAX_PROMPT_PACK_FILE_BYTES = 64 * 1024 * 1024;
-let promptPackInspections = [];
-let promptPackBusy = false;
-let promptPackInstallingId = '';
-let promptPackBatchInstalling = false;
-
-function promptPackPresetCount(pack) {
-  return (pack?.categories || []).reduce((total, category) => total + (category.presets || []).length, 0);
-}
-
-function promptPackCategoryLabel(pack) {
-  const labels = (pack?.categories || []).map((category) => category.label).filter(Boolean);
-  if (!labels.length) return 'Visual presets';
-  if (labels.length <= 2) return labels.join(' + ');
-  return `${labels.slice(0, 2).join(' + ')} +${labels.length - 2}`;
-}
-
-function addonFormatBytes(bytes) {
-  const value = Math.max(0, Number(bytes) || 0);
-  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
-  return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
-}
-
-function promptPackThumbnails(pack, limit = 4) {
-  const thumbnails = [];
-  for (const category of pack?.categories || []) {
-    for (const preset of category.presets || []) {
-      if (preset.thumbnail) thumbnails.push(preset.thumbnail);
-      if (thumbnails.length >= limit) return thumbnails;
-    }
-  }
-  return thumbnails;
-}
-
-function addonMosaicMarkup(sources, label) {
-  const images = sources.slice(0, 4).map((src) => (
-    `<img src="${escapeHtml(src)}" alt="" loading="lazy">`
-  )).join('');
-  return images || `<span class="addon-mosaic-fallback">${escapeHtml(label || 'Preset pack')}</span>`;
-}
-
-function builtinCameraPack() {
-  return {
-    id: 'mix-studio-camera',
-    name: 'Camera Presets',
-    version: 'Built in',
-    author: 'Mix Studio',
-    description: 'Six camera looks included with Mix Studio.',
-    enabled: true,
-    builtin: true,
-    categories: [{
-      id: 'camera',
-      label: 'Camera',
-      presets: (CameraSettings?.CAMERA_COMBOS || []).map((combo) => ({
-        id: combo.id,
-        thumbnail: combo.thumbnail,
-      })),
-    }],
-  };
-}
-
-function renderAddonPackCard(pack) {
-  const thumbnails = promptPackThumbnails(pack);
-  const count = promptPackPresetCount(pack);
-  const builtIn = pack.builtin === true;
-  const enabled = builtIn || pack.enabled !== false;
-  return `
-    <article class="addon-pack-card${builtIn ? ' builtin' : ''}" data-addon-pack="${escapeHtml(pack.id)}" data-enabled="${enabled}">
-      <div class="addon-pack-mosaic" aria-hidden="true">${addonMosaicMarkup(thumbnails, pack.name)}</div>
-      <div class="addon-pack-info">
-        <div class="addon-pack-title"><strong>${escapeHtml(pack.name)}</strong>${builtIn ? '<span class="addon-pack-label">Built in</span>' : ''}</div>
-        <p>${escapeHtml(pack.description || promptPackCategoryLabel(pack))}</p>
-        <span class="addon-pack-meta">${escapeHtml(pack.author)} · ${escapeHtml(pack.version)} · ${count} preset${count === 1 ? '' : 's'} · ${escapeHtml(promptPackCategoryLabel(pack))}</span>
-      </div>
-      <div class="addon-pack-actions">
-        ${builtIn ? '<span class="addon-pack-label">Always available</span>' : `
-          <button class="addon-pack-toggle" type="button" role="switch" aria-checked="${enabled}" data-addon-toggle="${escapeHtml(pack.id)}">${enabled ? 'Enabled' : 'Disabled'}</button>
-          <button class="addon-pack-remove" type="button" data-addon-remove="${escapeHtml(pack.id)}">Delete</button>
-        `}
-      </div>
-    </article>`;
-}
-
-function renderPromptPacks() {
-  const list = $('#addonPackList');
-  if (!list) return;
-  const packs = [builtinCameraPack(), ...state.promptPacks];
-  list.innerHTML = packs.map(renderAddonPackCard).join('');
-  const installed = state.promptPacks.length;
-  $('#addonPackStatus').textContent = installed
-    ? `${installed} installed pack${installed === 1 ? '' : 's'} · available to all profiles`
-    : 'Camera is built in · install more categories when you are ready';
-  const drop = $('#addonDropZone');
-  const owner = state.promptPacksCanManage;
-  drop.classList.toggle('disabled', !owner);
-  drop.tabIndex = owner ? 0 : -1;
-  drop.setAttribute('aria-disabled', String(!owner));
-  $('#addonChooseBtn').hidden = !owner;
-  $('#addonDropNote').textContent = owner
-    ? 'Choose up to five. Mix Studio reviews every pack before installation.'
-    : 'Switch to the owner profile to install or manage machine-wide packs.';
-}
-
-function reconcilePromptPackSelections(pack, packId = pack?.id) {
-  if (!packId) return;
-  const selections = Object.assign({}, state.promptPresetSelections);
-  let changed = false;
-  for (const [categoryId, raw] of Object.entries(selections)) {
-    const category = pack?.categories?.find((entry) => entry.id === categoryId);
-    const entries = Array.isArray(raw) ? raw : (raw ? [raw] : []);
-    let categoryChanged = false;
-    const next = entries.flatMap((selection) => {
-      if (!selection || typeof selection !== 'object' || selection.packId !== packId) return [selection];
-      const preset = category?.presets?.find((entry) => entry.id === selection.presetId);
-      changed = true;
-      categoryChanged = true;
-      if (!preset || preset.promptText !== selection.promptText) {
-        // Keep the existing words in the prompt, but detach them from a pack
-        // that is disabled, removed, or changed underneath the selection.
-        return [];
-      }
-      return [promptPresetSelectionPayload({
-        category: categoryId,
-        categoryLabel: category.label,
-        accent: category.accent,
-        packId: pack.id,
-        packName: pack.name,
-        presetId: preset.id,
-        label: preset.label,
-        value: preset.promptText,
-        thumbnail: preset.thumbnail,
-      })];
-    });
-    if (categoryChanged) selections[categoryId] = next.filter(Boolean);
-  }
-  if (!changed) return;
-  state.promptPresetSelections = selections;
-  renderPromptComposer();
-  saveForm();
-}
-
-function renderPromptPackInspectionQueue() {
-  const section = $('#addonInspection');
-  const list = $('#addonInspectionList');
-  const installAll = $('#addonInstallAll');
-  if (!section || !list || !installAll) return;
-  section.hidden = promptPackInspections.length === 0;
-  list.replaceChildren();
-  $('#addonReviewStatus').textContent = promptPackInspections.length
-    ? `${promptPackInspections.length} Mix Pack${promptPackInspections.length === 1 ? '' : 's'} waiting`
-    : 'No packs waiting';
-  installAll.hidden = promptPackInspections.length < 2;
-  installAll.disabled = promptPackBusy;
-  installAll.textContent = promptPackBatchInstalling
-    ? `Installing ${promptPackInspections.length}…`
-    : `Install all ${promptPackInspections.length}`;
-  for (const result of promptPackInspections) {
-    const pack = result.pack || {};
-    const current = result.current;
-    const card = $('#addonInspectionTemplate').content.firstElementChild.cloneNode(true);
-    card.dataset.addonInspection = result.inspectionId;
-    card.querySelector('.addon-inspection-preview').innerHTML = addonMosaicMarkup(
-      (result.previews || []).map((preview) => preview.src),
-      pack.name,
-    );
-    card.querySelector('.addon-inspection-copy h5').textContent = pack.name || 'Preset pack';
-    card.querySelector('.addon-inspection-copy > p').textContent = pack.description
-      || `${promptPackCategoryLabel(pack)} presets by ${pack.author || 'Unknown author'}.`;
-    const status = current
-      ? `Installed ${current.version} · this file ${pack.version}`
-      : 'New pack';
-    card.querySelector('.addon-inspection-meta').innerHTML = [
-      escapeHtml(pack.author || 'Unknown author'),
-      escapeHtml(status),
-      `${Number(result.presetCount) || promptPackPresetCount(pack)} presets`,
-      addonFormatBytes(result.bytes),
-    ].map((value) => `<span>${value}</span>`).join('');
-    const remove = card.querySelector('[data-addon-review-remove]');
-    const install = card.querySelector('[data-addon-review-install]');
-    remove.dataset.addonReviewRemove = result.inspectionId;
-    install.dataset.addonReviewInstall = result.inspectionId;
-    remove.disabled = promptPackBusy;
-    install.disabled = promptPackBusy;
-    install.textContent = promptPackInstallingId === result.inspectionId
-      ? (current ? 'Updating…' : 'Installing…')
-      : (current ? 'Update' : 'Install');
-    list.appendChild(card);
-  }
-}
-
-function renderPromptPackInspection(result) {
-  promptPackInspections = [
-    ...promptPackInspections.filter((entry) => (
-      entry.inspectionId !== result.inspectionId && entry.pack?.id !== result.pack?.id
-    )),
-    result,
-  ].slice(-MAX_PENDING_PROMPT_PACKS);
-  renderPromptPackInspectionQueue();
-}
-
-function promptPackFileIssue(file) {
-  if (!file || !/\.mixpack$/i.test(file.name || '')) return 'Choose a .mixpack preset pack';
-  if (file.size > MAX_PROMPT_PACK_FILE_BYTES) {
-    return `Preset packs must be ${MAX_PROMPT_PACK_FILE_BYTES / (1024 * 1024)} MB or smaller`;
-  }
-  return '';
-}
-
-async function inspectPromptPackFiles(fileList) {
-  if (!state.promptPacksCanManage || promptPackBusy) return;
-  const files = [...(fileList || [])].filter(Boolean);
-  if (!files.length) return;
-  const available = Math.max(0, MAX_PENDING_PROMPT_PACKS - promptPackInspections.length);
-  if (!available) {
-    toast('Install or remove a reviewed pack before adding another', true);
-    $('#addonFileInput').value = '';
-    return;
-  }
-  const pending = files.slice(0, available);
-  if (files.length > pending.length) {
-    toast(`Review queue holds up to ${MAX_PENDING_PROMPT_PACKS} Mix Packs`, true);
-  }
-  promptPackBusy = true;
-  $('#addonDropZone').classList.add('loading');
-  renderPromptPackInspectionQueue();
-  let reviewed = 0;
-  try {
-    for (let index = 0; index < pending.length; index += 1) {
-      const file = pending[index];
-      const issue = promptPackFileIssue(file);
-      if (issue) {
-        toast(`${file?.name || 'File'}: ${issue}`, true);
-        continue;
-      }
-      $('#addonDropNote').textContent = `Reviewing ${index + 1} of ${pending.length}…`;
-      try {
-        const result = await api('/api/addons/inspect', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            'X-Filename': encodeURIComponent(file.name || 'preset-pack.mixpack'),
-          },
-          body: await file.arrayBuffer(),
-        });
-        renderPromptPackInspection(result);
-        reviewed += 1;
-      } catch (error) {
-        toast(`${file.name}: ${error.message || 'This preset pack could not be opened'}`, true);
-      }
-    }
-  } finally {
-    promptPackBusy = false;
-    $('#addonFileInput').value = '';
-    $('#addonDropZone').classList.remove('loading');
-    renderPromptPacks();
-    renderPromptPackInspectionQueue();
-    if (reviewed) $('#addonInspection').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }
-}
-
-async function discardPromptPackInspection(inspectionId) {
-  if (!inspectionId || promptPackBusy) return;
-  promptPackInspections = promptPackInspections.filter((entry) => entry.inspectionId !== inspectionId);
-  renderPromptPackInspectionQueue();
-  try {
-    await api(`/api/addons/inspect/${encodeURIComponent(inspectionId)}`, { method: 'DELETE' });
-  } catch { /* Staged reviews also expire automatically. */ }
-}
-
-async function requestPromptPackInstallation(inspection, allowDowngrade = false) {
-  try {
-    return await api('/api/addons/install', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        inspectionId: inspection.inspectionId,
-        replace: !!inspection.current,
-        allowDowngrade,
-      }),
-    });
-  } catch (error) {
-    if (error.code === 'prompt_pack_downgrade' && !allowDowngrade) {
-      const approved = await askConfirm({
-        title: `Install an older version of ${inspection.pack?.name || 'this pack'}?`,
-        message: 'This replaces the newer installed version. The replacement cannot be undone from Mix Studio.',
-        confirmLabel: 'Install older version',
-        danger: true,
-      });
-      if (approved) return requestPromptPackInstallation(inspection, true);
-      return null;
-    }
-    toast(`${inspection.pack?.name || 'Preset pack'}: ${error.message || 'could not be installed'}`, true);
-    return null;
-  }
-}
-
-function acceptInstalledPromptPack(inspection, result) {
-  promptPackInspections = promptPackInspections.filter((entry) => entry.inspectionId !== inspection.inspectionId);
-  reconcilePromptPackSelections(result.pack);
-}
-
-async function refreshPromptPacksAfterInstall() {
-  state.promptPacksLoaded = false;
-  await loadPromptPacks({ force: true });
-  renderCameraPicker();
-}
-
-async function installInspectedPromptPack(inspectionId) {
-  const inspection = promptPackInspections.find((entry) => entry.inspectionId === inspectionId);
-  if (!inspection || promptPackBusy) return;
-  promptPackBusy = true;
-  promptPackInstallingId = inspectionId;
-  renderPromptPackInspectionQueue();
-  try {
-    const result = await requestPromptPackInstallation(inspection);
-    if (!result) return;
-    acceptInstalledPromptPack(inspection, result);
-    await refreshPromptPacksAfterInstall();
-    toast(result.operation === 'updated'
-      ? `${result.pack?.name || inspection.pack?.name || 'Preset pack'} updated to ${result.pack?.version || inspection.pack?.version}`
-      : `${result.pack?.name || inspection.pack?.name || 'Preset pack'} installed`);
-  } finally {
-    promptPackBusy = false;
-    promptPackInstallingId = '';
-    renderPromptPackInspectionQueue();
-  }
-}
-
-async function installAllInspectedPromptPacks() {
-  if (!promptPackInspections.length || promptPackBusy) return;
-  promptPackBusy = true;
-  promptPackBatchInstalling = true;
-  let installed = 0;
-  try {
-    for (const inspection of [...promptPackInspections]) {
-      promptPackInstallingId = inspection.inspectionId;
-      renderPromptPackInspectionQueue();
-      const result = await requestPromptPackInstallation(inspection);
-      if (!result) continue;
-      acceptInstalledPromptPack(inspection, result);
-      installed += 1;
-    }
-    if (installed) await refreshPromptPacksAfterInstall();
-    if (installed) toast(`${installed} Mix Pack${installed === 1 ? '' : 's'} installed`);
-  } finally {
-    promptPackBusy = false;
-    promptPackInstallingId = '';
-    promptPackBatchInstalling = false;
-    renderPromptPackInspectionQueue();
-  }
-}
-
-async function loadPromptPacks(options = {}) {
-  if (state.promptPacksLoaded && !options.force) {
-    renderPromptPacks();
-    return;
-  }
-  try {
-    const result = await api('/api/addons');
-    state.promptPacks = Array.isArray(result.packs) ? result.packs : [];
-    state.promptPacksCanManage = result.canManage === true;
-    state.promptPacksLoaded = true;
-    const restoredPresetCards = reconcilePromptPresetSelectionsWithPrompt();
-    renderPromptPacks();
-    if (restoredPresetCards) {
-      renderPromptComposer();
-      saveForm();
-    }
-    if ($('#cameraSheet')?.classList.contains('show')) renderCameraPicker();
-  } catch (error) {
-    state.promptPacksLoaded = false;
-    $('#addonPackStatus').textContent = error.message || 'Could not load add-ons';
-    $('#addonPackList').innerHTML = '<div class="addon-pack-empty">Add-ons are temporarily unavailable.</div>';
-  }
-}
-
-async function setPromptPackEnabledFromUi(id, enabled) {
-  if (!state.promptPacksCanManage || promptPackBusy) return;
-  promptPackBusy = true;
-  try {
-    await api(`/api/addons/${encodeURIComponent(id)}/enabled`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-    if (!enabled) reconcilePromptPackSelections(null, id);
-    state.promptPacksLoaded = false;
-    await loadPromptPacks({ force: true });
-    renderCameraPicker();
-    toast(enabled ? 'Preset pack enabled' : 'Preset pack disabled');
-  } catch (error) {
-    toast(error.message || 'Could not update the preset pack');
-  } finally {
-    promptPackBusy = false;
-  }
-}
-
-async function removePromptPackFromUi(id) {
-  if (!state.promptPacksCanManage || promptPackBusy) return;
-  const pack = state.promptPacks.find((entry) => entry.id === id);
-  if (!pack) return;
-  const approved = await askConfirm({
-    title: `Permanently delete ${pack.name}?`,
-    message: 'The pack and its thumbnails will be deleted from this computer. Existing prompt text stays unchanged. This cannot be undone.',
-    confirmLabel: 'Delete pack',
-    danger: true,
-  });
-  if (!approved) return;
-  promptPackBusy = true;
-  try {
-    await api(`/api/addons/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    reconcilePromptPackSelections(null, id);
-    state.promptPacksLoaded = false;
-    await loadPromptPacks({ force: true });
-    renderCameraPicker();
-    toast(`${pack.name} deleted`);
-  } catch (error) {
-    toast(error.message || 'Could not delete the preset pack');
-  } finally {
-    promptPackBusy = false;
-  }
-}
-
-$('#addonChooseBtn').addEventListener('click', (event) => {
-  event.stopPropagation();
-  if (state.promptPacksCanManage) $('#addonFileInput').click();
-});
-$('#addonDropZone').addEventListener('click', () => {
-  if (state.promptPacksCanManage) $('#addonFileInput').click();
-});
-$('#addonDropZone').addEventListener('keydown', (event) => {
-  if (!state.promptPacksCanManage || !['Enter', ' '].includes(event.key)) return;
-  event.preventDefault();
-  $('#addonFileInput').click();
-});
-$('#addonFileInput').addEventListener('change', () => {
-  const files = [...($('#addonFileInput').files || [])];
-  if (!files.length) return;
-  if ($('#cameraSheet').classList.contains('show')) {
-    $('#cameraSheet').classList.remove('show');
-    setSettingsTab('addons');
-    $('#settingsBtn').click();
-  }
-  inspectPromptPackFiles(files);
-});
-['dragenter', 'dragover'].forEach((type) => $('#addonDropZone').addEventListener(type, (event) => {
-  if (!state.promptPacksCanManage) return;
-  event.preventDefault();
-  $('#addonDropZone').classList.add('dragging');
-}));
-['dragleave', 'dragend'].forEach((type) => $('#addonDropZone').addEventListener(type, () => {
-  $('#addonDropZone').classList.remove('dragging');
-}));
-$('#addonDropZone').addEventListener('drop', (event) => {
-  if (!state.promptPacksCanManage) return;
-  event.preventDefault();
-  $('#addonDropZone').classList.remove('dragging');
-  inspectPromptPackFiles(event.dataTransfer?.files);
-});
-$('#addonInstallAll').addEventListener('click', installAllInspectedPromptPacks);
-$('#addonInspectionList').addEventListener('click', (event) => {
-  const install = event.target.closest('[data-addon-review-install]');
-  if (install) {
-    installInspectedPromptPack(install.dataset.addonReviewInstall);
-    return;
-  }
-  const remove = event.target.closest('[data-addon-review-remove]');
-  if (remove) discardPromptPackInspection(remove.dataset.addonReviewRemove);
-});
-$('#addonPackList').addEventListener('click', (event) => {
-  const toggle = event.target.closest('[data-addon-toggle]');
-  if (toggle) {
-    setPromptPackEnabledFromUi(toggle.dataset.addonToggle, toggle.getAttribute('aria-checked') !== 'true');
-    return;
-  }
-  const remove = event.target.closest('[data-addon-remove]');
-  if (remove) removePromptPackFromUi(remove.dataset.addonRemove);
-});
-
 let settingsActiveTab = 'general';
-const settingsTabNames = ['general', 'image', 'video', 'defaults', 'suggestions', 'addons', 'system', 'community'];
+const settingsTabNames = ['general', 'image', 'video', 'defaults', 'suggestions', 'system', 'community'];
 
 function setSettingsTab(name, focus = false) {
   if (!settingsTabNames.includes(name)) name = 'general';
@@ -30016,7 +26896,6 @@ function setSettingsTab(name, focus = false) {
   const content = $('.settings-content');
   if (content) content.scrollTop = 0;
   if (name === 'system') loadHardwareInfo().catch(() => { /* rendered inline */ });
-  if (name === 'addons') loadPromptPacks().catch(() => { /* rendered inline */ });
 }
 
 $$('[data-settings-tab]').forEach((tab) => {
@@ -30038,21 +26917,6 @@ $$('#defaultSeedMode button').forEach((button) => button.addEventListener('click
   scheduleSettingsAutosave('preferences', 0);
 }));
 
-['defaultPresetVisualTreatment', 'defaultPresetCards'].forEach((id) => {
-  $('#' + id).addEventListener('click', () => {
-    const enabled = mediaPreferenceControlValue(id);
-    setMediaPreferenceControl(id, !enabled);
-    const preference = id === 'defaultPresetCards' ? 'showCards' : 'useVisualTreatment';
-    state.userDefaults.visualPresets = Object.assign({}, state.userDefaults.visualPresets, {
-      [preference]: !enabled,
-    });
-    if (id === 'defaultPresetCards') {
-      renderPromptComposer();
-    }
-    scheduleSettingsAutosave('preferences', 0);
-  });
-});
-
 function settingsAutosaveKindForControl(control) {
   if (!control || !control.id) return '';
   if (SETTINGS_SERVER_CONTROL_IDS.has(control.id)) return 'server';
@@ -30070,60 +26934,6 @@ $('#settingsSheet').addEventListener('change', (event) => {
   if (!event.target.matches('select')) return;
   const kind = settingsAutosaveKindForControl(event.target);
   if (kind) scheduleSettingsAutosave(kind, 0);
-});
-
-$('#setExternalLlmProvider').addEventListener('change', () => {
-  $('#externalLlmStatus').textContent = '';
-  $('#externalLlmStatus').className = '';
-  renderExternalLlmPreferences();
-});
-
-['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance'].forEach((id) => {
-  $('#' + id).addEventListener('click', () => {
-    if (!state.profileIsOwner) return;
-    setMediaPreferenceControl(id, !mediaPreferenceControlValue(id));
-    scheduleSettingsAutosave('server', 0);
-  });
-});
-
-async function clearExternalLlmApiKey(provider) {
-  if (!state.profileIsOwner) return;
-  const label = provider === 'gemini' ? 'Gemini' : 'OpenAI';
-  try {
-    await flushSettingsAutosave();
-    const result = await api('/api/settings', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [provider === 'gemini' ? 'clearExternalLlmGeminiApiKey' : 'clearExternalLlmOpenAiApiKey']: true }),
-    });
-    applyExternalLlmSettings(result);
-    setSettingsSaveStatus(`${label} key cleared`, 'saved');
-  } catch (error) {
-    setSettingsSaveStatus('Couldn’t clear key', 'error');
-    toast(error.message, true);
-  }
-}
-
-$('#clearExternalLlmOpenAiApiKey').addEventListener('click', () => clearExternalLlmApiKey('openai'));
-$('#clearExternalLlmGeminiApiKey').addEventListener('click', () => clearExternalLlmApiKey('gemini'));
-$('#testExternalLlm').addEventListener('click', async () => {
-  if (!state.profileIsOwner) return;
-  const button = $('#testExternalLlm');
-  const status = $('#externalLlmStatus');
-  button.disabled = true;
-  status.className = '';
-  status.textContent = 'Saving and testing…';
-  try {
-    await flushSettingsAutosave();
-    button.disabled = true;
-    const result = await api('/api/prompt/provider/test', { method: 'POST' });
-    status.className = 'ready';
-    status.textContent = `${result.model} · connection ready`;
-  } catch (error) {
-    status.className = 'bad';
-    status.textContent = error.message || 'Connection failed';
-  } finally {
-    button.disabled = !state.profileIsOwner;
-  }
 });
 
 $('#settingsSheet').addEventListener('click', (event) => {
@@ -30147,8 +26957,6 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setHfToken').placeholder = s.hfTokenConfigured
       ? 'Saved · paste a new token to replace it'
       : 'Paste an hf_ read token';
-    $('#setHfEndpoint').value = s.hfEndpoint || '';
-    applyExternalLlmSettings(s);
     $('#galleryPasswordInput').value = s.galleryPassword || '1234';
     $('#setVramProfile').value = s.vramProfile || 'auto';
     $('#setKrea2ModelVariant').value = s.krea2ModelVariant || (/int8.*convrot|convrot.*int8/i.test(s.unet || '') ? 'int8-convrot' : 'fp8');
@@ -30176,19 +26984,10 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setDit').value = s.seedvr2Dit;
     $('#setSvVae').value = s.seedvr2Vae;
     setSvAttnValue(s.seedvr2Attention || 'sdpa');
-    applySvAttnVendorFilter(s.gpuVendor || '');
     $('#setSysPrompt').value = s.systemPrompt || '';
     $('#setLtxCkpt').value = s.ltxCkpt || '';
     $('#setLtxLora').value = s.ltxDistilledLora || '';
     $('#setLtxCameraLora').value = s.ltxCameramanLora || '';
-    $('#setLtxMotionEnhancerLora').value = s.ltxMotionEnhancerLora || '';
-    $('#setLtxMotionTrackLora').value = s.ltxMotionTrackLora || '';
-    $('#setLtxCinemagraphLora').value = s.ltxCinemagraphLora || '';
-    $('#setLtxMsrLora').value = s.ltxMsrLora || '';
-    $('#setLtxPixelUpscale2xLora').value = s.ltxPixelUpscale2xLora || '';
-    $('#setLtxPixelUpscale4xLora').value = s.ltxPixelUpscale4xLora || '';
-    $('#setLtxTextProjection').value = s.ltxTextProjection || '';
-    $('#setLtxStoryboardLora').value = s.ltxStoryboardLora || '';
     $('#setLtxEditLora').value = s.ltxEditLora || '';
     $('#setLtxDirectorLora').value = s.ltxDirectorIcLora || '';
     $('#setLtxTe').value = s.ltxTextEncoder || '';
@@ -30196,26 +26995,6 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setLtxUps').value = s.ltxUpscaler || '';
     $('#setFaceIdLora').value = s.ltxFaceIdLora || '';
     $('#setFaceIdDistilled').value = s.ltxFaceIdDistilledLora || '';
-    $('#setH3Unet').value = s.h3Unet || '';
-    $('#setH3RefUnet').value = s.h3RefUnet || '';
-    $('#setH3Clip').value = s.h3Clip || '';
-    if ($('#setH3ClipVariant')) {
-      const configured = s.h3Clip || '';
-      const variant = s.h3ClipVariant || '';
-      if (variant) {
-        $('#setH3ClipVariant').value = variant;
-      } else if (configured) {
-        const name = configured.toLowerCase();
-        if (name.includes('heretic') || name.includes('uncensored')) $('#setH3ClipVariant').value = 'int8-convrot-uncensored';
-        else if (name.includes('nvfp4') || name.includes('awq')) $('#setH3ClipVariant').value = 'nvfp4-awq';
-        else if (name.includes('int8') || name.includes('convrot')) $('#setH3ClipVariant').value = 'int8-convrot';
-        else $('#setH3ClipVariant').value = 'auto';
-      } else {
-        $('#setH3ClipVariant').value = 'auto';
-      }
-    }
-    $('#setH3VideoVae').value = s.h3VideoVae || '';
-    $('#setH3AudioVae').value = s.h3AudioVae || '';
     $('#setWanHigh').value = s.wanHighUnet || '';
     $('#setWanLow').value = s.wanLowUnet || '';
     $('#setWanClip').value = s.wanClip || '';
@@ -30259,32 +27038,6 @@ $('#setKrea2ModelVariant').addEventListener('change', () => {
     : 'krea2_raw_fp8_scaled.safetensors';
 });
 
-if ($('#setH3ClipVariant')) {
-  $('#setH3ClipVariant').addEventListener('change', () => {
-    const variant = $('#setH3ClipVariant').value;
-    const clipInput = $('#setH3Clip');
-    if (variant === 'auto') {
-      const configured = clipInput.value;
-      const name = (configured || '').toLowerCase();
-      if (name.includes('heretic') || name.includes('uncensored')) {
-        clipInput.value = 'qwen3vl_32b_minimax_h3_ultra_uncensored_heretic_int8_convrot.safetensors';
-      } else if (name.includes('nvfp4') || name.includes('awq')) {
-        clipInput.value = 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors';
-      } else if (name.includes('int8') || name.includes('convrot')) {
-        clipInput.value = 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors';
-      } else {
-        clipInput.value = '';
-      }
-    } else if (variant === 'int8-convrot') {
-      clipInput.value = 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors';
-    } else if (variant === 'int8-convrot-uncensored') {
-      clipInput.value = 'qwen3vl_32b_minimax_h3_ultra_uncensored_heretic_int8_convrot.safetensors';
-    } else if (variant === 'nvfp4-awq') {
-      clipInput.value = 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors';
-    }
-  });
-}
-
 $('#settingsRestartApply').addEventListener('click', async () => {
   if (settingsAppRestartRunning || !settingsAppRestartRequired) return;
   try {
@@ -30313,8 +27066,7 @@ let dependencySelectedComponents = new Set();
 
 function formatDependencyBytes(value) {
   const bytes = Number(value || 0);
-  if (!Number.isFinite(bytes) || bytes < 0) return '';
-  if (bytes === 0) return '0 B';
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
   const units = ['B', 'KB', 'MB', 'GB'];
   const power = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
   return `${(bytes / (1024 ** power)).toFixed(power ? 1 : 0)} ${units[power]}`;
@@ -30324,13 +27076,6 @@ function dependencyProgressMetrics(installState) {
   const phase = String(installState?.phase || '');
   const downloaded = Math.max(0, Number(installState?.downloaded || 0));
   const downloadTotal = Math.max(0, Number(installState?.downloadTotal || 0));
-  if (phase === 'downloading-model' && installState?.downloadMethod === 'hf-xet' && downloaded <= 0) {
-    const startedAt = Math.max(0, Number(installState?.downloadStartedAt || installState?.updatedAt || 0));
-    const elapsed = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
-    const size = downloadTotal > 0 ? ` · ${formatDependencyBytes(downloadTotal)}` : '';
-    const active = elapsed > 0 ? ` · active ${elapsed}s` : '';
-    return { determinate: false, percent: 0, label: `Preparing accelerated transfer${size}${active}` };
-  }
   if (phase === 'downloading-model' && downloadTotal > 0) {
     const ratio = Math.max(0, Math.min(1, downloaded / downloadTotal));
     return {
@@ -30359,18 +27104,9 @@ function dependencyProgressMetrics(installState) {
 function dependencyMissingLabels() {
   const dependency = lastMeta && lastMeta.dependencies;
   const components = new Map(((dependency && dependency.components) || []).map((entry) => [entry.id, entry]));
-  const repairIds = new Set((dependency && dependency.repairComponents) || []);
-  const outdatedNodes = (dependency && dependency.outdatedNodes) || [];
   return ((dependency && dependency.missingComponents) || []).map((id) => {
     const component = components.get(id) || {};
-    const outdated = outdatedNodes.find((entry) => (entry.componentIds || []).includes(id));
-    return {
-      id,
-      label: component.label || id,
-      optional: component.optional === true,
-      repair: repairIds.has(id),
-      repairLabel: outdated?.label || '',
-    };
+    return { id, label: component.label || id, optional: component.optional === true };
   });
 }
 
@@ -30410,11 +27146,11 @@ let setupKnownMissingComponents = null;
 let setupReturnToSettings = false;
 const setupConfirmedDifficultComponents = new Set();
 const SETUP_STEPS = ['connect', 'install', 'finish'];
-const KREA2_MODEL_COMPONENTS = new Set(['image', 'krea2raw', 'regional', 'krea2ref', 'krea2remix', 'krea2outpaint', 'krea2depth', 'krea2style']);
+const KREA2_MODEL_COMPONENTS = new Set(['image', 'krea2raw', 'regional', 'krea2ref', 'krea2outpaint', 'krea2depth', 'krea2style']);
 const SETUP_COMPONENT_CATEGORIES = [
   { id: 'image', label: 'Image', description: 'Generation, regional control, guides, and upscaling', components: ['image', 'krea2raw', 'regional', 'krea2depth', 'krea2style', 'upscale', 'ultimateupscale'] },
-  { id: 'edit', label: 'Edit', description: 'Klein, Qwen, Krea editing, masks, and outpainting', components: ['klein4', 'klein9', 'qwen', 'krea2ref', 'krea2remix', 'krea2outpaint', 'editoutpaint', 'smartmask'] },
-  { id: 'video', label: 'Video', description: 'MiniMax H3, LTX, Wan, SCAIL, Director, Face ID, and video tools', components: ['h3', 'h3sage', 'h3r2v', 'video', 'ltxdirector', 'ltxcamera', 'videoedit', 'faceid', 'eros', 'wan', 'scail', 'scailinfinity', 'video4k'] },
+  { id: 'edit', label: 'Edit', description: 'Klein, Qwen, Krea editing, masks, and outpainting', components: ['klein4', 'klein9', 'qwen', 'krea2ref', 'krea2outpaint', 'editoutpaint', 'smartmask'] },
+  { id: 'video', label: 'Video', description: 'LTX, Wan, SCAIL, Director, Face ID, and video tools', components: ['video', 'ltxdirector', 'ltxcamera', 'videoedit', 'faceid', 'eros', 'wan', 'scail', 'scailinfinity', 'video4k'] },
 ];
 
 function setupSelectedKrea2Variant() {
@@ -30442,20 +27178,6 @@ function setupKrea2CoreBlocked(components) {
     && setupViewStatus?.comfy?.krea2?.supported !== true;
 }
 
-function setupH3CoreBlocked(components) {
-  const requested = (components || []).filter(Boolean);
-  return requested.some((id) => id === 'h3' || id === 'h3r2v')
-    && setupViewStatus?.comfy?.minimaxH3?.supported !== true;
-}
-
-function setupH3CoreMessage() {
-  const compatibility = setupViewStatus?.comfy?.minimaxH3 || {};
-  const minimum = compatibility.minimumVersion || '0.30.0';
-  return compatibility.version
-    ? `Update ComfyUI ${compatibility.version} to ${minimum} or newer for MiniMax H3. Restart ComfyUI, then press Check again.`
-    : `Start or update ComfyUI to ${minimum} or newer for MiniMax H3, restart it, then press Check again.`;
-}
-
 function setupKrea2CoreMessage() {
   const compatibility = setupViewStatus?.comfy?.krea2 || {};
   const minimum = compatibility.minimumVersion || '0.26.0';
@@ -30475,14 +27197,8 @@ function setupNativeInt8Message() {
 function generationSetupComponents() {
   const components = new Set();
   if (state.view === 'video') {
-    const byEngine = { ltx: 'video', h3: 'h3', 'ltx-edit': 'videoedit', eros: 'eros', wan: 'wan', scail: 'scail' };
+    const byEngine = { ltx: 'video', 'ltx-edit': 'videoedit', eros: 'eros', wan: 'wan', scail: 'scail' };
     components.add(byEngine[state.vidEngine] || 'video');
-    if (state.vidEngine === 'h3'
-        && state.vidH3SageAttention !== false
-        && lastMeta?.dependencies?.sageAttention?.installable !== false) {
-      components.add('h3sage');
-    }
-    if (state.vidEngine === 'h3' && state.vidH3Mode === 'reference') components.add('h3r2v');
     if (state.directorOpen) components.add('ltxdirector');
     if (state.vidEngine === 'ltx-edit') components.add('video');
     if (state.vidEngine === 'ltx' && state.vidFace && !state.vidRef) components.add('faceid');
@@ -30492,7 +27208,7 @@ function generationSetupComponents() {
     return [...components];
   }
   if (state.view === 'edit') {
-    components.add({ klein4: 'klein4', klein9: 'klein9', qwen: 'qwen', krea2: 'image', krea2ref: 'krea2ref', krea2remix: 'krea2remix' }[state.editEngine] || 'image');
+    components.add({ klein4: 'klein4', klein9: 'klein9', qwen: 'qwen', krea2: 'image', krea2ref: 'krea2ref' }[state.editEngine] || 'image');
     if (state.editOutpaint) components.add(state.editEngine === 'krea2'
       ? 'krea2outpaint'
       : (state.editEngine === 'krea2ref' ? 'krea2outpaint' : 'editoutpaint'));
@@ -30528,8 +27244,6 @@ function currentGenerationSetupAction() {
   const required = generationSetupComponents();
   if (!lastMeta.ok) return 'connect';
   const requiresKrea2 = required.some((id) => KREA2_MODEL_COMPONENTS.has(id));
-  const requiresH3 = required.some((id) => id === 'h3' || id === 'h3r2v');
-  if (requiresH3 && lastMeta?.minimaxH3?.supported !== true) return 'update';
   if (requiresKrea2 && lastMeta?.models?.krea2?.clipType?.ok !== true) return 'update';
   if (requiresKrea2
     && lastMeta?.krea2?.modelVariant === 'int8-convrot'
@@ -30546,21 +27260,17 @@ async function ensureGenerationSetup() {
     && required.some((id) => KREA2_MODEL_COMPONENTS.has(id));
   const krea2CoreBlocked = required.some((id) => KREA2_MODEL_COMPONENTS.has(id))
     && lastMeta?.models?.krea2?.clipType?.ok !== true;
-  const h3CoreBlocked = required.some((id) => id === 'h3' || id === 'h3r2v')
-    && lastMeta?.minimaxH3?.supported !== true;
-  if (lastMeta?.ok && !missing.length && !nativeInt8Blocked && !krea2CoreBlocked && !h3CoreBlocked) return true;
+  if (lastMeta?.ok && !missing.length && !nativeInt8Blocked && !krea2CoreBlocked) return true;
   saveForm();
   await openInitialSetup({
     components: missing.length ? missing : required,
-    message: h3CoreBlocked
-      ? 'Update ComfyUI to 0.30.0 or newer before using MiniMax H3.'
-      : (krea2CoreBlocked
+    message: krea2CoreBlocked
       ? 'Update ComfyUI to 0.26.0 or newer before using Krea 2.'
       : (nativeInt8Blocked
       ? 'Update ComfyUI for Krea 2 INT8 ConvRot, or choose the compatible FP8 route.'
       : (lastMeta?.ok
       ? 'This workflow needs a few desktop tools before it can run.'
-      : 'Connect ComfyUI, then install what this workflow needs.'))),
+      : 'Connect ComfyUI, then install what this workflow needs.')),
   });
   return false;
 }
@@ -30613,7 +27323,7 @@ function closeGenerationSetup(options = {}) {
   $('#setupReturnSettings').hidden = true;
   syncSheetScrollLock();
   if (options.deliberate && !options.completed && !setupGenerationReady()) {
-    toast('Generation setup is still needed. Press Generate or open Preferences to continue.');
+    toast('Generation setup is still needed. Press Generate or open Advanced Settings to continue.');
   }
   if (options.pauseTutorial && firstImageTutorialAwaitingSetup) {
     firstImageTutorialAwaitingSetup = false;
@@ -30627,7 +27337,6 @@ function setupGenerationReady() {
   if (!setupViewStatus?.comfy?.connected) return false;
   const compatibilityComponents = setupContextComponents.length ? setupContextComponents : (setupViewStatus.quickComponents || []);
   if (setupKrea2CoreBlocked(compatibilityComponents)) return false;
-  if (setupH3CoreBlocked(compatibilityComponents)) return false;
   if (setupNativeInt8Blocked(compatibilityComponents)) return false;
   const missing = missingSetupComponents(compatibilityComponents);
   return !missing.length;
@@ -30638,7 +27347,6 @@ function renderSetupFooter() {
   const comfy = setupViewStatus.comfy || {};
   const compatibilityComponents = setupContextComponents.length ? setupContextComponents : (setupViewStatus.quickComponents || []);
   const krea2CoreBlocked = setupKrea2CoreBlocked(compatibilityComponents);
-  const h3CoreBlocked = setupH3CoreBlocked(compatibilityComponents);
   const officialBusy = ['running', 'cancelling'].includes(comfy.install?.state);
   const startBusy = !!comfy.start?.running || comfy.start?.state === 'running';
   const dependencyBusy = ['running', 'cancelling', 'restarting'].includes(setupDependencyState?.state);
@@ -30653,8 +27361,8 @@ function renderSetupFooter() {
   cancel.disabled = comfy.install?.state === 'cancelling' || setupDependencyState?.state === 'cancelling';
   const next = $('#setupNext');
   if (setupActiveStep === 'connect') {
-    next.textContent = krea2CoreBlocked || h3CoreBlocked ? 'Update ComfyUI first' : 'Continue';
-    next.disabled = busy || !comfy.connected || krea2CoreBlocked || h3CoreBlocked;
+    next.textContent = krea2CoreBlocked ? 'Update ComfyUI first' : 'Continue';
+    next.disabled = busy || !comfy.connected || krea2CoreBlocked;
   } else if (setupActiveStep === 'install') {
     next.textContent = 'Review';
     next.disabled = busy || (!workflowReady && !restartRequired);
@@ -30745,9 +27453,6 @@ function setupFitForComponents(components) {
 
 function conciseSetupError(value) {
   const message = String(value || '');
-  if (/Could not download|fetch failed|reviewed sources were unavailable/i.test(message)) {
-    return 'The model host could not be reached. Check the connection or add a trusted HTTPS download endpoint in Preferences → General, then retry.';
-  }
   if (/ResolutionImpossible|conflicting dependencies|dependency conflict/i.test(message)) {
     return 'Python packages could not be resolved. Retry the install; open Details if it happens again.';
   }
@@ -30864,12 +27569,9 @@ function renderPhoneAccessQr(url) {
 function renderPhoneAccess() {
   const access = setupViewStatus?.mobileAccess || {};
   const pinProtected = access.pinProtected === true;
-  const url = access.secureUrl || access.tailscaleUrl || access.localUrl || '';
-  const usingSecureTailscale = !!access.secureUrl && window.location.hostname === (() => {
-    try { return new URL(access.secureUrl).hostname; } catch { return ''; }
-  })();
-  const usingTailscale = !!(access.secureUrl || access.tailscaleUrl) && window.location.hostname === (() => {
-    try { return new URL(access.secureUrl || access.tailscaleUrl).hostname; } catch { return ''; }
+  const url = access.tailscaleUrl || access.localUrl || '';
+  const usingTailscale = !!access.tailscaleUrl && window.location.hostname === (() => {
+    try { return new URL(access.tailscaleUrl).hostname; } catch { return ''; }
   })();
   $('#phoneAccessUrl').hidden = !url;
   $('#phoneAccessUrl code').textContent = url;
@@ -30877,23 +27579,11 @@ function renderPhoneAccess() {
   $('#phoneAccessShare').dataset.url = url;
   $('#phoneAccessShare').hidden = !url || typeof navigator.share !== 'function';
   $('#phoneAccessSecure').hidden = pinProtected || !state.profileIsOwner;
-  const httpsButton = $('#phoneAccessHttps');
-  httpsButton.hidden = !state.profileIsOwner || !access.tailscaleDetected || !!access.secureUrl || access.httpsConflict;
-  httpsButton.disabled = access.httpsAvailable !== true;
-  httpsButton.textContent = access.httpsAvailable === true ? 'Enable phone app install' : 'Secure phone address unavailable';
   renderPhoneAccessQr(url);
-  if (usingSecureTailscale) {
-    $('#phoneAccessStatus').textContent = 'Connected through installable Tailscale HTTPS';
-    $('#phoneAccessTitle').textContent = 'Mix Studio can be installed on this phone';
-    $('#phoneAccessDescription').textContent = `Open Chrome’s menu and choose Install app or Add to Home screen. ${pinProtected ? 'The Owner profile is PIN-protected.' : 'No profile PIN is set, so any device on your tailnet can select Owner.'}`;
-  } else if (access.secureUrl) {
-    $('#phoneAccessStatus').textContent = `Installable phone address ready · ${pinProtected ? 'PIN protected' : 'no profile PIN'}`;
-    $('#phoneAccessTitle').textContent = 'Your installable phone address is ready';
-    $('#phoneAccessDescription').textContent = `Scan the QR code, then use Chrome’s menu to install Mix Studio. ${pinProtected ? 'Enter the Owner PIN when prompted.' : 'A PIN is optional, but anyone on your tailnet can use Owner while it is unset.'}`;
-  } else if (usingTailscale) {
+  if (usingTailscale) {
     $('#phoneAccessStatus').textContent = 'Connected privately through Tailscale';
     $('#phoneAccessTitle').textContent = 'This device is connected';
-    $('#phoneAccessDescription').textContent = `This browser is using the private Tailscale address. Enable the secure phone address before installing Mix Studio. ${pinProtected ? 'The Owner profile is PIN-protected.' : 'No profile PIN is set, so any device on your tailnet can select Owner.'}`;
+    $('#phoneAccessDescription').textContent = `This browser is using the private Tailscale address. ${pinProtected ? 'The Owner profile is PIN-protected.' : 'No profile PIN is set, so any device on your tailnet can select Owner.'}`;
   } else if (access.tailscaleDetected) {
     $('#phoneAccessStatus').textContent = `Tailscale detected · ${pinProtected ? 'PIN protected' : 'no profile PIN'}`;
     $('#phoneAccessTitle').textContent = 'Your private phone address is ready';
@@ -30903,28 +27593,14 @@ function renderPhoneAccess() {
     $('#phoneAccessTitle').textContent = 'Try the same Wi-Fi now';
     $('#phoneAccessDescription').textContent = `The address below works while both devices are on this network. ${pinProtected ? 'The Owner profile is PIN-protected.' : 'A PIN is optional, but anyone who can reach this address can use Owner.'} Install Tailscale for private access away from home.`;
   } else {
-    $('#phoneAccessStatus').textContent = 'Install Tailscale on this computer and your phone';
+    $('#phoneAccessStatus').textContent = 'Install Tailscale on this PC and your phone';
     $('#phoneAccessTitle').textContent = 'Set up private phone access';
     $('#phoneAccessDescription').textContent = 'Install Tailscale on both devices and sign in to the same tailnet. Mix Studio will show the private address here after it detects the connection.';
   }
-  const security = $('#phoneAccessSecurity');
-  if (security) {
-    security.textContent = access.secureUrl
-      ? 'This private HTTPS address is available only inside your tailnet and lets supported browsers install Mix Studio. Mix Studio does not use Tailscale Funnel.'
-      : (access.httpsConflict
-        ? 'Tailscale Serve already forwards another local app, so Mix Studio did not replace it. Existing Tailscale access still works in the browser.'
-        : 'Browser installation requires a private HTTPS address. Enabling it uses Tailscale Serve inside your tailnet; it does not make Mix Studio public or use Tailscale Funnel.');
-  }
   if ($('#phoneAccessSettingsCopy')) $('#phoneAccessSettingsCopy').textContent = access.tailscaleDetected
-    ? `${access.secureUrl ? 'Installable private HTTPS address' : 'Private Tailscale address'} is ready${pinProtected ? ' and PIN-protected' : '; profile PIN is optional'}.`
+    ? `Private Tailscale address is ready${pinProtected ? ' and PIN-protected' : '; profile PIN is optional'}.`
     : (access.localUrl ? `Same-Wi-Fi access is ready${pinProtected ? ' and PIN-protected' : '; profile PIN is optional'}.` : 'Set up private phone access with Tailscale.');
   if ($('#phoneAccessSettingsStatus')) $('#phoneAccessSettingsStatus').textContent = access.tailscaleDetected || access.localUrl ? 'Ready' : 'Guide';
-}
-
-function setupLocalPath(base, child) {
-  const root = String(base || '').replace(/[\\/]+$/, '');
-  if (!root) return '';
-  return `${root}${setupViewStatus?.platform === 'win32' ? '\\' : '/'}${child}`;
 }
 
 function renderInitialSetup() {
@@ -30939,19 +27615,16 @@ function renderInitialSetup() {
   const busy = officialBusy || dependencyBusy || startBusy;
   const compatibilityComponents = setupContextComponents.length ? setupContextComponents : (setupViewStatus.quickComponents || []);
   const krea2CoreBlocked = setupKrea2CoreBlocked(compatibilityComponents);
-  const h3CoreBlocked = setupH3CoreBlocked(compatibilityComponents);
   const int8Blocked = setupNativeInt8Blocked(compatibilityComponents);
-  const comfyCompatibilityBlocked = krea2CoreBlocked || h3CoreBlocked || int8Blocked;
+  const comfyCompatibilityBlocked = krea2CoreBlocked || int8Blocked;
   const incompleteComfy = !!comfy.partialPath && !comfy.detectedPath;
   const comfyCard = $('#setupComfyStatus');
   comfyCard.classList.toggle('ready', !!comfy.connected && !comfyCompatibilityBlocked);
   comfyCard.classList.toggle('attention', !comfy.connected || comfyCompatibilityBlocked);
   $('#setupComfyStatusCopy').textContent = comfy.connected
-    ? (h3CoreBlocked
-      ? `Update to ${comfy.minimaxH3?.minimumVersion || '0.30.0'}+ for MiniMax H3`
-      : (krea2CoreBlocked
+    ? (krea2CoreBlocked
       ? `Update to ${comfy.krea2?.minimumVersion || '0.26.0'}+ for Krea 2`
-      : (int8Blocked ? `Update to ${comfy.nativeInt8?.minimumVersion || '0.27.0'}+ for Krea INT8` : `Connected${comfy.version ? ` · ${comfy.version}` : ''}`)))
+      : (int8Blocked ? `Update to ${comfy.nativeInt8?.minimumVersion || '0.27.0'}+ for Krea INT8` : `Connected${comfy.version ? ` · ${comfy.version}` : ''}`))
     : (incompleteComfy ? 'Incomplete · finish in Comfy Desktop'
       : ((comfy.configuredPath || comfy.detectedPath) ? 'Found · start ComfyUI' : 'Connection needed'));
 
@@ -30971,9 +27644,7 @@ function renderInitialSetup() {
   workflowCard.classList.toggle('ready', workflowReady);
   workflowCard.classList.toggle('attention', !workflowReady);
   $('#setupWorkflowStatus strong').textContent = setupContextComponents.length ? 'Current workflow' : 'Image generation';
-  $('#setupWorkflowStatusCopy').textContent = h3CoreBlocked
-    ? 'ComfyUI update needed for MiniMax H3'
-    : (krea2CoreBlocked
+  $('#setupWorkflowStatusCopy').textContent = krea2CoreBlocked
     ? 'ComfyUI update needed for Krea 2'
     : (int8Blocked
     ? 'ComfyUI update needed for Krea INT8'
@@ -30981,11 +27652,11 @@ function renderInitialSetup() {
       ? (workflowReady ? 'Ready' : `${contextMissing.length || setupContextComponents.length} group${(contextMissing.length || setupContextComponents.length) === 1 ? '' : 's'} needed`)
       : (comfy.connected ? (workflowReady
         ? (additionalMissing.length ? `Ready · ${additionalMissing.length} more workflows available` : 'Ready')
-        : `${contextMissing.length || activeWorkflowComponents.length || 1} starter needed`) : 'Waiting for ComfyUI'))));
+        : `${contextMissing.length || activeWorkflowComponents.length || 1} starter needed`) : 'Waiting for ComfyUI')));
 
-  const connectReady = !!comfy.connected && !krea2CoreBlocked && !h3CoreBlocked;
+  const connectReady = !!comfy.connected && !krea2CoreBlocked;
   const installReady = workflowReady || restartRequired;
-  $('#setupTabConnectStatus').textContent = krea2CoreBlocked || h3CoreBlocked ? 'Update core'
+  $('#setupTabConnectStatus').textContent = krea2CoreBlocked ? 'Update core'
     : (connectReady ? 'Connected'
     : (incompleteComfy ? 'Incomplete' : ((comfy.detectedPath || comfy.configuredPath) ? 'Found' : 'Needed')));
   $('#setupTabInstallStatus').textContent = dependencyBusy ? 'In progress' : (installReady ? 'Ready' : `${contextMissing.length || activeWorkflowComponents.length || 1} needed`);
@@ -30997,10 +27668,9 @@ function renderInitialSetup() {
 
   const hardware = setupViewStatus.hardware || {};
   const quickFit = setupViewStatus.quickFit || {};
-  const generationMemoryName = hardware.gpuBackend === 'mps' ? 'unified memory' : 'VRAM';
   $('#setupHardwareCopy').textContent = hardware.gpuAvailable
-    ? `${hardware.gpuName || 'GPU'}${hardware.vramGb ? ` · ${hardware.vramGb} GB ${generationMemoryName}` : ` · ${generationMemoryName} unavailable`}${hardware.memoryGb && hardware.gpuBackend !== 'mps' ? ` · ${hardware.memoryGb} GB RAM` : ''}`
-    : 'No compatible GPU detected';
+    ? `${hardware.gpuName || 'GPU'}${hardware.vramGb ? ` · ${hardware.vramGb} GB VRAM` : ' · VRAM unavailable'}${hardware.memoryGb ? ` · ${hardware.memoryGb} GB RAM` : ''}`
+    : 'No GPU detected';
   $('#setupHardwareFit').textContent = krea2CoreBlocked
     ? 'Update ComfyUI for Krea 2'
     : (int8Blocked ? 'Update ComfyUI for native Krea INT8' : (quickFit.label || 'Compatibility not yet available'));
@@ -31033,9 +27703,7 @@ function renderInitialSetup() {
   $('#setupKrea2Variant').disabled = busy || !state.profileIsOwner;
 
   const pathValue = comfy.configuredPath || comfy.detectedPath || '';
-  const modelsValue = comfy.modelsPath || setupLocalPath(pathValue, 'models');
-  $('#setupComfyPath').placeholder = setupViewStatus.platform === 'darwin' ? '/Users/you/ComfyUI' : 'C:\\ComfyUI';
-  $('#setupModelsPath').placeholder = setupViewStatus.platform === 'darwin' ? '/Users/you/ComfyUI/models' : 'C:\\ComfyUI\\models';
+  const modelsValue = comfy.modelsPath || (pathValue ? `${pathValue.replace(/[\\/]+$/, '')}\\models` : '');
   if (document.activeElement !== $('#setupComfyUrl')) $('#setupComfyUrl').value = comfy.url || 'http://127.0.0.1:8188';
   if (document.activeElement !== $('#setupComfyPath') && !$('#setupComfyPath').value) $('#setupComfyPath').value = pathValue;
   if (document.activeElement !== $('#setupModelsPath') && !$('#setupModelsPath').value) $('#setupModelsPath').value = modelsValue;
@@ -31057,9 +27725,7 @@ function renderInitialSetup() {
   $('#setupCoreUpdate').hidden = !krea2CoreBlocked;
   $('#setupCoreUpdateCopy').textContent = start.kind === 'desktop'
     ? `${setupKrea2CoreMessage()} On the generation computer, use Comfy Desktop → Menu → Help → Check for Updates.`
-    : (setupViewStatus.platform === 'darwin'
-      ? `${setupKrea2CoreMessage()} Update the source checkout from Terminal, then restart ComfyUI.`
-      : `${setupKrea2CoreMessage()} For Portable, run update\\update_comfyui.bat from the portable folder.`);
+    : `${setupKrea2CoreMessage()} For Portable, run update\\update_comfyui.bat from the portable folder.`;
   $('#setupCoreUpdateCheck').disabled = busy;
   const endpointMatches = setupDiscoveredMatches.length ? setupDiscoveredMatches : (start.matches || []);
   renderSetupEndpointChoices(endpointMatches);
@@ -31083,16 +27749,15 @@ function renderInitialSetup() {
     : (nodeSetupActive ? 'Resolve the install issue from the Install step. Paths remain available below.' : 'Start a detected installation or choose another location. Mix Studio finds the port automatically.'));
   $('#setupUseDetected').disabled = busy || !comfy.detectedPath || !state.profileIsOwner;
   $('#setupInstallComfy').disabled = busy || !comfy.canInstallOfficial || !state.profileIsOwner;
-  $('#setupInstallComfy').hidden = !comfy.canInstallOfficial;
   $('#setupInstallComfy').title = comfy.canInstallOfficial ? 'Opens the official Comfy Desktop app or downloads its signed installer' : 'Available when Mix Studio is running on Windows';
   $('#setupSaveConnection').disabled = busy || !state.profileIsOwner;
-  const canBrowse = ['win32', 'darwin'].includes(setupViewStatus.platform) && state.profileIsOwner && !busy;
+  const canBrowse = setupViewStatus.platform === 'win32' && state.profileIsOwner && !busy;
   $('#setupBrowseComfy').disabled = !canBrowse;
   $('#setupBrowseComfyDetails').disabled = !canBrowse;
   $('#setupBrowseModels').disabled = !canBrowse;
-  const browseTitle = ['win32', 'darwin'].includes(setupViewStatus.platform)
+  const browseTitle = setupViewStatus.platform === 'win32'
     ? 'Opens a folder picker on the generation computer'
-    : 'Folder browsing is not available on this generation computer. Enter the absolute path manually here.';
+    : 'Browse opens on the Windows generation computer. Enter the path manually here.';
   $('#setupBrowseComfy').title = browseTitle;
   $('#setupBrowseComfyDetails').title = browseTitle;
   $('#setupBrowseModels').title = browseTitle;
@@ -31102,7 +27767,6 @@ function renderInitialSetup() {
   const missingIds = setupMissingComponentIds();
   const readinessKnown = Array.isArray(missingIds);
   const missingSet = new Set(missingIds || []);
-  const repairSet = new Set(lastMeta?.dependencies?.repairComponents || []);
   const selected = syncSetupComponentSelection(components, missingIds);
   const fitByComponent = setupComponentFitMap();
   const list = $('#setupComponentList');
@@ -31117,18 +27781,15 @@ function renderInitialSetup() {
       && selectableEntries.every((entry) => selected.has(entry.id));
     const rows = entries.map((entry) => {
       const fit = fitByComponent.get(entry.id);
-      const repairNeeded = repairSet.has(entry.id);
       const installed = readinessKnown && !missingSet.has(entry.id);
       const unavailable = entry.installable === false && !installed;
       const coreUpdate = entry.blockedBy === 'comfy-core' && !installed;
       const checked = installed || selected.has(entry.id);
       const disabled = installed || unavailable || busy || !state.profileIsOwner;
-      const status = installed ? 'Installed' : (repairNeeded ? 'Update' : (coreUpdate ? 'Update ComfyUI' : (unavailable ? 'Manual' : (selected.has(entry.id) ? 'Selected' : (readinessKnown ? 'Not installed' : 'Not checked')))));
+      const status = installed ? 'Installed' : (coreUpdate ? 'Update ComfyUI' : (unavailable ? 'Manual' : (selected.has(entry.id) ? 'Selected' : (readinessKnown ? 'Not installed' : 'Not checked'))));
       const detail = entry.installReason || fit?.detail || entry.label;
-      const readinessLabel = repairNeeded ? 'Reviewed custom-node update required' : (coreUpdate ? 'ComfyUI 0.26.0+ required' : (fit?.label || (unavailable ? 'Manual installation required' : 'Check requirements')));
-      const isNvidiaOnly = ['video4k'].includes(entry.id);
-      const nvidiaBadge = isNvidiaOnly ? '<span class="gpu-badge nvidia">NVIDIA only</span>' : '';
-      return `<label class="setup-component-option${checked ? ' selected' : ''}${installed ? ' installed' : ''}${repairNeeded ? ' repair-needed' : ''}${unavailable ? ' unavailable' : ''}" data-fit="${escapeHtml(fit?.level || 'unknown')}" title="${escapeHtml(detail)}"><input type="checkbox" data-component="${escapeHtml(entry.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}><span class="setup-component-check" aria-hidden="true"></span><span class="setup-component-copy"><strong>${escapeHtml(entry.label)}${nvidiaBadge}</strong><small>${escapeHtml(readinessLabel)}</small></span><span class="setup-component-state">${status}</span></label>`;
+      const readinessLabel = coreUpdate ? 'ComfyUI 0.26.0+ required' : (fit?.label || (unavailable ? 'Manual installation required' : 'Check requirements'));
+      return `<label class="setup-component-option${checked ? ' selected' : ''}${installed ? ' installed' : ''}${unavailable ? ' unavailable' : ''}" data-fit="${escapeHtml(fit?.level || 'unknown')}" title="${escapeHtml(detail)}"><input type="checkbox" data-component="${escapeHtml(entry.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}><span class="setup-component-check" aria-hidden="true"></span><span class="setup-component-copy"><strong>${escapeHtml(entry.label)}</strong><small>${escapeHtml(readinessLabel)}</small></span><span class="setup-component-state">${status}</span></label>`;
     }).join('');
     const count = readinessKnown ? `${installedCount} of ${entries.length} installed` : `${entries.length} workflows`;
     const action = selectableEntries.length
@@ -31332,7 +27993,7 @@ async function saveSetupConnection(pathOverride) {
     body: JSON.stringify({
       url: $('#setupComfyUrl').value.trim(),
       path: pathValue,
-      modelsPath: $('#setupModelsPath').value.trim(),
+      modelsPath: $('#setupModelsPath').value.trim() || (pathValue ? `${pathValue.replace(/[\\/]+$/, '')}\\models` : ''),
     }),
   });
   setupViewStatus = result;
@@ -31387,26 +28048,19 @@ async function startSetupDependencies(components) {
     setupViewStatus = await api('/api/setup/status');
   }
   if (!setupViewStatus.comfy?.canInstallDependencies) {
-    if (setupViewStatus.comfy?.canInstallOfficial && !setupViewStatus.comfy?.connected) {
+    if (setupViewStatus.comfy?.canInstallOfficial) {
       setupPendingComponents = requested;
       await startOfficialComfyFromSetup();
       return true;
     }
     setSetupStep('connect', { user: true });
     setSetupGuideExpanded(true);
-    toast(setupViewStatus.comfy?.connected
-      ? 'ComfyUI is connected. Choose its local ComfyUI folder so Mix Studio can install files into the correct portable or Desktop installation.'
-      : (setupViewStatus.comfy?.dependencyReason || 'Connect an initialized ComfyUI folder first.'), true);
+    toast(setupViewStatus.comfy?.dependencyReason || 'Connect an initialized ComfyUI folder first.', true);
     return false;
   }
   if (setupKrea2CoreBlocked(requested)) {
     setSetupStep('connect', { user: true });
     toast(setupKrea2CoreMessage(), true);
-    return false;
-  }
-  if (setupH3CoreBlocked(requested)) {
-    setSetupStep('connect', { user: true });
-    toast(setupH3CoreMessage(), true);
     return false;
   }
   if (setupNativeInt8Blocked(requested)) {
@@ -31536,7 +28190,7 @@ $('#setupUseDetected').addEventListener('click', async () => {
     const detected = setupViewStatus?.comfy?.detectedPath;
     if (!detected) return;
     $('#setupComfyPath').value = detected;
-    $('#setupModelsPath').value = '';
+    $('#setupModelsPath').value = `${detected.replace(/[\\/]+$/, '')}\\models`;
     await saveSetupConnection(detected);
   } catch (error) { toast(error.message, true); }
 });
@@ -31556,7 +28210,7 @@ async function browseSetupDirectory(kind, trigger) {
       $('#setupModelsPath').value = result.directory;
     } else {
       $('#setupComfyPath').value = result.directory;
-      $('#setupModelsPath').value = '';
+      $('#setupModelsPath').value = `${result.directory.replace(/[\\/]+$/, '')}\\models`;
       await saveSetupConnection(result.directory);
     }
   } catch (error) {
@@ -31720,25 +28374,6 @@ $('#phoneAccessSecure').addEventListener('click', () => {
   openProfileEdit();
   requestAnimationFrame(() => $('#pePin').focus({ preventScroll: true }));
 });
-$('#phoneAccessHttps').addEventListener('click', async () => {
-  const button = $('#phoneAccessHttps');
-  button.disabled = true;
-  button.textContent = 'Enabling secure address…';
-  try {
-    const result = await api('/api/mobile-access/enable-https', { method: 'POST' });
-    if (setupViewStatus) setupViewStatus.mobileAccess = result.mobileAccess || setupViewStatus.mobileAccess;
-    renderPhoneAccess();
-    toast('Installable phone address is ready');
-  } catch (error) {
-    if (error?.details?.approvalUrl) {
-      window.open(error.details.approvalUrl, '_blank', 'noopener,noreferrer');
-      toast('Approve Tailscale HTTPS, then press the button again');
-    } else {
-      toast(error.message || 'Could not enable the installable phone address', true);
-    }
-    await refreshSetupStatus().catch(() => {});
-  }
-});
 $('#phoneAccessCopy').addEventListener('click', async () => {
   const url = $('#phoneAccessCopy').dataset.url;
   if (!url) return;
@@ -31760,7 +28395,6 @@ function renderGenerationSetupEntry() {
   const dependency = lastMeta?.dependencies || {};
   const install = dependency.install || {};
   const missing = dependencyMissingLabels();
-  const repairCount = missing.filter((entry) => entry.repair).length;
   const imageReady = imageGenerationReady();
   const busy = ['running', 'cancelling', 'restarting'].includes(install.state);
   let stateName = 'checking';
@@ -31784,10 +28418,6 @@ function renderGenerationSetupEntry() {
     stateName = 'attention';
     statusText = 'Review';
     copyText = 'The last setup operation needs attention.';
-  } else if (repairCount) {
-    stateName = 'attention';
-    statusText = 'Update';
-    copyText = `${repairCount} installed workflow${repairCount === 1 ? '' : 's'} need${repairCount === 1 ? 's' : ''} the reviewed custom-node version.`;
   } else if (!imageReady) {
     stateName = 'attention';
     statusText = 'Image setup';
@@ -31811,7 +28441,6 @@ function renderDependencyManager() {
   const dependency = (lastMeta && lastMeta.dependencies) || {};
   const installState = dependency.install || { state: 'idle', phase: 'idle' };
   const missing = dependencyMissingLabels();
-  const repairCount = missing.filter((entry) => entry.repair).length;
   const imageReady = imageGenerationReady();
   const badge = $('#dependencyManagerBadge');
   const status = $('#dependencyManagerStatus');
@@ -31830,10 +28459,10 @@ function renderDependencyManager() {
   const selectedCount = selected.size;
   const busy = ['running', 'cancelling', 'restarting'].includes(installState.state);
   const cancellable = installState.state === 'running' || installState.state === 'cancelling';
-  const ready = imageReady && !busy && !repairCount;
+  const ready = imageReady && !busy;
   card.classList.toggle('ready', ready);
   card.classList.toggle('installing', busy);
-  list.innerHTML = missing.map((entry) => `<button class="dependency-option${selected.has(entry.id) ? ' selected' : ''}${entry.repair ? ' repair-needed' : ''}" type="button" data-component="${escapeHtml(entry.id)}" aria-pressed="${selected.has(entry.id) ? 'true' : 'false'}" title="${escapeHtml(entry.repair ? `${entry.repairLabel || entry.label} needs the reviewed version` : entry.label)}"${busy || !state.profileIsOwner ? ' disabled' : ''}>${escapeHtml(entry.label)}${entry.repair ? '<small>Update</small>' : ''}</button>`).join('');
+  list.innerHTML = missing.map((entry) => `<button class="dependency-option${selected.has(entry.id) ? ' selected' : ''}" type="button" data-component="${escapeHtml(entry.id)}" aria-pressed="${selected.has(entry.id) ? 'true' : 'false'}" title="${escapeHtml(entry.label)}"${busy || !state.profileIsOwner ? ' disabled' : ''}>${escapeHtml(entry.label)}</button>`).join('');
   selectionHead.hidden = !missing.length || busy || !state.profileIsOwner;
   toggleAll.textContent = selectedCount === missing.length ? 'Clear' : 'Select all';
   install.disabled = busy;
@@ -31865,9 +28494,6 @@ function renderDependencyManager() {
   } else if (!lastMeta?.ok) {
     badge.textContent = 'Offline';
     status.textContent = 'Start ComfyUI to scan models and nodes. You can still install trusted missing packs once its folder is configured.';
-  } else if (repairCount) {
-    badge.textContent = 'Update available';
-    status.textContent = `${repairCount} installed workflow${repairCount === 1 ? '' : 's'} need${repairCount === 1 ? 's' : ''} a reviewed custom-node update. Select and repair, then restart ComfyUI.`;
   } else if (ready) {
     badge.textContent = 'Ready';
     status.textContent = missing.length
@@ -31987,14 +28613,12 @@ async function loadMeta(refresh, afterRestart = false) {
     state.metaLorasInfo = lastMeta.lorasInfo || {};
     state.loraThumbs = lastMeta.loraThumbs || {};
     state.features = lastMeta.features || {};
-    state.videoCapabilities = lastMeta.capabilities?.video || {};
     renderFeatureVisibility();
     $('#connDot').className = 'conn-dot ' + (lastMeta.ok ? 'ok' : 'bad');
     renderKrea2Mode();
     renderLoras();
     renderSam3Dependency();
     renderDependencyManager();
-    renderH3SageAttention();
     $('#genLbl').textContent = genLabel();
     scheduleDependencyPoll();
   } catch {
@@ -32059,10 +28683,7 @@ $('#dependencyInstallMissing').addEventListener('click', async () => {
     const result = await api('/api/dependencies/install', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         components,
-        modelVariants: {
-          krea2: $('#setKrea2ModelVariant').value,
-          h3: $('#setH3ClipVariant')?.value || 'auto',
-        },
+        modelVariants: { krea2: $('#setKrea2ModelVariant').value },
       }),
     });
     if (lastMeta && lastMeta.dependencies) lastMeta.dependencies.install = result.install;
@@ -32079,10 +28700,7 @@ $('#dependencyRepairMissing').addEventListener('click', async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         components,
         repair: true,
-        modelVariants: {
-          krea2: $('#setKrea2ModelVariant').value,
-          h3: $('#setH3ClipVariant')?.value || 'auto',
-        },
+        modelVariants: { krea2: $('#setKrea2ModelVariant').value },
       }),
     });
     if (lastMeta && lastMeta.dependencies) lastMeta.dependencies.install = result.install;
@@ -32130,7 +28748,7 @@ function renderHealth() {
     return;
   }
   const rows = [`<span class="ok">● Connected</span> — ${state.metaLoras.length} LoRAs found`];
-  const labels = { core: 'Core nodes', enhance: 'Prompt enhance (TextGenerate)', klein: 'Edit (Flux 2 Klein) nodes', qwenedit: 'Edit (Qwen Image Edit) nodes', regional: 'Krea2 regional prompting nodes', krea2inpaint: 'Krea2 Fill nodes', krea2ref: 'Krea 2 Identity Edit nodes', krea2remix: 'Krea 2 Remix (Rebalance) nodes', krea2outpaint: 'Krea 2 Expand nodes', editoutpaint: 'Klein / Qwen Expand nodes', smartmask: 'Smart Mask (SAM3) nodes', upscale: 'SeedVR2 nodes', ultimateupscale: 'Ultimate SD Upscale nodes', video: 'LTX 2.3 video nodes', h3: 'MiniMax H3 native nodes', h3r2v: 'MiniMax H3 reference-input nodes', h3sage: 'MiniMax H3 SageAttention patch', ltxdirector: 'LTX Director nodes', videoedit: 'LTX Edit guide-video nodes', video4k: 'RTX 4K pass (optional)', rife: 'RIFE frame interpolation nodes', wan: 'Wan 2.2 nodes', eros: '10Eros DMD nodes', scail: 'SCAIL 2 motion transfer nodes', scailinfinity: 'SCAIL 2 Infinity node', faceid: 'LTX Face ID (BFS) nodes' };
+  const labels = { core: 'Core nodes', enhance: 'Prompt enhance (TextGenerate)', klein: 'Edit (Flux 2 Klein) nodes', qwenedit: 'Edit (Qwen Image Edit) nodes', regional: 'Krea2 regional prompting nodes', krea2inpaint: 'Krea2 Fill nodes', krea2ref: 'Krea 2 Edit (Rebalance) nodes', krea2outpaint: 'Krea 2 Expand nodes', editoutpaint: 'Klein / Qwen Expand nodes', smartmask: 'Smart Mask (SAM3) nodes', upscale: 'SeedVR2 nodes', ultimateupscale: 'Ultimate SD Upscale nodes', video: 'LTX 2.3 video nodes', ltxdirector: 'LTX Director nodes', videoedit: 'LTX Edit guide-video nodes', video4k: '4K Upscale (optional)', rife: 'RIFE frame interpolation nodes', wan: 'Wan 2.2 nodes', eros: '10Eros DMD nodes', scail: 'SCAIL 2 motion transfer nodes', scailinfinity: 'SCAIL 2 Infinity node', faceid: 'LTX Face ID (BFS) nodes' };
   for (const [group, missing] of Object.entries(lastMeta.missing || {})) {
     if (group === 'smartmask') continue; // The actionable installer card above owns this status.
     const label = labels[group] || group.replace(/([a-z])([A-Z])/g, '$1 $2');
@@ -32191,7 +28809,7 @@ restoreGalleryZoom();
 wireDesktopPanelResizers();
 restoreLightboxMetaLayout();
 wireLightboxMetaResizer();
-// The complete feature tour remains available from Preferences. The
+// The complete feature tour remains available from Advanced Settings. The
 // smaller first-image offer waits for auth, readiness, and Library state below.
 markEngineRow('editEngineRow', state.editEngine);
 markEngineRow('vidEngineRow', state.vidEngine);
@@ -32208,7 +28826,6 @@ restorePersistedWorkspaceControls();
 restorePersistedWorkspaceMedia();
 connectEvents();
 if (Analytics) Analytics.init();
-if (SupportPrompt) SupportPrompt.init();
 loadMeta();
 refreshGallery(true);
 setInterval(() => loadMeta(), 30000);

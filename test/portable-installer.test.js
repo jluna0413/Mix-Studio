@@ -104,7 +104,7 @@ test('README presents the product positioning and credits while contribution det
   const contributing = fs.readFileSync(path.join(root, 'CONTRIBUTING.md'), 'utf8');
   assert.match(readme, /Mix Studio is a local web interface that builds and submits ComfyUI API graphs/);
   assert.match(readme, /image generation, regional prompting, image editing, video generation, motion transfer, and upscaling/);
-  assert.match(readme, /Krea 2, Flux 2 Klein, Qwen Image Edit, MiniMax H3, LTX 2\.3, Wan 2\.2, 10Eros, and SCAIL 2/);
+  assert.match(readme, /Krea 2, Flux 2 Klein, Qwen Image Edit, MiniMax H3, LTX 2\.3, LTX 2\.5, Wan 2\.2, 10Eros, and SCAIL 2/);
   assert.match(readme, /## Acknowledgments & Attribution/);
   assert.match(readme, /\[Contributing\]\(CONTRIBUTING\.md\)/);
   assert.match(contributing, /## Contribute a workflow/);
@@ -113,7 +113,7 @@ test('README presents the product positioning and credits while contribution det
   assert.match(contributing, /github\.com\/BlackMixture\/Mix-Studio\/discussions/);
   assert.match(contributing, /github\.com\/BlackMixture\/Mix-Studio\/pulls/);
   assert.match(readme, /\*\*ComfyUI:\*\* Executes the API-format graphs built by the Mix Studio server/);
-  assert.match(readme, /Black Forest Labs \(Flux 2\), MiniMax \(H3\), Lightricks \(LTX 2\.3\), Krea AI, and the Wan team/);
+  assert.match(readme, /Black Forest Labs \(Flux 2\), MiniMax \(H3\), Lightricks \(LTX 2\.3 and LTX 2\.5\), Krea AI, and the Wan team/);
   assert.match(readme, /SCAIL 2, 10Eros, SeedVR2, Ultimate SD Upscale, Depth Anything V3/);
   assert.match(readme, /Dell provided the Dell Pro Max T2 Tower/);
   assert.match(readme, /\*\*NVIDIA RTX PRO 6000 Blackwell GPU with 96 GB VRAM\*\*/);
@@ -460,6 +460,23 @@ test('bootstrap recognizes a source ComfyUI virtual environment on macOS', () =>
   }
 });
 
+test('bootstrap recognizes the standard nested ComfyUI Portable download layout', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mix-comfy-portable-bootstrap-'));
+  const home = path.join(temp, 'home');
+  const portableRoot = path.join(home, 'Downloads', 'ComfyUI_windows_portable_cuda');
+  const comfyRoot = path.join(portableRoot, 'ComfyUI');
+  const python = path.join(portableRoot, 'python_embeded', 'python.exe');
+  fs.mkdirSync(path.dirname(python), { recursive: true });
+  fs.mkdirSync(comfyRoot, { recursive: true });
+  fs.writeFileSync(path.join(comfyRoot, 'main.py'), '');
+  fs.writeFileSync(python, '');
+  try {
+    assert.equal(desktopComfyPath({ HOME: home }, fs, path), comfyRoot);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test('generation setup lives in the web app and gates only a generation attempt', () => {
   const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'public', 'app.js'), 'utf8');
@@ -471,7 +488,9 @@ test('generation setup lives in the web app and gates only a generation attempt'
     'setupCurrentWorkflow', 'setupFullGuide', 'setupInstallComfy', 'setupUseDetected',
     'setupStartCard', 'setupStartComfy', 'setupFindComfy', 'setupEndpointChoices',
     'setupBrowseComfy', 'setupBrowseComfyDetails', 'setupBrowseModels', 'setupComfyPath', 'setupModelsPath',
+    'setupSavePaths', 'setupSkipStarter',
     'setupHardwareSummary', 'setupShowDetails', 'setupDependencyAccess', 'setupDependencyAccessLink',
+    'setupHfAccess', 'setupHfAccessLink', 'setupHfToken', 'setupSaveHfToken', 'setupHfTokenStatus',
     'setupOperationProgress', 'setupOperationProgressLabel',
     'setupCancel', 'setupBack', 'setupNext', 'setupReturnSettings',
   ]) {
@@ -518,6 +537,9 @@ test('generation setup lives in the web app and gates only a generation attempt'
   assert.match(server, /function dependencyComponentInfo\(id, fit = null\)/);
   assert.match(server, /installable: !unavailableNode/);
   assert.match(app, /\/api\/setup\/browse/);
+  assert.match(app, /setSetupStep\('connect', \{ user: true \}\);[\s\S]{0,500}\/api\/setup\/browse/);
+  assert.match(app, /if \(kind === 'models'\) \{[\s\S]{0,180}await saveSetupConnection\(\)/);
+  assert.match(app, /setupSkipStarter[\s\S]{0,420}ks-first-image-tutorial|firstRunTutorialStorageKey\(\)[\s\S]{0,420}setupFirstRun = false/);
   assert.match(app, /\/api\/setup\/comfy\/cancel/);
   assert.match(app, /\/api\/setup\/comfy\/discover/);
   assert.match(app, /\/api\/comfy\/start/);
@@ -551,6 +573,8 @@ test('generation setup lives in the web app and gates only a generation attempt'
   assert.match(style, /\.setup-workflow-install \{[^}]*grid-column: 1 \/ -1[^}]*min-height: 94px/s);
   assert.match(style, /\.btn-generate\.setup-needed \{/);
   assert.match(style, /\.setup-operation\.restart-needed \{/);
+  assert.match(style, /@media \(min-width: 1100px\) and \(min-height: 820px\) \{[\s\S]{0,220}width: min\(980px, 92vw\)[\s\S]{0,180}repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(style, /#view-create \.res-panel \.aspect-row \{[\s\S]{0,140}grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)[\s\S]{0,100}overflow: visible/);
   assert.match(app, /Restart ComfyUI to finish/);
   assert.match(app, /In Comfy Desktop, stop and start this installation/);
   assert.match(server, /\/api\/setup\/status/);

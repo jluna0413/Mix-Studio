@@ -4,6 +4,42 @@
 
 All shipped changes from v1.2.0 onward are recorded below by release.
 
+### Preferences
+
+- Replaced the always-expanded Image and Video model settings with compact, single-open model-family lists. All model names remain visible at once, while variants and filenames appear only when their family is opened.
+- Reorganized Preferences around user tasks: General now contains guidance and privacy, Prompting contains local/external prompt AI and searchable LoRA suggestions, and System groups setup, access, hardware, storage, and maintenance into status-aware disclosures.
+- Added compact value summaries for generation defaults, merged the Krea 2 Edit override into Edit Image, moved SeedVR2 attention into Video post-processing, and renamed Add-ons to Mix Packs.
+- Added a global Preferences search that finds settings across every tab, including controls inside collapsed sections, then opens and focuses the selected result.
+
+### Generation setup
+
+- Expanded automatic discovery to standard nested ComfyUI Portable folders in Desktop, Downloads, nearby install folders, and known drive roots.
+- Made Windows folder dialogs foreground reliably, kept browsing on the Connection step, saved a chosen models folder immediately, and added a clear manual save action for pasted paths.
+- Added an explicit option to continue with an existing ComfyUI setup without installing the Krea 2 starter; curated workflow requirements are still checked only when that workflow is selected.
+- Let the setup dialog use more height and a three-column component grid on large desktop displays while preserving the existing laptop and mobile layout.
+- Made every image aspect ratio through 21:9 visible in the desktop Create panel instead of hiding later landscape choices in an unmarked horizontal scroller.
+
+### LTX 2.5 video generation
+
+- Added LTX 2.5 as a separate curated video model while preserving LTX 2.3 as the default, with text-to-video, image-to-video, first/last-frame guidance, synchronized audio, user LoRA stacks, RIFE interpolation, and RTX 4K post-processing.
+- Recreated the official 24 fps distilled workflow with Gemma 4 conditioning, dedicated prompt enhancement, separate audio and video VAEs, dual audio/video CFG, the official two-stage sigma schedules, and x2 latent refinement.
+- Added guided installation for all six official model files, native node capability checks, model filename preferences, generation reuse and metadata, and clear NVIDIA INT8 ConvRot hardware guidance.
+- Marked the workflow as Preview while ComfyUI support PR #15499 remains open, and linked setup directly to that PR instead of sending users through a normal-update loop that cannot yet install the new core nodes.
+- Made the Generation Setup install action acknowledge the first click immediately, and added an inline Hugging Face access panel that saves a read token and resumes gated LTX 2.5 downloads without sending users to Preferences.
+
+### Queue panel
+
+- Refined the centered Queue with a subtle solid Jobs/Downloads selector and a lightly translucent surface, while keeping the tabs, GPU/VRAM status, and history/reset actions fixed as only the job or download list scrolls inside the rounded container.
+
+### MiniMax H3 LoRAs
+
+- Added native user LoRA stacks for MiniMax H3 Standard and Full BF16 generation, including ordered strengths, trigger phrases, presets, Turbo, Reference Turbo, SageAttention, long-context chunks, generation reuse, and saved metadata.
+- Added H3-aware LoRA filtering and icon-only compatibility guidance, excluded the app-managed Turbo adapters from normal selection, and blocked current fused-QKV H3 LoRAs on the incompatible experimental DynTime layout.
+
+### RTX 4K setup
+
+- Fixed the RTX post-upscale setup loop by connecting the installer to NVIDIA's official RTX ComfyUI node package and its Python requirement instead of completing an empty install plan.
+
 ### MiniMax H3 resolution reuse
 
 - Fixed setting reuse for H3 renders with RTX 4K Pass so the picker restores the original S/M/L tier independently from the doubled output dimensions; older gallery entries without saved tier metadata are inferred from their base canvas.
@@ -16,6 +52,10 @@ All shipped changes from v1.2.0 onward are recorded below by release.
 ### Wan Animate 2 reliability
 
 - Added the required single-video `batch_size` input to Wan Animate 2 conditioning graphs, matching the current native ComfyUI node schema and official workflow template.
+- Prevented end-of-generation stalls by normalizing performance clips to the model-recommended maximum of 24 fps and the selected 480p canvas before ComfyUI decodes them.
+- Replaced memory-heavy multi-window graphs with sequential 81-frame jobs, one-frame continuity handoff, exact overlap trimming, and an FFmpeg join that restores the performance audio once across the finished video.
+- Fixed longer performance clips repeating their opening motion by carrying ComfyUI's native Wan Animate 2 frame cursor across sequential jobs instead of resetting every conditioning pass to pose frame zero.
+- Stopped forcing the optional multi-gigabyte pose cache, reserved visible progress for decode/save, and reconciled completed video history even if ComfyUI's final WebSocket event is missed.
 
 ### Mobile Library responsiveness
 
@@ -32,6 +72,9 @@ All shipped changes from v1.2.0 onward are recorded below by release.
 
 - Added an explicit shared Frames Turbo selector for the recommended v4/step600 adapter or the prior v1/ckpt850 four-step adapter, with the active choice reflected in generation guidance.
 - Preserved saved four-step workspaces and made dependency installation resolve the exact selected adapter instead of downloading v4 under a legacy or custom filename.
+- Added the official LightX2V v1.0 eight-step FL2VA/T2VA adapter as a compact shared Turbo setup for Frames generation and experimental community-tested Ref2V, with pinned installation, standard ComfyUI LoRA loading, the 12/3 audio-video schedule, native audio-safe sampling when supported, and an icon-only Reference caution.
+- Added the official LightX2V v1.0 four-step 768p FL2VA/T2VA adapter as an optional Preferences-only Turbo setup, with pinned installation, automatic four-step sampling, 6/3 video-audio shifts, and an enforced 1344×768 canvas; Reference use remains clearly marked experimental.
+- Fixed an H3 generation regression where Turbo step selection referenced a block-scoped mode variable after validation, causing `selectedMode is not defined` before the graph could be queued.
 
 ## 1.2.4 - 2026-08-09
 
