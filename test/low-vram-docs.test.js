@@ -96,7 +96,7 @@ test('setup gates Krea INT8 installation and generation on the compatible ComfyU
   assert.match(app, /or select FP8/);
   assert.doesNotMatch(html, /id="setupKrea2Variant"/);
   assert.match(html, /id="setKrea2ModelVariant"/);
-  assert.match(app, /modelVariants: \{[\s\S]{0,80}krea2: \$('#setKrea2ModelVariant')\.value[\s\S]{0,40}h3:/);
+  assert.match(app, /modelVariants: \{ krea2: \$\('#setKrea2ModelVariant'\)\.value \}/);
 });
 
 test('setup rejects Krea 2 before ComfyUI exposes the required CLIP type', () => {
