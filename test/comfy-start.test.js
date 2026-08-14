@@ -7,7 +7,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  SCRATCH_DISK_DIR,
   isExpectedComfyProcess,
+  pythonLaunchEnvironment,
   restartComfy,
   restartStatus,
   startComfy,
@@ -30,6 +32,9 @@ test('portable Start uses the vendor batch above ComfyUI and never invokes taskk
     const status = startStatus(runtime, options);
     assert.equal(status.kind, 'portable');
     assert.equal(status.runScript, script);
+    assert.equal(status.launchEnv.TEMP, SCRATCH_DISK_DIR);
+    assert.equal(status.launchEnv.TMP, SCRATCH_DISK_DIR);
+    assert.equal(status.launchEnv.PYTHONPYCACHEPREFIX, path.join(SCRATCH_DISK_DIR, '__pycache__'));
     let launched = null;
     await startComfy(runtime, () => {}, Object.assign({}, options, { spawn(value) { launched = value; } }));
     assert.equal(launched.runScript, script);
@@ -99,6 +104,29 @@ test('macOS starts a source ComfyUI with Metal-safe launch settings', async () =
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test('pythonLaunchEnvironment redirects TEMP/TMP to the scratch disk on win32 by default', () => {
+  const env = { HOME: '/home/user' };
+  const result = pythonLaunchEnvironment('win32', env);
+  assert.equal(result.TEMP, SCRATCH_DISK_DIR);
+  assert.equal(result.TMP, SCRATCH_DISK_DIR);
+  assert.equal(result.PYTHONPYCACHEPREFIX, path.join(SCRATCH_DISK_DIR, '__pycache__'));
+});
+
+test('pythonLaunchEnvironment accepts a custom scratchDiskDir', () => {
+  const custom = 'D:\\scratch\\mix';
+  const env = { HOME: '/home/user' };
+  const result = pythonLaunchEnvironment('win32', env, { scratchDiskDir: custom });
+  assert.equal(result.TEMP, custom);
+  assert.equal(result.TMP, custom);
+  assert.equal(result.PYTHONPYCACHEPREFIX, path.join(custom, '__pycache__'));
+});
+
+test('pythonLaunchEnvironment omits scratch vars on non-win32 platforms', () => {
+  const result = pythonLaunchEnvironment('linux', { HOME: '/home/user' });
+  assert.equal(result.TEMP, undefined);
+  assert.equal(result.TMP, undefined);
 });
 
 test('the Start API is owner-only, operation-safe, and separate from task-killing restart', () => {

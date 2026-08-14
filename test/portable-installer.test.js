@@ -30,9 +30,11 @@ test('portable installer starts the web app before generation setup', () => {
   assert.match(launcher, /start "Mix Studio" \/min "%~dp0start\.bat"/i);
   assert.match(launcher, /http:\/\/127\.0\.0\.1:3300\//i);
   assert.doesNotMatch(launcher, /install-ui\.ps1/i);
-  assert.match(start, /title Mix Studio/i);
-  assert.match(start, /MIXBOX_RESTART_MODE=batch/);
-  assert.match(start, /MIX_STUDIO_NODE/);
+  assert.match(start, /setlocal EnableDelayedExpansion/i);
+  assert.match(start, /MIXBOX_RESTART_MODE=launcher/);
+  assert.match(start, /set "NODE_EXE="/);
+  assert.match(start, /set "TEMP=E:\\tmp\\pytorch"/);
+  assert.match(start, /set "TMP=E:\\tmp\\pytorch"/);
   assert.doesNotMatch(start, /MixBox Studio/);
 });
 

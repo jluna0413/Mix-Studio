@@ -20,14 +20,8 @@ const JobReconciliation = window.KreaJobReconciliation;
 const Analytics = window.KreaAnalytics;
 const SupportPrompt = window.KreaSupportPrompt;
 const ReleaseNotes = window.MixStudioReleaseNotes;
-const H3PromptGuide = window.H3PromptGuide;
 const progressEta = ProgressEta.createProgressEtaTracker();
 const EDIT_MODEL_ORDER_VERSION = 3;
-const DEFAULT_GALLERY_PREVIEW_RESOLUTION = 640;
-const DEFAULT_GALLERY_PREVIEW_FRAME_RATE = 24;
-const GALLERY_PREVIEW_RESOLUTION_OPTIONS = Object.freeze([480, 640, 720]);
-const GALLERY_PREVIEW_FRAME_RATE_OPTIONS = Object.freeze([12, 18, 24, 30]);
-const MAX_NATIVE_GALLERY_PREVIEW_EDGE = 1440;
 const DEFAULT_EDIT_ENGINE_ORDER = Object.freeze(['klein9', 'klein4', 'qwen', 'krea2ref', 'krea2remix', 'krea2']);
 // Keep every local workspace write bound to the profile that loaded this
 // document. Profile transitions update localStorage before the old page exits,
@@ -93,7 +87,7 @@ const state = {
   editEngine: 'klein9',
   editEngineOrder: [...DEFAULT_EDIT_ENGINE_ORDER],
   editEngineDefault: 'klein9',
-  videoEngineOrder: ['ltx', 'h3', 'ltx-edit', 'eros', 'wan', 'wan-animate2', 'scail'],
+  videoEngineOrder: ['ltx', 'h3', 'ltx-edit', 'eros', 'wan', 'scail'],
   videoEngineDefault: 'ltx',
   appRelease: { version: '', releasedAt: null, revision: '', instanceId: '' },
   officialRelease: null,
@@ -139,27 +133,14 @@ const state = {
   kreaMaskPreviewCutout: false,
   kreaMaskViewMode: 'dim',
   vidRef: null,              // {name, url, w, h} - Video tab source image
-  vidH3Mode: 'frames',       // frames | reference | replace
+  vidH3Mode: 'frames',       // frames | reference
   vidH3MatchSource: true,    // keep frame-mode output at the first frame's aspect unless explicitly overridden
-  vidH3MatchReferenceVideo: false,
   vidH3Xl: false,
   vidH3SageAttention: true,
-  vidH3Turbo: false,
-  vidH3LongContext: false,
-  vidH3TurboStrength: 1,
-  vidH3TurboSteps: 6,
-  vidH3RefTurboSteps: 6,
   vidH3Steps: 20,
   vidH3RefImageSize: 'match',
   vidH3RefSlots: 1,
   vidH3References: { images: [], videos: [], audios: [] },
-  vidH3ReplaceKind: 'object',
-  vidH3ReplaceTarget: '',
-  vidH3ReplaceVideo: null,
-  vidH3ReplaceImage: null,
-  vidWanAnimate2IdentityStrength: 1,
-  vidWanAnimate2MotionStrength: 1,
-  h3PromptStructure: null,    // fingerprint + frame/reference context from the last validated rewrite
   directorOpen: false,
   directorProject: null,
   directorComposerMode: 'timeline',
@@ -183,10 +164,7 @@ const state = {
   libraryGroupFocus: null,
   mediaPreferences: {
     videoPreviews: true,
-    previewResolution: DEFAULT_GALLERY_PREVIEW_RESOLUTION,
-    previewFrameRate: DEFAULT_GALLERY_PREVIEW_FRAME_RATE,
     previewCache: false,
-    experimentalFeatures: false,
   },
   metaLoras: [],
   metaLorasInfo: {},
@@ -249,10 +227,6 @@ function h3ResolutionActive() {
   return state.view === 'video' && state.vidEngine === 'h3';
 }
 
-function h3TurboActive() {
-  return h3ResolutionActive() && state.vidH3Turbo === true;
-}
-
 function h3ResolutionSize() {
   return state.vidH3Xl ? H3Resolution.XL_SIZE : state.mp;
 }
@@ -277,30 +251,8 @@ function h3MatchSourceActive() {
     && h3SourceAspectRatio() > 0;
 }
 
-function h3ReferenceVideoAspectSource() {
-  return state.vidH3Mode === 'reference' ? state.vidH3References?.videos?.[0] || null : null;
-}
-
-function h3ReferenceVideoAspectRatio() {
-  const asset = h3ReferenceVideoAspectSource();
-  const width = Number(asset?.w);
-  const height = Number(asset?.h);
-  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0
-    ? width / height
-    : 0;
-}
-
-function h3MatchReferenceVideoActive() {
-  return h3ResolutionActive()
-    && state.vidH3Mode === 'reference'
-    && state.vidH3MatchReferenceVideo === true
-    && h3ReferenceVideoAspectRatio() > 0;
-}
-
 function h3ResolutionAspectRatio() {
-  if (h3MatchSourceActive()) return h3SourceAspectRatio();
-  if (h3MatchReferenceVideoActive()) return h3ReferenceVideoAspectRatio();
-  return selectedAspectRatio();
+  return h3MatchSourceActive() ? h3SourceAspectRatio() : selectedAspectRatio();
 }
 
 function h3CurrentDimensions() {
@@ -339,7 +291,7 @@ const ANGLE_EDIT_ENGINES = new Set(['klein4', 'klein9', 'qwen']);
 const SEQUENTIAL_EDIT_ENGINES = new Set(['klein4', 'klein9', 'qwen', 'krea2ref', 'krea2remix']);
 const EDIT_MASK_ENGINES = new Set(['klein4', 'klein9', 'qwen', 'krea2']);
 const EDIT_FEATURES = { klein4: 'edit.klein4', klein9: 'edit.klein9', qwen: 'edit.qwen', krea2: 'edit.krea2', krea2ref: 'edit.krea2ref', krea2remix: 'edit.krea2remix' };
-const VIDEO_FEATURES = { ltx: 'video.ltx', h3: 'video.h3', 'ltx-edit': 'video.ltxEdit', eros: 'video.eros', wan: 'video.wan', 'wan-animate2': 'video.wanAnimate2', scail: 'video.scail' };
+const VIDEO_FEATURES = { ltx: 'video.ltx', h3: 'video.h3', 'ltx-edit': 'video.ltxEdit', eros: 'video.eros', wan: 'video.wan', scail: 'video.scail' };
 const VIDEO_ENGINES = Object.keys(VIDEO_FEATURES);
 
 function normalizeEngineOrder(order, engines) {
@@ -491,19 +443,6 @@ async function api(path, opts) {
   return data;
 }
 
-// A preflight enhancement status has no ComfyUI job ID yet. Keep it local to
-// the browser that actually submitted the generation so another phone or tab
-// on the same profile cannot overwrite this device's completed result card.
-let generationPreflightRequests = 0;
-async function generationApi(path, opts) {
-  generationPreflightRequests += 1;
-  try {
-    return await api(path, opts);
-  } finally {
-    generationPreflightRequests = Math.max(0, generationPreflightRequests - 1);
-  }
-}
-
 function isJobCancellation(error) {
   return !!error && error.code === 'job_cancelled';
 }
@@ -588,34 +527,8 @@ function refForPromptToken(index) {
   return state.refs[Number(index) - 1] || null;
 }
 
-function h3ReferenceBackedMode(mode = state.vidH3Mode) {
-  return mode === 'reference' || mode === 'replace';
-}
-
-function experimentalFeaturesEnabled() {
-  return state.mediaPreferences.experimentalFeatures === true;
-}
-
-function h3ReplaceAvailable() {
-  return experimentalFeaturesEnabled();
-}
-
-function h3LongContextActive() {
-  return state.view === 'video'
-    && state.vidEngine === 'h3'
-    && state.vidH3LongContext === true
-    && experimentalFeaturesEnabled()
-    && state.vidH3Mode !== 'replace';
-}
-
 function h3ReferenceModeActive() {
-  return state.view === 'video' && state.vidEngine === 'h3'
-    && (state.vidH3Mode === 'reference' || (state.vidH3Mode === 'replace' && h3ReplaceAvailable()));
-}
-
-function h3ReplaceModeActive() {
-  return state.view === 'video' && state.vidEngine === 'h3'
-    && state.vidH3Mode === 'replace' && h3ReplaceAvailable();
+  return state.view === 'video' && state.vidEngine === 'h3' && state.vidH3Mode === 'reference';
 }
 
 function makePromptReferenceToken(index) {
@@ -991,13 +904,9 @@ function promptPresetGenerationInfoMarkup(presets) {
 }
 
 function h3GenerationReferenceDescriptors(info = {}) {
-  if (info?.engine !== 'h3' || !h3ReferenceBackedMode(info?.h3Mode) || !info?.h3References) return [];
+  if (info?.engine !== 'h3' || info?.h3Mode !== 'reference' || !info?.h3References) return [];
   const refs = info.h3References;
-  const kinds = info.h3Mode === 'replace' ? [
-    ['videos', 'video', 'Video'],
-    ['images', 'image', 'Picture'],
-    ['audios', 'audio', 'Audio'],
-  ] : [
+  const kinds = [
     ['images', 'image', 'Picture'],
     ['videos', 'video', 'Video'],
     ['audios', 'audio', 'Audio'],
@@ -1006,14 +915,11 @@ function h3GenerationReferenceDescriptors(info = {}) {
     (Array.isArray(refs[collection]) ? refs[collection] : []).map((asset, index) => {
       const name = String(asset?.name || '').trim();
       const fallbackLabel = name.split(/[\\/]/).pop() || `${inputName} ${index + 1}`;
-      const inputLabel = info.h3Mode === 'replace'
-        ? (kind === 'video' ? 'Master video' : (kind === 'image' ? 'Replacement image' : `${inputName} ${index + 1}`))
-        : `${inputName} ${index + 1}`;
       return {
         kind,
         name,
         assetLabel: String(asset?.label || fallbackLabel).trim() || fallbackLabel,
-        inputLabel,
+        inputLabel: `${inputName} ${index + 1}`,
         hasAudio: kind === 'video' && asset?.hasAudio === true,
       };
     }).filter((asset) => asset.name)
@@ -1149,8 +1055,6 @@ function setPromptDraft(value, { render = true } = {}) {
   $('#prompt').value = value || '';
   if (render) renderPromptComposer();
   if ($('#editSequenceBtn')) renderEditSequence();
-  renderH3PromptGuideTrigger();
-  if ($('#vidH3ReplacePanel')) renderH3Replacement();
 }
 
 function syncPromptDraftFromComposer() {
@@ -1620,21 +1524,7 @@ function renderProfileChip() {
 
 $('#profileBtn').addEventListener('click', () => {
   const isOwner = state.profile && state.profileIsOwner;
-  const latestRelease = latestOfficialRelease();
-  const releaseAction = state.officialReleaseUpdateAvailable ? {
-    label: 'Update Mix Studio',
-    detail: `${latestRelease?.tagName || 'New version'} available`,
-    icon: 'updates',
-    tone: 'update',
-    action: () => showOfficialReleaseNotice(latestRelease, { force: true }),
-  } : officialReleaseMatchesInstalled(latestRelease) ? {
-    label: `What’s new in ${latestRelease?.tagName || 'Mix Studio'}`,
-    detail: 'Replay release highlights',
-    icon: 'updates',
-    action: () => showOfficialReleaseNotice(latestRelease, { force: true }),
-  } : null;
   openActionMenu($('#profileBtn'), [
-    releaseAction,
     { label: 'Edit profile', icon: 'profile', action: openProfileEdit },
     isOwner ? { label: 'Manage profiles', icon: 'users', action: openProfileManage } : null,
     { label: 'Switch profile', icon: 'switch', action: switchProfile },
@@ -1669,12 +1559,11 @@ $('#peChangePhoto').addEventListener('click', () => {
   input.addEventListener('change', async () => {
     const file = input.files && input.files[0];
     if (!file) return;
-    let previewUrl = '';
     try {
       // Square cover-crop to 512 client-side, then upload raw PNG
-      previewUrl = URL.createObjectURL(file);
+      const url = URL.createObjectURL(file);
       const img = new Image();
-      await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('Could not read the image')); img.src = previewUrl; });
+      await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('Could not read the image')); img.src = url; });
       const size = 512;
       const c = document.createElement('canvas');
       c.width = size;
@@ -1690,7 +1579,6 @@ $('#peChangePhoto').addEventListener('click', () => {
       openProfileEdit(); // refresh the preview
       toast('Profile photo updated');
     } catch (e) { toast(e.message, true); }
-    finally { releaseAssetObjectUrl(previewUrl); }
   });
   input.click();
 });
@@ -1829,75 +1717,6 @@ checkAuth();
 /* ------------------------------------------------------------------ */
 
 const OFFICIAL_RELEASE_POLL_MS = 6 * 60 * 60 * 1000;
-const MIX_STUDIO_120_SHOWCASE = [
-  {
-    eyebrow: 'Video generation',
-    title: 'MiniMax H3 + Turbo is here',
-    message: 'Create H3 videos with native audio, reference inputs, guided prompting, and the new Turbo LoRA workflow with its audio-safe custom sampler.',
-    media: '/update-media/v1.2.0-h3-turbo.mp4',
-    theme: 'h3',
-  },
-  {
-    eyebrow: 'Character animation',
-    title: 'Wan Animate 2 is available',
-    message: 'Animate a character image from a performance video with native ComfyUI support for high-fidelity motion, expression, identity, timing, and source audio.',
-    media: '/update-media/v1.2.0-wan-animate2.mp4',
-    theme: 'wan-animate2',
-  },
-  {
-    eyebrow: 'Creative workflow',
-    title: 'Meet Mix Packs',
-    message: 'Browse visual prompt collections, combine multiple looks, and bring the same reusable creative direction into image and video generations.',
-    media: '/update-media/v1.2.0-mix-packs.mp4',
-    mediaMobile: '/update-media/v1.2.0-mix-packs-mobile.mp4',
-    theme: 'packs',
-  },
-];
-const OFFICIAL_RELEASE_SHOWCASES = {
-  '1.2.4': MIX_STUDIO_120_SHOWCASE,
-  '1.2.3': [
-    {
-      eyebrow: 'Mobile performance',
-      title: 'Library stays responsive',
-      message: 'Library navigation, scrolling, and taps now remain responsive while unchanged data and video previews wait for an interaction-safe idle window.',
-      media: '',
-      theme: 'release',
-    },
-  ],
-  '1.2.2': [
-    {
-      eyebrow: 'Mobile library',
-      title: 'Videos open faster',
-      message: 'Library tabs respond on the first painted frame, while video cards open on the first tap and hand preview playback directly to the expanded viewer.',
-      media: '',
-      theme: 'release',
-    },
-    {
-      eyebrow: 'Workflow reliability',
-      title: 'Wan Animate 2 refinements',
-      message: 'Reference and performance resizing now follows the current ComfyUI node inputs, with clearer live progress while prompts are revised.',
-      media: '/update-media/v1.2.0-wan-animate2.mp4',
-      theme: 'wan-animate2',
-    },
-  ],
-  '1.2.1': [
-    {
-      eyebrow: 'Video generation',
-      title: 'MiniMax H3 Turbo v4',
-      message: 'Frames Turbo now uses the creator-recommended v4/600 EMA checkpoint with a six-step quality default, Long Context support, and reference aspect matching.',
-      media: '/update-media/v1.2.0-h3-turbo.mp4',
-      theme: 'h3',
-    },
-  ],
-  '1.2.0': MIX_STUDIO_120_SHOWCASE,
-};
-let updateShowcaseSlide = 0;
-let updateShowcaseReturnFocus = null;
-let updateShowcaseTimer = null;
-let updateShowcaseAutoPaused = false;
-let updateShowcaseHoverPaused = false;
-let updateShowcaseGesture = null;
-const UPDATE_SHOWCASE_INTERVAL_MS = 8000;
 
 function updateSeenKey() {
   return profileStorageKey('ks-update-seen', state.profile?.id);
@@ -1920,32 +1739,6 @@ function seenUpdateId() {
   return key ? localStorage.getItem(key) || '' : '';
 }
 
-function officialReleaseMatchesInstalled(release = latestOfficialRelease()) {
-  const installedVersion = String(state.officialInstalledVersion || '').replace(/^v/i, '');
-  const releaseVersion = String(release?.version || release?.tagName || '').replace(/^v/i, '');
-  return !!installedVersion && !!releaseVersion && installedVersion === releaseVersion;
-}
-
-function officialReleaseNoticeId(release = latestOfficialRelease()) {
-  const id = officialReleaseId(release);
-  if (!id) return '';
-  const phase = state.officialReleaseUpdateAvailable
-    ? 'available'
-    : officialReleaseMatchesInstalled(release)
-      ? 'installed'
-      : 'release';
-  return `${id}:${phase}`;
-}
-
-function officialReleaseNoticeSeen(release = latestOfficialRelease()) {
-  const seen = seenUpdateId();
-  if (!seen) return false;
-  if (seen === officialReleaseNoticeId(release)) return true;
-  // Releases dismissed before this phase-aware key shipped stay dismissed
-  // while an update is still pending, but can appear once after installation.
-  return state.officialReleaseUpdateAvailable && seen === officialReleaseId(release);
-}
-
 function updateAlertsEnabled() {
   const key = updateAlertsKey();
   return !!key && localStorage.getItem(key) === '1';
@@ -1961,159 +1754,6 @@ function officialReleaseSummary(release) {
   const notes = String(release?.notes || '').replace(/\s+/g, ' ').trim();
   if (!notes) return 'Open the official release notes to see what changed.';
   return notes.length > 220 ? `${notes.slice(0, 217)}…` : notes;
-}
-
-function officialReleaseShowcaseSlides(release) {
-  const version = String(release?.version || release?.tagName || '').replace(/^v/i, '');
-  return OFFICIAL_RELEASE_SHOWCASES[version] || [{
-    eyebrow: 'Mix Studio update',
-    title: release?.title || 'A new version is ready',
-    message: officialReleaseSummary(release),
-    media: '',
-    theme: 'release',
-  }];
-}
-
-function updateShowcaseFallbackMarkup(theme) {
-  if (theme === 'packs') {
-    return '<div class="update-showcase-fallback update-showcase-fallback-packs" aria-hidden="true"><span class="update-pack-card update-pack-card-a"><i></i><b>LIGHT</b></span><span class="update-pack-card update-pack-card-b"><i></i><b>COLOR</b></span><span class="update-pack-card update-pack-card-c"><i></i><b>STYLE</b></span><strong>MIX PACKS</strong></div>';
-  }
-  if (theme === 'h3') {
-    return '<div class="update-showcase-fallback update-showcase-fallback-h3" aria-hidden="true"><span class="update-h3-orbit update-h3-orbit-a"></span><span class="update-h3-orbit update-h3-orbit-b"></span><strong>H3</strong><b>TURBO</b><small>VIDEO + NATIVE AUDIO</small></div>';
-  }
-  if (theme === 'wan-animate2') {
-    return '<div class="update-showcase-fallback update-showcase-fallback-wan" aria-hidden="true"><span class="update-wan-frame update-wan-frame-source"><i></i><b>CHARACTER</b></span><span class="update-wan-flow">→</span><span class="update-wan-frame update-wan-frame-motion"><i></i><b>PERFORMANCE</b></span><strong>WAN ANIMATE 2</strong></div>';
-  }
-  return '<div class="update-showcase-fallback update-showcase-fallback-release" aria-hidden="true"><img src="/mix-studio-logo.svg" alt=""/><strong>NEW VERSION</strong></div>';
-}
-
-function updateShowcaseReducedMotion() {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
-function clearUpdateShowcaseTimer() {
-  clearTimeout(updateShowcaseTimer);
-  updateShowcaseTimer = null;
-}
-
-function disposeUpdateShowcaseVideo() {
-  const media = $('#updateNoticeMedia');
-  const video = media?.querySelector('video');
-  media?.classList.remove('has-video');
-  if (!video) return;
-  try { video.pause(); } catch { /* noop */ }
-  video.removeAttribute('src');
-  video.querySelectorAll('source').forEach((source) => source.removeAttribute('src'));
-  video.load();
-}
-
-function renderUpdateShowcaseAutoplayControl(slideCount) {
-  const control = $('#updateNoticeAutoplay');
-  if (!control) return;
-  const unavailable = slideCount < 2 || updateShowcaseReducedMotion();
-  control.hidden = unavailable;
-  control.setAttribute('aria-pressed', String(updateShowcaseAutoPaused));
-  control.setAttribute('aria-label', updateShowcaseAutoPaused ? 'Play update highlights' : 'Pause update highlights');
-  const label = control.querySelector('span');
-  if (label) label.textContent = updateShowcaseAutoPaused ? 'Play' : 'Pause';
-}
-
-function scheduleUpdateShowcaseAutoCycle() {
-  clearUpdateShowcaseTimer();
-  const notice = $('#updateNotice');
-  const slides = officialReleaseShowcaseSlides(latestOfficialRelease());
-  if (!notice || notice.hidden || slides.length < 2 || updateShowcaseAutoPaused
-    || updateShowcaseHoverPaused || document.hidden || updateShowcaseReducedMotion()) return;
-  updateShowcaseTimer = setTimeout(() => {
-    updateShowcaseTimer = null;
-    renderUpdateShowcaseSlide(updateShowcaseSlide + 1);
-  }, UPDATE_SHOWCASE_INTERVAL_MS);
-}
-
-function updateShowcaseSwipeDirection(startX, startY, endX, endY, width, elapsed) {
-  const deltaX = endX - startX;
-  const deltaY = endY - startY;
-  const threshold = Math.max(44, Number(width || 0) * .12);
-  if (elapsed > 1200 || Math.abs(deltaX) < threshold || Math.abs(deltaX) < Math.abs(deltaY) * 1.25) return 0;
-  return deltaX < 0 ? 1 : -1;
-}
-
-function renderUpdateShowcaseSlide(index = 0) {
-  clearUpdateShowcaseTimer();
-  const release = latestOfficialRelease();
-  const slides = officialReleaseShowcaseSlides(release);
-  updateShowcaseSlide = ((Number(index) || 0) + slides.length) % slides.length;
-  const slide = slides[updateShowcaseSlide];
-  const media = $('#updateNoticeMedia');
-  disposeUpdateShowcaseVideo();
-  media.className = `update-showcase-media theme-${slide.theme || 'release'}`;
-  media.innerHTML = updateShowcaseFallbackMarkup(slide.theme);
-  if (slide.media) {
-    const video = document.createElement('video');
-    video.className = 'update-showcase-video';
-    video.muted = true;
-    video.loop = true;
-    video.autoplay = true;
-    video.playsInline = true;
-    video.preload = 'metadata';
-    video.setAttribute('aria-label', `${slide.title} preview`);
-    video.addEventListener('canplay', () => {
-      media.classList.add('has-video');
-      if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) video.play().catch(() => {});
-    }, { once: true });
-    video.addEventListener('error', () => video.remove(), { once: true });
-    if (slide.mediaMobile) {
-      const mobileSource = document.createElement('source');
-      mobileSource.media = '(max-width: 560px)';
-      mobileSource.src = slide.mediaMobile;
-      video.appendChild(mobileSource);
-      const desktopSource = document.createElement('source');
-      desktopSource.src = slide.media;
-      video.appendChild(desktopSource);
-    } else {
-      video.src = slide.media;
-    }
-    media.appendChild(video);
-    video.load();
-  }
-  $('#updateNoticeEyebrow').textContent = slide.eyebrow;
-  $('#updateNoticeTitle').textContent = slide.title;
-  $('#updateNoticeMessage').textContent = slide.message;
-  const dots = $('#updateNoticeDots');
-  dots.replaceChildren();
-  dots.hidden = slides.length < 2;
-  slides.forEach((entry, dotIndex) => {
-    const dot = document.createElement('button');
-    dot.type = 'button';
-    dot.className = dotIndex === updateShowcaseSlide ? 'active' : '';
-    dot.setAttribute('aria-label', `Show update ${dotIndex + 1}: ${entry.title}`);
-    dot.setAttribute('aria-current', dotIndex === updateShowcaseSlide ? 'true' : 'false');
-    dot.addEventListener('click', () => renderUpdateShowcaseSlide(dotIndex));
-    dots.appendChild(dot);
-  });
-  const multiple = slides.length > 1;
-  $('#updateNoticePrev').hidden = !multiple;
-  $('#updateNoticeNext').hidden = !multiple;
-  renderUpdateShowcaseAutoplayControl(slides.length);
-  $('#updateNoticeSlideStatus').textContent = `${slide.title}. Highlight ${updateShowcaseSlide + 1} of ${slides.length}.`;
-  scheduleUpdateShowcaseAutoCycle();
-}
-
-function closeOfficialReleaseNotice() {
-  const notice = $('#updateNotice');
-  if (!notice || notice.hidden) return;
-  notice.hidden = true;
-  notice.setAttribute('aria-hidden', 'true');
-  document.body.classList.remove('update-showcase-open');
-  clearUpdateShowcaseTimer();
-  updateShowcaseGesture = null;
-  const media = $('#updateNoticeMedia');
-  disposeUpdateShowcaseVideo();
-  media?.replaceChildren();
-  if (updateShowcaseReturnFocus?.isConnected && updateShowcaseReturnFocus.offsetParent !== null) {
-    updateShowcaseReturnFocus.focus();
-  }
-  updateShowcaseReturnFocus = null;
 }
 
 function renderUpdateNotificationPreference() {
@@ -2137,7 +1777,8 @@ function renderOfficialRelease() {
   const list = $('#updatesList');
   if (!list) return;
   const latest = latestOfficialRelease();
-  const unread = !!latest && state.officialReleaseUpdateAvailable && !officialReleaseNoticeSeen(latest);
+  const latestId = officialReleaseId(latest);
+  const unread = !!latest && state.officialReleaseUpdateAvailable && latestId !== seenUpdateId();
   const actions = $('#updatesReleaseActions');
   const install = $('#updatesInstallBtn');
   const installStatus = $('#updatesInstallStatus');
@@ -2146,18 +1787,15 @@ function renderOfficialRelease() {
   const settingsStatus = $('#settingsUpdatesStatus');
   const installedVersion = String(state.officialInstalledVersion || '').trim();
   const installedTag = installedVersion ? `v${installedVersion.replace(/^v/i, '')}` : '';
-  const latestMatchesInstalled = officialReleaseMatchesInstalled(latest);
+  const latestMatchesInstalled = !!installedVersion && latest?.version === installedVersion.replace(/^v/i, '');
   const setReleaseStatus = (text, stateName) => {
     $('#updatesDrawerStatus').textContent = text;
     if (settingsStatus) settingsStatus.textContent = text;
     if (settingsButton) settingsButton.dataset.state = stateName;
   };
-  drawerButton.hidden = !latest;
+  drawerButton.hidden = !state.officialReleaseUpdateAvailable;
   $('#updatesUnreadDot').hidden = !unread;
   drawerButton.classList.toggle('has-unread', unread);
-  $('#topbarUpdateBtn').hidden = !state.officialReleaseUpdateAvailable;
-  $('#profileUpdateBadge').hidden = !state.officialReleaseUpdateAvailable;
-  $('#updateNoticeInstall').hidden = !state.profileIsOwner || !state.officialReleaseUpdateAvailable;
 
   if (!state.profile) {
     setReleaseStatus('Sign in to check updates', 'idle');
@@ -2223,25 +1861,18 @@ function renderOfficialRelease() {
 function markLatestReleaseSeen() {
   const latest = latestOfficialRelease();
   const key = updateSeenKey();
-  const id = officialReleaseNoticeId(latest);
+  const id = officialReleaseId(latest);
   if (id && key) localStorage.setItem(key, id);
-  closeOfficialReleaseNotice();
+  $('#updateNotice').hidden = true;
   renderOfficialRelease();
 }
 
-function showOfficialReleaseNotice(release, options = {}) {
-  const eligible = state.officialReleaseUpdateAvailable || officialReleaseMatchesInstalled(release);
-  if (!release || (!eligible && !options.force) || (!options.force && officialReleaseNoticeSeen(release))) return;
-  updateShowcaseReturnFocus = document.activeElement;
-  updateShowcaseAutoPaused = false;
-  updateShowcaseHoverPaused = false;
+function showOfficialReleaseNotice(release) {
+  if (!release || !state.officialReleaseUpdateAvailable || officialReleaseId(release) === seenUpdateId()) return;
   $('#updateNoticeVersion').textContent = release.tagName || `v${release.version}`;
-  const notice = $('#updateNotice');
-  notice.hidden = false;
-  notice.setAttribute('aria-hidden', 'false');
-  document.body.classList.add('update-showcase-open');
-  renderUpdateShowcaseSlide(0);
-  requestAnimationFrame(() => $('.update-showcase').focus({ preventScroll: true }));
+  $('#updateNoticeTitle').textContent = release.title;
+  $('#updateNoticeMessage').textContent = officialReleaseSummary(release);
+  $('#updateNotice').hidden = false;
 }
 
 function showSystemUpdateNotification(release) {
@@ -2268,8 +1899,8 @@ function receiveOfficialRelease(result, options = {}) {
   state.officialReleaseCheckState = result?.stale ? 'stale' : 'ready';
   state.officialReleaseError = String(result?.error || '');
   renderOfficialRelease();
-  if (!state.officialReleaseUpdateAvailable && !officialReleaseMatchesInstalled(state.officialRelease)) {
-    closeOfficialReleaseNotice();
+  if (!state.officialReleaseUpdateAvailable) {
+    $('#updateNotice').hidden = true;
     return;
   }
   showOfficialReleaseNotice(state.officialRelease);
@@ -2302,80 +1933,8 @@ async function openUpdatesSheet() {
 
 $('#updatesBtn').addEventListener('click', openUpdatesSheet);
 $('#settingsUpdatesBtn').addEventListener('click', openUpdatesSheet);
-$('#topbarUpdateBtn').addEventListener('click', () => showOfficialReleaseNotice(latestOfficialRelease(), { force: true }));
-$('#updatesHighlightsBtn').addEventListener('click', () => {
-  $('#updatesSheet').classList.remove('show');
-  syncSheetScrollLock();
-  showOfficialReleaseNotice(latestOfficialRelease(), { force: true });
-});
 $('#updateNoticeView').addEventListener('click', openUpdatesSheet);
 $('#updateNoticeDismiss').addEventListener('click', markLatestReleaseSeen);
-$('#updateNoticeClose').addEventListener('click', markLatestReleaseSeen);
-$('#updateNoticeBackdrop').addEventListener('click', markLatestReleaseSeen);
-$('#updateNoticePrev').addEventListener('click', () => renderUpdateShowcaseSlide(updateShowcaseSlide - 1));
-$('#updateNoticeNext').addEventListener('click', () => renderUpdateShowcaseSlide(updateShowcaseSlide + 1));
-$('#updateNoticeAutoplay').addEventListener('click', () => {
-  updateShowcaseAutoPaused = !updateShowcaseAutoPaused;
-  renderUpdateShowcaseAutoplayControl(officialReleaseShowcaseSlides(latestOfficialRelease()).length);
-  scheduleUpdateShowcaseAutoCycle();
-});
-$('#updateNoticeMedia').addEventListener('pointerdown', (event) => {
-  if (event.button !== undefined && event.button !== 0) return;
-  updateShowcaseGesture = {
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    startedAt: performance.now(),
-  };
-  try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* optional */ }
-});
-$('#updateNoticeMedia').addEventListener('pointermove', (event) => {
-  const gesture = updateShowcaseGesture;
-  if (!gesture || gesture.pointerId !== event.pointerId) return;
-  const deltaX = event.clientX - gesture.startX;
-  const deltaY = event.clientY - gesture.startY;
-  if (Math.abs(deltaX) > 12 && Math.abs(deltaX) > Math.abs(deltaY) * 1.25 && event.cancelable) event.preventDefault();
-});
-const finishUpdateShowcaseGesture = (event) => {
-  const gesture = updateShowcaseGesture;
-  if (!gesture || gesture.pointerId !== event.pointerId) return;
-  updateShowcaseGesture = null;
-  const direction = updateShowcaseSwipeDirection(
-    gesture.startX,
-    gesture.startY,
-    event.clientX,
-    event.clientY,
-    event.currentTarget.getBoundingClientRect().width,
-    performance.now() - gesture.startedAt,
-  );
-  if (direction) renderUpdateShowcaseSlide(updateShowcaseSlide + direction);
-};
-$('#updateNoticeMedia').addEventListener('pointerup', finishUpdateShowcaseGesture);
-$('#updateNoticeMedia').addEventListener('pointercancel', () => { updateShowcaseGesture = null; });
-$('.update-showcase').addEventListener('mouseenter', () => {
-  if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
-  updateShowcaseHoverPaused = true;
-  clearUpdateShowcaseTimer();
-});
-$('.update-showcase').addEventListener('mouseleave', () => {
-  if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
-  updateShowcaseHoverPaused = false;
-  scheduleUpdateShowcaseAutoCycle();
-});
-$('#updateNotice').addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') markLatestReleaseSeen();
-  else if (event.key === 'ArrowLeft') {
-    event.preventDefault();
-    renderUpdateShowcaseSlide(updateShowcaseSlide - 1);
-  } else if (event.key === 'ArrowRight') {
-    event.preventDefault();
-    renderUpdateShowcaseSlide(updateShowcaseSlide + 1);
-  }
-});
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) clearUpdateShowcaseTimer();
-  else scheduleUpdateShowcaseAutoCycle();
-});
 $('#updatesAlertToggle').addEventListener('click', async () => {
   if (!window.isSecureContext || !('Notification' in window)) return;
   const key = updateAlertsKey();
@@ -2391,20 +1950,17 @@ $('#updatesAlertToggle').addEventListener('click', async () => {
   if (permission === 'granted') toast('Browser update alerts enabled');
 });
 
-function installOfficialRelease() {
+$('#updatesInstallBtn').addEventListener('click', () => {
   if (!state.profileIsOwner || !state.officialReleaseUpdateAvailable) return;
   markLatestReleaseSeen();
   $('#updatesSheet').classList.remove('show');
   syncSheetScrollLock();
   openAppDrawer();
   $('#appUpdateBtn').click();
-}
-
-$('#updatesInstallBtn').addEventListener('click', installOfficialRelease);
-$('#updateNoticeInstall').addEventListener('click', installOfficialRelease);
+});
 
 setInterval(() => {
-  if (state.profile && !document.hidden) loadOfficialRelease({ notify: true });
+  if (state.profile) loadOfficialRelease({ notify: true });
 }, OFFICIAL_RELEASE_POLL_MS);
 
 window.addEventListener('storage', (event) => {
@@ -2418,9 +1974,6 @@ window.addEventListener('storage', (event) => {
 
 let actionMenuEl = null;
 let actionMenuCleanup = null;
-let actionMenuShield = null;
-let actionMenuShieldTimer = null;
-let galleryOverlayPreviewPaused = false;
 function actionIconMarkup(icon) {
   const paths = {
     use: '<path d="M5 4h7v2H7v11h11v-5h2v7H5V4Zm8 0h7v7h-2V7.4l-7.3 7.3-1.4-1.4L16.6 6H13V4Z"/>',
@@ -2435,8 +1988,6 @@ function actionIconMarkup(icon) {
     'last-frame': '<path d="M4 5h15v14H4V5Zm2 2v10h11V7H6Zm14 4h2v2h-2v-2ZM8 15l2.7-3.2 2 2.1 1.5-1.8L17 15H8Z"/>',
     save: '<path d="M5 3h12l3 3v15H4V3h1Zm1 2v14h12V6.8L16.2 5H6Zm2 0h6v5H8V5Zm1 10h6v4H9v-4Z"/>',
     documentation: '<path d="M5 3h10l4 4v14H5V3Zm2 2v14h10V8h-3V5H7Zm2 6h6v2H9v-2Zm0 4h6v2H9v-2Z"/>',
-    group: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 7h12v12H4V7Zm4-3h12v12h-4V7H8V4Z"/>',
-    ungroup: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3 4h8v8H3V4Zm10 8h8v8h-8v-8Zm-2-4h4m-2-2 2 2-2 2M13 16H9m2-2-2 2 2 2"/>',
     composite: '<path d="M5 5h11v11H5V5Zm2 2v7h7V7H7Zm6 4h6v8H9v-3h2v1h6v-4h-4v-2Z"/>',
     process: '<path d="M4 7h10v2H4V7Zm13-1h3v4h-3V6ZM4 15h6v2H4v-2Zm9-1h3v4h-3v-4Zm-3-4h10v2H10v-2Z"/>',
     'result-use': '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="m5 16.5 9.8-9.8 3.5 3.5-9.8 9.8L4.5 20l.5-3.5ZM16.2 5.3l1.2-1.2a2 2 0 0 1 2.8 2.8L19 8.1"/>',
@@ -2449,7 +2000,6 @@ function actionIconMarkup(icon) {
     profile: '<path d="M12 3a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Zm0 2a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Zm0 9c4.4 0 8 2.2 8 5v2H4v-2c0-2.8 3.6-5 8-5Zm0 2c-3.5 0-6 1.6-6 3h12c0-1.4-2.5-3-6-3Z"/>',
     users: '<path d="M9 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm7 1a3 3 0 1 1 0 6v-2a1 1 0 1 0 0-2V7ZM9 14c4 0 7 2 7 5v2H2v-2c0-3 3-5 7-5Zm0 2c-3 0-5 1.3-5 3h10c0-1.7-2-3-5-3Zm7-1c3.5 0 6 1.7 6 4.5V21h-4v-2h1.8c-.3-1.1-1.7-1.8-3.8-2V15Z"/>',
     switch: '<path d="m15 4 5 4-5 4V9H5V7h10V4Zm-6 8v3h10v2H9v3l-5-4 5-4Z"/>',
-    updates: '<path d="M12 5a7 7 0 0 1 6.3 4H16l3.3 3.3L22.6 9h-2.2A9 9 0 0 0 4 8.2L5.7 9A7 7 0 0 1 12 5Zm-7.3 6.7L1.4 15h2.2A9 9 0 0 0 20 15.8l-1.7-.8A7 7 0 0 1 5.7 15H8l-3.3-3.3Z"/>',
     image: '<path d="M4 4h16v16H4V4Zm2 2v12h12V6H6Zm2 9 3-4 2.4 2.7 1.8-2.1L18 15H8Zm7-7a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Z"/>',
     eye: '<path d="M12 5c5.2 0 9 5.3 9 7s-3.8 7-9 7-9-5.3-9-7 3.8-7 9-7Zm0 2c-3.8 0-6.7 3.7-7 5 .3 1.3 3.2 5 7 5s6.7-3.7 7-5c-.3-1.3-3.2-5-7-5Zm0 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z"/>',
     enhance: '<path d="m12 2 1.2 4.1L17 8l-3.8 1.9L12 14l-1.2-4.1L7 8l3.8-1.9L12 2Zm6 10 .8 2.7L21 16l-2.2 1.3L18 20l-.8-2.7L15 16l2.2-1.3L18 12ZM6 13l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3Z"/>',
@@ -2459,43 +2009,18 @@ function actionIconMarkup(icon) {
   return `<svg class="action-glyph" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">${paths[icon] || paths.use}</svg>`;
 }
 
-function removeActionMenuShield() {
-  clearTimeout(actionMenuShieldTimer);
-  actionMenuShieldTimer = null;
-  if (actionMenuShield) actionMenuShield.remove();
-  actionMenuShield = null;
-}
-
-function closeActionMenu(options = {}) {
-  const hadMenu = !!actionMenuEl;
+function closeActionMenu() {
   if (actionMenuCleanup) actionMenuCleanup();
   actionMenuCleanup = null;
   if (actionMenuEl) actionMenuEl.remove();
   actionMenuEl = null;
-  if (options.holdPointerShield && actionMenuShield) {
-    actionMenuShield.classList.add('is-catching-release');
-    clearTimeout(actionMenuShieldTimer);
-    actionMenuShieldTimer = setTimeout(removeActionMenuShield, 160);
-  } else {
-    removeActionMenuShield();
-  }
-  if (hadMenu) syncSheetScrollLock();
 }
 
 function openActionMenu(anchor, items, options = {}) {
   closeActionMenu();
-  hideIconTooltip(anchor);
-  if (!options.nonModal) {
-    const shield = document.createElement('div');
-    shield.className = 'action-menu-shield';
-    shield.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(shield);
-    actionMenuShield = shield;
-  }
   const menu = document.createElement('div');
   menu.className = 'action-menu' + (options.tone ? ` action-menu-${options.tone}` : '');
   menu.setAttribute('role', 'menu');
-  if (options.scope) menu.dataset.scope = options.scope;
   if (options.menuTitle) {
     const head = document.createElement('div');
     head.className = 'action-menu-title';
@@ -2510,7 +2035,6 @@ function openActionMenu(anchor, items, options = {}) {
     b.className = 'action-menu-item' + (item.danger ? ' danger' : '') + (item.tone ? ` action-menu-item-${item.tone}` : '');
     b.type = 'button';
     b.setAttribute('role', 'menuitem');
-    b.disabled = item.disabled === true;
     const icon = document.createElement('span');
     icon.className = 'action-menu-icon';
     icon.innerHTML = actionIconMarkup(item.icon || 'use');
@@ -2525,90 +2049,25 @@ function openActionMenu(anchor, items, options = {}) {
       copy.appendChild(detail);
     }
     b.append(icon, copy);
-    let touchPointerId = null;
-    const activate = (event, afterTouch = false) => {
-      if (!b.isConnected) return;
-      event?.preventDefault();
-      event?.stopPropagation();
-      closeActionMenu({ holdPointerShield: afterTouch });
-      if (afterTouch) setTimeout(() => item.action(), 0);
-      else item.action();
-    };
-    b.addEventListener('pointerdown', (event) => {
-      if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
-      touchPointerId = event.pointerId;
-      event.preventDefault();
-      event.stopPropagation();
-      try { b.setPointerCapture(event.pointerId); } catch { /* optional pointer routing */ }
+    b.addEventListener('click', () => {
+      closeActionMenu();
+      item.action();
     });
-    b.addEventListener('pointercancel', () => { touchPointerId = null; });
-    b.addEventListener('pointerup', (event) => {
-      if (touchPointerId == null || event.pointerId !== touchPointerId) return;
-      touchPointerId = null;
-      activate(event, true);
-    });
-    b.addEventListener('click', activate);
     menu.appendChild(b);
   }
   document.body.appendChild(menu);
   const rect = anchor.getBoundingClientRect();
   const menuRect = menu.getBoundingClientRect();
-  const pointX = Number(options.anchorPoint?.x);
-  const pointY = Number(options.anchorPoint?.y);
-  const hasAnchorPoint = Number.isFinite(pointX) && Number.isFinite(pointY);
-  let opensLeft = false;
-  let opensBelow = false;
-  let left;
-  let preferredTop;
-  if (hasAnchorPoint) {
-    const gap = 4;
-    opensLeft = pointX + menuRect.width + gap > window.innerWidth - 8;
-    const preferredLeft = opensLeft ? pointX - menuRect.width - gap : pointX + gap;
-    left = Math.max(8, Math.min(window.innerWidth - menuRect.width - 8, preferredLeft));
-    const spaceAbove = pointY - 8;
-    const spaceBelow = window.innerHeight - pointY - 8;
-    opensBelow = spaceBelow >= menuRect.height || spaceBelow >= spaceAbove;
-    preferredTop = opensBelow ? pointY + gap : pointY - menuRect.height - gap;
-  } else {
-    left = Math.max(8, Math.min(window.innerWidth - menuRect.width - 8, rect.left));
-    const spaceAbove = rect.top - 8;
-    const spaceBelow = window.innerHeight - rect.bottom - 8;
-    opensBelow = spaceAbove < menuRect.height && spaceBelow >= spaceAbove;
-    preferredTop = opensBelow ? rect.bottom + 8 : rect.top - menuRect.height - 8;
-  }
-  const top = Math.max(8, Math.min(window.innerHeight - menuRect.height - 8, preferredTop));
+  const left = Math.max(8, Math.min(window.innerWidth - menuRect.width - 8, rect.left));
+  const top = Math.max(8, rect.top - menuRect.height - 8);
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
-  if (hasAnchorPoint) menu.style.transformOrigin = `${opensBelow ? 'top' : 'bottom'} ${opensLeft ? 'right' : 'left'}`;
   actionMenuEl = menu;
   anchor.setAttribute('aria-expanded', 'true');
   const onDoc = (e) => {
-    if (!menu.contains(e.target) && (options.dismissOnAnchorPointer || !anchor.contains(e.target))) {
-      const touch = e.pointerType === 'touch' || e.pointerType === 'pen';
-      closeActionMenu({ holdPointerShield: touch });
-    }
+    if (!menu.contains(e.target) && !anchor.contains(e.target)) closeActionMenu();
   };
-  const onKey = (e) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeActionMenu();
-      if (options.focusFirst || options.restoreFocusOnEscape) anchor.focus?.({ preventScroll: true });
-      return;
-    }
-    if (e.key === 'Tab') {
-      closeActionMenu();
-      return;
-    }
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
-    const buttons = [...menu.querySelectorAll('.action-menu-item:not(:disabled)')];
-    if (!buttons.length) return;
-    e.preventDefault();
-    const activeIndex = buttons.indexOf(document.activeElement);
-    let nextIndex = e.key === 'Home' ? 0 : (e.key === 'End' ? buttons.length - 1 : activeIndex);
-    if (e.key === 'ArrowDown') nextIndex = activeIndex < 0 ? 0 : (activeIndex + 1) % buttons.length;
-    if (e.key === 'ArrowUp') nextIndex = activeIndex < 0 ? buttons.length - 1 : (activeIndex - 1 + buttons.length) % buttons.length;
-    buttons[nextIndex].focus({ preventScroll: true });
-  };
+  const onKey = (e) => { if (e.key === 'Escape') closeActionMenu(); };
   setTimeout(() => document.addEventListener('pointerdown', onDoc), 0);
   document.addEventListener('keydown', onKey);
   actionMenuCleanup = () => {
@@ -2616,29 +2075,17 @@ function openActionMenu(anchor, items, options = {}) {
     document.removeEventListener('keydown', onKey);
     anchor.setAttribute('aria-expanded', 'false');
   };
-  if (options.focusFirst) requestAnimationFrame(() => menu.querySelector('.action-menu-item:not(:disabled)')?.focus({ preventScroll: true }));
-  syncSheetScrollLock();
 }
 
 let sheetScrollY = 0;
 function syncSheetScrollLock() {
   const anySheetOpen = $$('.sheet').some((sheet) => sheet.classList.contains('show')) || $('#appDrawer').classList.contains('show');
-  // The release shield catches a synthesized click after a touch menu item is
-  // removed. Once that item opens a real sheet, the sheet itself owns the next
-  // pointer and the shield must not sit above it.
-  if (anySheetOpen && actionMenuShield?.classList.contains('is-catching-release')) removeActionMenuShield();
   const locked = document.body.classList.contains('sheet-open');
-  // Fixed-position body locking forces Chrome to reflow the complete mounted
-  // Library before a top overlay can paint. Its fixed backdrops and contained
-  // panels already own touch input, so keep the gallery scroll position in
-  // place without changing the page's layout mode on touch-first devices.
-  const lightweightGalleryLock = state.view === 'gallery' && touchFirstGalleryDevice() && !desktopWorkspaceActive();
-  const shouldLockBody = anySheetOpen && !lightweightGalleryLock;
-  if (shouldLockBody && !locked) {
+  if (anySheetOpen && !locked) {
     sheetScrollY = desktopWorkspaceActive() ? 0 : (window.scrollY || document.documentElement.scrollTop || 0);
     document.body.style.top = desktopWorkspaceActive() ? '0px' : `-${sheetScrollY}px`;
     document.body.classList.add('sheet-open');
-  } else if (!shouldLockBody && locked) {
+  } else if (!anySheetOpen && locked) {
     document.body.classList.remove('sheet-open');
     if (document.body.classList.contains('modal-open')) {
       document.body.style.top = desktopWorkspaceActive() ? '0px' : `-${savedScrollY}px`;
@@ -2646,17 +2093,6 @@ function syncSheetScrollLock() {
       document.body.style.top = '';
       window.scrollTo(0, desktopWorkspaceActive() ? 0 : sheetScrollY);
     }
-  }
-  const touchFirst = window.matchMedia?.('(hover: none), (pointer: coarse)').matches;
-  const previewOverlayOpen = anySheetOpen || !!actionMenuEl;
-  if (state.view === 'gallery' && touchFirst && previewOverlayOpen && !galleryOverlayPreviewPaused) {
-    galleryOverlayPreviewPaused = true;
-    suspendGalleryPreviewPlayback();
-  } else if (state.view === 'gallery' && touchFirst && !previewOverlayOpen && galleryOverlayPreviewPaused) {
-    galleryOverlayPreviewPaused = false;
-    scheduleGalleryPreviewWake();
-  } else if (state.view !== 'gallery') {
-    galleryOverlayPreviewPaused = false;
   }
 }
 
@@ -3065,57 +2501,27 @@ function mediaPreferencesKey() {
   return profileStorageKey('ks-media-preferences');
 }
 
-function normalizedGalleryPreviewResolution(value) {
-  const resolution = Math.round(Number(value));
-  return GALLERY_PREVIEW_RESOLUTION_OPTIONS.includes(resolution)
-    ? resolution
-    : DEFAULT_GALLERY_PREVIEW_RESOLUTION;
-}
-
-function normalizedGalleryPreviewFrameRate(value) {
-  const frameRate = Math.round(Number(value));
-  return GALLERY_PREVIEW_FRAME_RATE_OPTIONS.includes(frameRate)
-    ? frameRate
-    : DEFAULT_GALLERY_PREVIEW_FRAME_RATE;
-}
-
-function defaultMediaPreferences() {
-  return {
-    videoPreviews: true,
-    previewResolution: DEFAULT_GALLERY_PREVIEW_RESOLUTION,
-    previewFrameRate: DEFAULT_GALLERY_PREVIEW_FRAME_RATE,
-    previewCache: false,
-    experimentalFeatures: false,
-  };
-}
-
 function loadMediaPreferences() {
   const key = mediaPreferencesKey();
   if (!key) {
-    state.mediaPreferences = defaultMediaPreferences();
+    state.mediaPreferences = { videoPreviews: true, previewCache: false };
     return;
   }
   try {
     const saved = JSON.parse(localStorage.getItem(key) || 'null');
     state.mediaPreferences = {
       videoPreviews: saved?.videoPreviews !== false,
-      previewResolution: normalizedGalleryPreviewResolution(saved?.previewResolution),
-      previewFrameRate: normalizedGalleryPreviewFrameRate(saved?.previewFrameRate),
       previewCache: saved?.previewCache === true,
-      experimentalFeatures: saved?.experimentalFeatures === true,
     };
   } catch {
-    state.mediaPreferences = defaultMediaPreferences();
+    state.mediaPreferences = { videoPreviews: true, previewCache: false };
   }
 }
 
 function saveMediaPreferences(next) {
   state.mediaPreferences = {
     videoPreviews: next.videoPreviews !== false,
-    previewResolution: normalizedGalleryPreviewResolution(next.previewResolution),
-    previewFrameRate: normalizedGalleryPreviewFrameRate(next.previewFrameRate),
     previewCache: next.previewCache === true,
-    experimentalFeatures: next.experimentalFeatures === true,
   };
   const key = mediaPreferencesKey();
   if (key) {
@@ -3176,7 +2582,7 @@ function saveForm() {
     if (Object.prototype.hasOwnProperty.call(state.prompts, state.view)) state.prompts[state.view] = promptDraft();
     captureGenerationTuning(generationTuningMode());
     localStorage.setItem(key, JSON.stringify({
-      workspaceVersion: 3,
+      workspaceVersion: 2,
       activeView: ['create', 'edit', 'video'].includes(state.view) ? state.view : 'create',
       gallerySort: ['new', 'active', 'old', 'az'].includes(state.sortMode) ? state.sortMode : 'new',
       enhance: state.enhance, aspect: state.aspect, mp: state.mp,
@@ -3187,26 +2593,13 @@ function saveForm() {
       editEngine: state.editEngine, vidEngine: state.vidEngine, vidScailMode: state.vidScailMode,
       vidH3Mode: state.vidH3Mode,
       vidH3MatchSource: state.vidH3MatchSource,
-      vidH3MatchReferenceVideo: state.vidH3MatchReferenceVideo,
       vidH3Xl: state.vidH3Xl,
       vidH3SageAttention: state.vidH3SageAttention,
-      vidH3Turbo: state.vidH3Turbo,
-      vidH3LongContext: state.vidH3LongContext,
-      vidH3TurboStrength: state.vidH3TurboStrength,
-      vidH3TurboSteps: state.vidH3TurboSteps,
-      vidH3RefTurboSteps: state.vidH3RefTurboSteps,
       vidH3Steps: state.vidH3Steps,
       vidH3RefImageSize: state.vidH3RefImageSize,
       vidH3RefSlots: state.vidH3RefSlots,
       vidH3References: Object.fromEntries(Object.entries(h3References())
         .map(([kind, assets]) => [kind, assets.map(serializeWorkspaceAsset).filter(Boolean)])),
-      vidH3ReplaceKind: state.vidH3ReplaceKind,
-      vidH3ReplaceTarget: state.vidH3ReplaceTarget,
-      vidH3ReplaceVideo: serializeWorkspaceAsset(state.vidH3ReplaceVideo),
-      vidH3ReplaceImage: serializeWorkspaceAsset(state.vidH3ReplaceImage),
-      vidWanAnimate2IdentityStrength: state.vidWanAnimate2IdentityStrength,
-      vidWanAnimate2MotionStrength: state.vidWanAnimate2MotionStrength,
-      h3PromptStructure: state.h3PromptStructure,
       editModelOrderVersion: EDIT_MODEL_ORDER_VERSION,
       editEngineOrder: state.editEngineOrder, editEngineDefault: state.editEngineDefault,
       videoEngineOrder: state.videoEngineOrder, videoEngineDefault: state.videoEngineDefault,
@@ -3445,20 +2838,10 @@ function loadForm() {
     state.promptAssistantUseSource = f.promptAssistantUseSource !== false;
     state.editRefSlots = Math.max(1, state.refs.reduce((count, ref, index) => ref ? Math.max(count, index + 1) : count, 1));
     state.vidRef = restoreWorkspaceAsset(f.vidRef);
-    const savedH3Mode = ['reference', 'replace'].includes(f.vidH3Mode) ? f.vidH3Mode : 'frames';
-    state.vidH3Mode = savedH3Mode === 'replace' && !h3ReplaceAvailable() ? 'frames' : savedH3Mode;
+    state.vidH3Mode = f.vidH3Mode === 'reference' ? 'reference' : 'frames';
     state.vidH3MatchSource = f.vidH3MatchSource !== false;
-    state.vidH3MatchReferenceVideo = f.vidH3MatchReferenceVideo === true;
     state.vidH3Xl = f.vidH3Xl === true;
     state.vidH3SageAttention = f.vidH3SageAttention !== false;
-    state.vidH3Turbo = f.vidH3Turbo === true;
-    state.vidH3LongContext = f.vidH3LongContext === true
-      && experimentalFeaturesEnabled()
-      && state.vidH3Mode !== 'replace';
-    state.vidH3TurboStrength = Math.max(0.8, Math.min(1.2, Number(f.vidH3TurboStrength) || 1));
-    const savedH3TurboSteps = Math.round(Number(f.vidH3TurboSteps) || 0);
-    state.vidH3TurboSteps = Math.max(4, Math.min(100, savedH3TurboSteps || 6));
-    state.vidH3RefTurboSteps = Math.max(4, Math.min(100, Math.round(Number(f.vidH3RefTurboSteps) || 6)));
     state.vidH3Steps = Math.max(1, Math.min(100, Math.round(Number(f.vidH3Steps) || 20)));
     state.vidH3RefImageSize = f.vidH3RefImageSize === 'max' ? 'max' : 'match';
     state.vidH3References = Object.fromEntries(['images', 'videos', 'audios'].map((kind) => [
@@ -3466,17 +2849,6 @@ function loadForm() {
       (Array.isArray(f.vidH3References?.[kind]) ? f.vidH3References[kind] : [])
         .map(restoreWorkspaceAsset).filter(Boolean),
     ]));
-    state.vidH3ReplaceKind = f.vidH3ReplaceKind === 'character' ? 'character' : 'object';
-    state.vidH3ReplaceTarget = String(f.vidH3ReplaceTarget || '').slice(0, 240);
-    state.vidH3ReplaceVideo = restoreWorkspaceAsset(f.vidH3ReplaceVideo);
-    state.vidH3ReplaceImage = restoreWorkspaceAsset(f.vidH3ReplaceImage);
-    state.vidWanAnimate2IdentityStrength = Math.max(0, Math.min(2, Number(f.vidWanAnimate2IdentityStrength) || 1));
-    state.vidWanAnimate2MotionStrength = Math.max(0, Math.min(2, Number(f.vidWanAnimate2MotionStrength) || 1));
-    state.h3PromptStructure = f.h3PromptStructure
-      && typeof f.h3PromptStructure.fingerprint === 'string'
-      && typeof f.h3PromptStructure.context === 'string'
-      ? { fingerprint: f.h3PromptStructure.fingerprint, context: f.h3PromptStructure.context }
-      : null;
     const h3ReferenceCount = Object.values(state.vidH3References).reduce((count, assets) => count + assets.length, 0);
     state.vidH3RefSlots = Math.max(1, Math.min(15, Math.max(Number(f.vidH3RefSlots) || 1, h3ReferenceCount)));
     state.vidEnd = restoreWorkspaceAsset(f.vidEnd);
@@ -4252,78 +3624,7 @@ function syncNavigation() {
   document.body.classList.toggle('desktop-library-expanded', libraryExpanded);
   if (galleryLayoutSnapshot) startDesktopGalleryLayoutTransition(galleryLayoutSnapshot);
   renderAppDrawerNavigation();
-}
-
-const GALLERY_ENTRY_REFRESH_FRESH_MS = 20 * 1000;
-const GALLERY_ENTRY_REFRESH_DELAY_MS = 1100;
-let galleryDataUpdatedAt = 0;
-let galleryDataRevision = '';
-let galleryRefreshPromise = null;
-let galleryEntryRefreshTimer = null;
-let galleryEntryRefreshIdle = null;
-let galleryLastInteractionAt = performance.now();
-
-function touchFirstGalleryDevice() {
-  return !!window.matchMedia?.('(hover: none), (pointer: coarse)').matches;
-}
-
-function galleryInputPending() {
-  try {
-    return !!navigator.scheduling?.isInputPending?.({ includeContinuous: true });
-  } catch {
-    return false;
-  }
-}
-
-function noteGalleryInteraction() {
-  galleryLastInteractionAt = performance.now();
-}
-
-function cancelGalleryEntryRefresh() {
-  if (galleryEntryRefreshTimer != null) clearTimeout(galleryEntryRefreshTimer);
-  if (galleryEntryRefreshIdle != null && typeof window.cancelIdleCallback === 'function') {
-    window.cancelIdleCallback(galleryEntryRefreshIdle);
-  }
-  galleryEntryRefreshTimer = null;
-  galleryEntryRefreshIdle = null;
-}
-
-function scheduleGalleryEntryRefresh(delay = GALLERY_ENTRY_REFRESH_DELAY_MS) {
-  cancelGalleryEntryRefresh();
-  if (galleryDataUpdatedAt && Date.now() - galleryDataUpdatedAt < GALLERY_ENTRY_REFRESH_FRESH_MS) return;
-  galleryEntryRefreshTimer = setTimeout(() => {
-    galleryEntryRefreshTimer = null;
-    const refresh = () => {
-      galleryEntryRefreshTimer = null;
-      galleryEntryRefreshIdle = null;
-      if (state.view !== 'gallery') return;
-      if (touchFirstGalleryDevice() && galleryInputPending()) {
-        scheduleGalleryEntryRefresh(700);
-        return;
-      }
-      if ($('#lightbox')?.classList.contains('show')) {
-        scheduleGalleryEntryRefresh();
-        return;
-      }
-      if (galleryRefreshPromise) return;
-      refreshGallery(true, { conditional: true }).catch(() => { /* keep the mounted Library usable */ });
-    };
-    if (typeof window.requestIdleCallback === 'function') {
-      galleryEntryRefreshIdle = touchFirstGalleryDevice()
-        ? window.requestIdleCallback(refresh)
-        : window.requestIdleCallback(refresh, { timeout: 1400 });
-    } else {
-      galleryEntryRefreshTimer = setTimeout(refresh, touchFirstGalleryDevice() ? 180 : 0);
-    }
-  }, Math.max(0, delay));
-}
-
-function resumeGalleryPreviewsAfterPaint() {
-  requestAnimationFrame(() => setTimeout(() => {
-    if (state.view === 'gallery' && !$('#lightbox')?.classList.contains('show')) {
-      scheduleGalleryPreviewWake();
-    }
-  }, 0));
+  requestIconTooltipScan();
 }
 
 function setView(view, opts = {}) {
@@ -4349,23 +3650,13 @@ function setView(view, opts = {}) {
   $('#view-create').classList.toggle('active', !isGallery);
   $('#view-gallery').classList.toggle('active', isGallery);
   $('#genDock').style.display = isGallery ? 'none' : '';
-  if (!isGallery) {
-    cancelGalleryEntryRefresh();
-    suspendGalleryPreviewPlayback();
-  }
   $('#refPanel').hidden = view !== 'edit';
   if (prev !== view && !isGallery) restoreGenerationTuning(generationTuningMode(view));
-  if (!isGallery) {
-    updateVideoPanels();
-    renderEnhance();
-  }
+  updateVideoPanels();
+  renderEnhance();
   $('#genLbl').textContent = genLabel();
   if (isGallery) {
-    // The grid stays mounted between tabs. Expose that cached view first so
-    // mobile taps can land before any network, DOM, or video-preview work.
-    noteGalleryInteraction();
-    resumeGalleryPreviewsAfterPaint();
-    scheduleGalleryEntryRefresh();
+    refreshGallery();
     if (opts.focusedResult) cancelContextualGuide('library-basics');
     else schedulePrimaryOrSidePanelGuide('library-basics', 760);
   } else if (view === 'create' && state.createMode === 'image') {
@@ -4391,13 +3682,6 @@ primaryTabButtons.forEach((button) => button.addEventListener('click', () => {
   if (mode === 'create') setCreateMode(state.createMode || 'image');
   else setView(mode);
 }));
-document.addEventListener('pointerdown', () => {
-  if (state.view !== 'gallery') return;
-  if (galleryEntryRefreshTimer != null || galleryEntryRefreshIdle != null) {
-    scheduleGalleryEntryRefresh();
-  }
-  deferGalleryPreviewWakeForInteraction();
-}, { capture: true, passive: true });
 createTabButtons.forEach((button) => button.addEventListener('click', () => {
   setCreateMode(button.dataset.createMode, button.dataset.createMode === 'region');
 }));
@@ -4421,141 +3705,6 @@ function genLabel() {
   if (state.view === 'edit' && state.editEngine === 'krea2' && hasEditMask()) return 'Generate Fill';
   if (state.directorOpen) return state.directorProject?.extensionSource ? 'Generate Extension' : 'Generate Video';
   return state.view === 'edit' ? 'Generate Edit' : (state.view === 'video' ? 'Generate Video' : 'Generate');
-}
-
-const H3_FRAMES_TURBO_LORAS = Object.freeze({
-  v4: 'minimax_h3_turbo_v4_step600_ema.safetensors',
-  'legacy-4step': 'minimax_h3_turbo_4step_ema_ckpt850.safetensors',
-});
-let configuredH3FramesTurboLora = H3_FRAMES_TURBO_LORAS.v4;
-
-function h3FramesTurboVariant(filename = configuredH3FramesTurboLora) {
-  const basename = String(filename || '').split(/[\\/]/).pop().toLowerCase();
-  return Object.entries(H3_FRAMES_TURBO_LORAS)
-    .find(([, managed]) => managed.toLowerCase() === basename)?.[0] || 'custom';
-}
-
-function setConfiguredH3FramesTurboLora(filename) {
-  configuredH3FramesTurboLora = String(filename || '').trim() || H3_FRAMES_TURBO_LORAS.v4;
-  const select = $('#setH3FramesTurboVariant');
-  if (!select) return;
-  const variant = h3FramesTurboVariant();
-  const custom = select.querySelector('option[value="custom"]');
-  if (custom) custom.hidden = variant !== 'custom';
-  select.value = variant;
-}
-
-function h3FramesTurboIsLegacy() {
-  return h3FramesTurboVariant() === 'legacy-4step';
-}
-
-function renderH3TurboMode() {
-  const panel = $('#vidH3TurboPanel');
-  const toggle = $('#vidH3TurboToggle');
-  const summary = $('#vidH3TurboSummary');
-  const strengthField = $('#vidH3TurboStrengthField');
-  const strength = $('#vidH3TurboStrength');
-  const strengthValue = $('#vidH3TurboStrengthVal');
-  const strengthSlider = $('#vidH3TurboStrengthSlider');
-  const v4Caution = $('#vidH3TurboV4Caution');
-  if (!panel || !toggle || !summary || !strengthField || !strength || !strengthValue || !strengthSlider || !v4Caution) return;
-  const h3 = state.view === 'video' && state.vidEngine === 'h3';
-  const referenceMode = h3 && h3ReferenceBackedMode();
-  const selectedTurboCompatibility = lastMeta?.minimaxH3?.turbo?.[referenceMode ? 'reference' : 'frames'];
-  const modelSupportsTurbo = selectedTurboCompatibility?.supported !== false;
-  if (!modelSupportsTurbo && state.vidH3Turbo) state.vidH3Turbo = false;
-  const enabled = state.vidH3Turbo === true;
-  const active = enabled;
-  const turboSteps = normalizedH3TurboSteps();
-  const legacyFramesTurbo = !referenceMode && h3FramesTurboIsLegacy();
-  const nativeAudioSampler = lastMeta?.minimaxH3?.nativeAudioSampling === true;
-  const showV4Caution = h3 && active && !referenceMode && !legacyFramesTurbo && turboSteps === 4;
-  panel.hidden = !h3;
-  panel.classList.toggle('has-caution', showV4Caution);
-  v4Caution.hidden = !showV4Caution;
-  toggle.disabled = !modelSupportsTurbo;
-  toggle.setAttribute('aria-disabled', String(!modelSupportsTurbo));
-  toggle.setAttribute('aria-checked', String(active));
-  const component = referenceMode ? 'h3turbor2v' : 'h3turbo';
-  const missing = lastMeta?.dependencies?.missingComponents?.includes(component) === true;
-  if (!modelSupportsTurbo) {
-    summary.textContent = 'Unavailable with DynTime · use Standard or Full BF16';
-    toggle.title = selectedTurboCompatibility?.reason || 'The selected H3 model is not compatible with the current Turbo adapter.';
-  } else if (active && missing) {
-    summary.textContent = `${turboSteps} steps · install ${referenceMode ? 'Reference ' : ''}Turbo on generate`;
-    toggle.title = `${referenceMode ? 'The LightX2V Reference Turbo LoRA and creator sampler' : 'The Turbo LoRA workflow'} will be installed before generation.`;
-  } else if (active && referenceMode) {
-    summary.textContent = `${turboSteps} steps${turboSteps === 6 ? '' : ' · 6 recommended'} · LightX2V · audio-safe sampler`;
-    toggle.title = 'Reference Turbo uses Kijai’s LightX2V LoRA, MiniMax’s 12/3 audio-video schedule, and the creator’s adaptive sampler. Six steps is the tested default.';
-  } else if (active && legacyFramesTurbo) {
-    summary.textContent = `${turboSteps} steps${turboSteps === 4 ? '' : ' · 4 recommended'} · legacy v1/850 · ${nativeAudioSampler ? 'native audio-safe sampler' : 'creator audio sampler'}`;
-    toggle.title = 'Legacy Turbo v1/850 is retained for its original four-step workflow. You can switch back to v4 in Preferences → Video Models.';
-  } else if (active) {
-    summary.textContent = `${turboSteps} steps${turboSteps >= 6 && turboSteps <= 8 ? '' : ' · 6–8 recommended'} · v4/600 · ${nativeAudioSampler ? 'native audio-safe sampler' : 'creator audio sampler'}`;
-    toggle.title = nativeAudioSampler
-      ? 'Turbo LoRA v4/600 with ComfyUI’s native H3 audio schedule. Six to eight steps is the creator-recommended quality range.'
-      : 'Turbo LoRA v4/600 with the creator sampler for older ComfyUI cores. Six to eight steps is the creator-recommended quality range.';
-  } else {
-    summary.textContent = `${referenceMode ? 'Standard Reference H3' : 'Standard H3'} · ${normalizedH3Steps()} steps`;
-    toggle.title = referenceMode
-      ? 'Turn on the LightX2V Reference Turbo workflow. Six steps is the tested default.'
-      : `Turn on the ${legacyFramesTurbo ? 'legacy Turbo LoRA v1/850 at its four-step default' : 'creator Turbo LoRA v4/600. Six steps is the new default'}, and keep the step count adjustable.`;
-  }
-  const showStrength = h3TurboActive();
-  strengthField.hidden = !showStrength;
-  strength.value = String(state.vidH3TurboStrength);
-  strengthValue.textContent = Number(state.vidH3TurboStrength).toFixed(2);
-  strengthSlider.style.setProperty(
-    '--h3-turbo-progress',
-    `${((Number(state.vidH3TurboStrength) - 0.8) / 0.4) * 100}%`,
-  );
-}
-
-function h3LongContextClipCount(seconds = Number($('#vidDur')?.value) || 30) {
-  const requested = Math.max(5, Math.min(120, Number(seconds) || 30));
-  const rawFrames = Math.max(5, Math.round(requested * 24));
-  const targetFrames = rawFrames + ((5 - (rawFrames % 17) + 17) % 17);
-  if (h3TurboActive() && h3ReferenceBackedMode() && h3References().videos.length) {
-    return targetFrames <= 124 ? 1 : 1 + Math.ceil((targetFrames - 124) / 102);
-  }
-  const units = Math.max(7, Math.round((targetFrames - 5) / 17));
-  return units <= 21 ? 1 : Math.ceil((units - 21) / 20) + 1;
-}
-
-function renderH3LongContext() {
-  const panel = $('#vidH3LongContextPanel');
-  const toggle = $('#vidH3LongContextToggle');
-  const summary = $('#vidH3LongContextSummary');
-  const caution = $('#vidH3LongContextCaution');
-  if (!panel || !toggle || !summary || !caution) return;
-  const h3 = state.view === 'video' && state.vidEngine === 'h3';
-  const available = h3 && experimentalFeaturesEnabled();
-  const replaceMode = h3 && state.vidH3Mode === 'replace';
-  const variant = lastMeta?.minimaxH3?.[h3ReferenceBackedMode() ? 'referenceVariant' : 'frameVariant'];
-  const modelCompatible = variant?.requiresPatch !== true;
-  if ((!available || replaceMode || !modelCompatible) && state.vidH3LongContext) state.vidH3LongContext = false;
-  const enabled = h3LongContextActive();
-  const turbo = enabled && h3TurboActive();
-  panel.hidden = !available;
-  panel.classList.toggle('has-caution', turbo);
-  caution.hidden = !turbo;
-  toggle.disabled = replaceMode || !modelCompatible;
-  toggle.setAttribute('aria-disabled', String(replaceMode || !modelCompatible));
-  toggle.setAttribute('aria-checked', String(enabled));
-  if (replaceMode) {
-    summary.textContent = 'Unavailable in Replace mode';
-    toggle.title = 'Long context currently supports Text + Frames and Reference modes.';
-  } else if (!modelCompatible) {
-    summary.textContent = 'Unavailable with DynTime · choose Standard or Full BF16';
-    toggle.title = 'The new Motion Context runtime patch has not been validated with the DynTime core patch.';
-  } else if (enabled) {
-    const count = h3LongContextClipCount();
-    summary.textContent = `${count} sequential clip${count === 1 ? '' : 's'} · 22-frame motion + audio bridge · ${turbo ? 'Turbo' : 'Standard'}`;
-    toggle.title = 'Generates clips in sequence through the lossless H3 latent path, trims the repeated bridge, then joins one MP4.';
-  } else {
-    summary.textContent = 'Up to 120s · motion and audio continuity';
-    toggle.title = 'Turn on automatic sequential H3 continuation with a 22-frame motion and audio bridge.';
-  }
 }
 
 function renderH3SageAttention() {
@@ -4605,24 +3754,16 @@ function updateVideoPanels() {
     $('#view-create').insertBefore(promptPanel, regionWorkspace);
   }
   const scailInputFirst = isVideo && state.vidEngine === 'scail';
-  const wanAnimate2InputFirst = isVideo && state.vidEngine === 'wan-animate2';
   promptPanel.classList.toggle('scail-input-first', scailInputFirst);
-  promptPanel.classList.toggle('wan-animate2-prompt', wanAnimate2InputFirst);
-  if (wanAnimate2InputFirst) promptPanel.classList.add('scail-input-first');
   $('#promptLabel').textContent = isRegion ? 'Global prompt' : (scailInputFirst ? 'Creative direction · optional' : 'Prompt');
-  if (wanAnimate2InputFirst) $('#promptLabel').textContent = 'Scene direction · optional';
   $('#promptComposer').dataset.placeholder = isVideo
     ? (state.vidEngine === 'ltx-edit'
       ? 'Describe the edit…'
       : (state.vidEngine === 'scail'
         ? 'Optional — add style or motion direction…'
-        : (state.vidEngine === 'wan-animate2'
-          ? 'Optional — describe character appearance, background, lighting, and camera…'
-        : (state.vidEngine === 'h3' && state.vidH3Mode === 'replace'
-          ? 'Describe the replacement, or apply the replacement preset below…'
-          : (state.vidEngine === 'h3' && state.vidH3Mode === 'reference'
+        : (state.vidEngine === 'h3' && state.vidH3Mode === 'reference'
           ? 'Type @ to reference an input, then describe the video and sound…'
-          : 'Describe the motion and sound…')))))
+          : 'Describe the motion and sound…')))
     : (state.createMode === 'region' && state.view === 'create'
       ? 'Describe the full scene… (optional)'
       : (state.view === 'edit'
@@ -4634,12 +3775,8 @@ function updateVideoPanels() {
   if (!isEdit) setEditModelExpanded(false);
   $('#vidOptsPanel').hidden = !isVideo;
   $('#vidScailModeRow').hidden = !(isVideo && state.vidEngine === 'scail');
-  $('#vidWanAnimate2Strengths').hidden = !(isVideo && state.vidEngine === 'wan-animate2');
-  $('#vidDurationField').hidden = isVideo && state.vidEngine === 'wan-animate2';
-  $('#vid4k').hidden = isVideo && state.vidEngine === 'wan-animate2';
   renderScailChunkControls();
   $('#enhanceBtn').hidden = isVideo && state.vidEngine === 'ltx-edit';
-  if (isVideo && state.vidEngine === 'wan-animate2') $('#enhanceBtn').hidden = true;
   if (!supportsCurrentEditAngles()) state.qwenAnglesMode = false;
   $('#qwenAngleTool').hidden = !supportsCurrentEditAngles() || state.qwenAnglesMode || hasEditMask();
   renderQwenAngleTool();
@@ -4650,12 +3787,11 @@ function updateVideoPanels() {
   renderEditSequence();
   regionWorkspace.hidden = !isRegion;
   if (!isRegion) setRegionResolutionExpanded(false);
-  $('#vidExtras').hidden = !isVideo || state.vidEngine === 'wan' || state.vidEngine === 'wan-animate2' || state.vidEngine === 'scail'
-    || state.vidEngine === 'ltx-edit' || (state.vidEngine === 'h3' && h3ReferenceBackedMode());
+  $('#vidExtras').hidden = !isVideo || state.vidEngine === 'wan' || state.vidEngine === 'scail'
+    || state.vidEngine === 'ltx-edit' || (state.vidEngine === 'h3' && state.vidH3Mode === 'reference');
   $('#createPromptTools').hidden = state.view !== 'create';
   $('#cameraPromptBtn').hidden = false;
   $('#videoPromptTools').hidden = !isVideo;
-  renderH3PromptGuideTrigger();
   $('#videoCameraMotionBtn').hidden = !isVideo || state.vidEngine === 'scail' || state.vidEngine === 'h3';
   syncCameraMotionTool();
   renderKrea2Mode();
@@ -4668,7 +3804,6 @@ function updateVideoPanels() {
   renderKreaMaskTools();
   $('#resPanel').hidden = state.view === 'edit'
     || (isVideo && !!state.vidRef && state.vidEngine !== 'h3')
-    || (isVideo && state.vidEngine === 'wan-animate2')
     || (isRegion && !useSharedRegionResolution);
   $('.region-resolution-picker').hidden = useSharedRegionResolution;
   if (useSharedRegionResolution) setRegionResolutionExpanded(false);
@@ -4676,15 +3811,9 @@ function updateVideoPanels() {
   $('#advancedStepsField').hidden = false;
   $('#advancedCfgField').hidden = isVideo;
   $('#vidScailFpsField').hidden = !(isVideo && state.vidEngine === 'scail');
-  renderH3LongContext();
-  renderH3TurboMode();
   renderH3SageAttention();
-  renderWanAnimate2Strengths();
   renderVideoStepControl();
   $('#videoAdvancedNote').hidden = !isVideo;
-  $('#videoAdvancedNote').textContent = wanAnimate2InputFirst
-    ? 'The official workflow uses a fixed six-step LCM schedule. Identity and Motion both default to 1.00.'
-    : `CFG follows the selected video model. Fixed schedules are read-only; MiniMax H3 steps are adjustable, with ${h3FramesTurboIsLegacy() ? '4 recommended for legacy Frames Turbo' : '6–8 recommended for Frames Turbo v4'} and 6 for Reference Turbo.`;
   renderNegativePromptControl();
   if (isVideo) { renderVidAttach(); renderVidDrive(); }
   $('#loraPanel').closest('.panel').hidden = isVideo && state.vidEngine === 'h3';
@@ -4698,37 +3827,6 @@ $('#vidH3SageToggle').addEventListener('click', () => {
   $('#genLbl').textContent = genLabel();
   saveForm();
 });
-
-$('#vidH3TurboToggle').addEventListener('click', () => {
-  if ($('#vidH3TurboToggle').disabled) return;
-  if (state.vidEngine !== 'h3') return;
-  state.vidH3Turbo = !state.vidH3Turbo;
-  renderH3TurboMode();
-  renderH3LongContext();
-  renderVideoStepControl();
-  $('#genLbl').textContent = genLabel();
-  saveForm();
-});
-
-$('#vidH3LongContextToggle').addEventListener('click', () => {
-  if ($('#vidH3LongContextToggle').disabled || state.vidEngine !== 'h3') return;
-  state.vidH3LongContext = !state.vidH3LongContext;
-  if (state.vidH3LongContext) {
-    if (Number($('#vidDur').value) <= 15) $('#vidDur').value = '30';
-  }
-  syncVideoDurationLimit();
-  renderH3LongContext();
-  renderH3TurboMode();
-  renderVideoStepControl();
-  $('#genLbl').textContent = genLabel();
-  saveForm();
-});
-
-$('#vidH3TurboStrength').addEventListener('input', (event) => {
-  state.vidH3TurboStrength = Math.max(0.8, Math.min(1.2, Number(event.target.value) || 1));
-  renderH3TurboMode();
-});
-$('#vidH3TurboStrength').addEventListener('change', saveForm);
 
 /* Shared source picker: every generation media dropzone can accept either a
    fresh device file or an existing image/video from the current gallery. */
@@ -4845,7 +3943,6 @@ function assetPickerVisibleAssets() {
     ? uploadedAssetPickerAssets(assetPickerState.accept)
     : previousGenerationAssets(assetPickerState.accept);
   let assets = source.filter((asset) => {
-    if (assetPickerState.mediaKind !== 'all' && asset.kind !== assetPickerState.mediaKind) return false;
     if (!assetMatchesQuery(asset, assetPickerState.query)) return false;
     if (!['all', 'uploaded-assets'].includes(assetPickerState.folder) && asset.folder !== assetPickerState.folder) return false;
     if (assetPickerState.likes && !asset.liked) return false;
@@ -4874,24 +3971,6 @@ function closeAssetPickerMenus(except = null) {
 
 function renderAssetPickerFilters() {
   if (!assetPickerState) return;
-  const allowedKinds = assetPickerKinds(assetPickerState.accept);
-  if (assetPickerState.mediaKind !== 'all' && !allowedKinds.includes(assetPickerState.mediaKind)) {
-    assetPickerState.mediaKind = 'all';
-  }
-  const kindFilter = $('#assetPickerKindFilter');
-  kindFilter.hidden = allowedKinds.length < 2;
-  $$('#assetPickerKindFilter [data-asset-kind]').forEach((button) => {
-    const kind = button.dataset.assetKind;
-    button.hidden = kind !== 'all' && !allowedKinds.includes(kind);
-    const active = kind === assetPickerState.mediaKind;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-pressed', String(active));
-  });
-  const visibleKindButtons = $$('#assetPickerKindFilter [data-asset-kind]').filter((button) => !button.hidden);
-  const activeKindButton = visibleKindButtons.find((button) => button.dataset.assetKind === assetPickerState.mediaKind)
-    || visibleKindButtons[0];
-  kindFilter.classList.toggle('has-audio', visibleKindButtons.length === 4);
-  kindFilter.style.setProperty('--filter-index', String(Math.max(0, visibleKindButtons.indexOf(activeKindButton))));
   const folder = (state.folders || []).find((entry) => entry.id === assetPickerState.folder);
   if (!['all', 'uploaded-assets'].includes(assetPickerState.folder) && !folder) assetPickerState.folder = 'all';
   $('#assetPickerFolderLabel').textContent = assetPickerState.folder === 'uploaded-assets'
@@ -4974,8 +4053,7 @@ function renderAssetPickerList() {
     : previousGenerationAssets(assetPickerState.accept);
   const assets = assetPickerVisibleAssets();
   list.replaceChildren();
-  const filtered = assetPickerState.mediaKind !== 'all' || assetPickerState.query
-    || (!browsingUploads && assetPickerState.folder !== 'all') || assetPickerState.likes;
+  const filtered = assetPickerState.query || (!browsingUploads && assetPickerState.folder !== 'all') || assetPickerState.likes;
   count.textContent = filtered
     ? `${assets.length} of ${allAssets.length}`
     : `${allAssets.length} available`;
@@ -5126,7 +4204,7 @@ function openAssetPicker(accept, callback, title, options = {}) {
   const folder = ['all', 'uploaded-assets'].includes(state.activeFolder) || (state.folders || []).some((entry) => entry.id === state.activeFolder)
     ? state.activeFolder : 'all';
   assetPickerState = {
-    accept, callback, query: '', preview: null, assets: [], folder, mediaKind: 'all',
+    accept, callback, query: '', preview: null, assets: [], folder,
     galleryReference: options.galleryReference === true,
     multiple: options.multiple === true && assetPickerKind(accept) === 'image',
     selected: new Map(),
@@ -5265,19 +4343,16 @@ function pickDeviceUpload(accept, cb, options = {}) {
         if (!allowedKinds.has(kind)) throw new Error(`Choose ${[...allowedKinds].join(', ')} media`);
         const res = await uploadInputAsset(file, file.name || 'file.bin', { catalog: true });
         const url = URL.createObjectURL(file);
-        let dims = { w: 0, h: 0, dur: 0 };
+        let dims = { w: 0, h: 0 };
         if (kind === 'image') {
           dims = await new Promise((resolve) => {
             const im = new Image();
-            im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight, dur: 0 });
-            im.onerror = () => resolve({ w: 1024, h: 1024, dur: 0 });
+            im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
+            im.onerror = () => resolve({ w: 1024, h: 1024 });
             im.src = url;
           });
-        } else if (kind === 'video') {
-          const metadata = await directorProbeVideo(url);
-          dims = { w: metadata.width, h: metadata.height, dur: metadata.seconds };
         }
-        assets.push({ kind, name: res.name, url, w: dims.w, h: dims.h, dur: dims.dur, label: file.name, hasAudio: res.hasAudio === true });
+        assets.push({ kind, name: res.name, url, w: dims.w, h: dims.h, label: file.name, hasAudio: res.hasAudio === true });
       } catch (e) { toast(`${file.name}: ${e.message}`, true); }
     }
     if (assets.length) await cb(input.multiple ? assets : assets[0]);
@@ -5476,39 +4551,10 @@ function flashClipboardPasteDestination(element) {
   setTimeout(() => element.classList.remove('clipboard-paste-received'), 650);
 }
 
-function assetObjectUrl(asset) {
-  return String(typeof asset === 'string' ? asset : (asset?.url || ''));
-}
-
-function releaseAssetObjectUrl(asset, replacement = null) {
-  const url = assetObjectUrl(asset);
-  if (!url.startsWith('blob:') || url === assetObjectUrl(replacement)) return;
-  try { URL.revokeObjectURL(url); } catch { /* noop */ }
-}
-
-function releaseAssetObjectUrls(assets, replacements = []) {
-  const keep = new Set((Array.isArray(replacements) ? replacements : [replacements])
-    .map(assetObjectUrl).filter(Boolean));
-  (Array.isArray(assets) ? assets : [assets]).flat(Infinity).forEach((asset) => {
-    const url = assetObjectUrl(asset);
-    if (!url.startsWith('blob:') || keep.has(url)) return;
-    try { URL.revokeObjectURL(url); } catch { /* noop */ }
-  });
-}
-
 function releaseClipboardAssetUrl(asset, replacement = null) {
-  releaseAssetObjectUrl(asset, replacement);
-}
-
-function releaseCurrentVideoAssetUrls() {
-  const h3Assets = state.vidH3References && typeof state.vidH3References === 'object'
-    ? Object.values(state.vidH3References)
-    : [];
-  releaseAssetObjectUrls([
-    state.vidRef, state.vidEnd, state.vidDrive, state.vidFace,
-    state.vidH3ReplaceVideo, state.vidH3ReplaceImage,
-    state.videoCameraGuide, h3Assets,
-  ]);
+  const url = String(asset?.url || '');
+  if (!url.startsWith('blob:') || url === replacement?.url) return;
+  try { URL.revokeObjectURL(url); } catch { /* noop */ }
 }
 
 function insertClipboardPasteAnchor(range, caption = '') {
@@ -5690,8 +4736,8 @@ async function applyClipboardImages(request, destination, assets) {
     const previousFrame = state.vidRef;
     state.vidFace = Object.assign({}, assets[0], { label: 'Pasted image' });
     state.vidRef = null;
-    releaseAssetObjectUrls([previousFace], [assets[0], state.vidEnd]);
-    releaseAssetObjectUrls([previousFrame], [assets[0], state.vidEnd]);
+    releaseClipboardAssetUrl(previousFace, assets[0]);
+    releaseClipboardAssetUrl(previousFrame, assets[0]);
     renderVidAttach();
     updateVideoPanels();
     saveForm();
@@ -5702,15 +4748,13 @@ async function applyClipboardImages(request, destination, assets) {
     const previousFace = state.vidFace;
     setVideoFirstFrame(assets[0]);
     state.vidFace = null;
-    releaseAssetObjectUrls([previousFrame], [assets[0], state.vidEnd]);
-    releaseAssetObjectUrls([previousFace], [assets[0], state.vidEnd]);
+    releaseClipboardAssetUrl(previousFrame, assets[0]);
+    releaseClipboardAssetUrl(previousFace, assets[0]);
     renderVidAttach();
     updateVideoPanels();
     maybeCreateAutomaticMotionPrompt();
     saveForm();
-    const role = context.engine === 'scail'
-      ? 'reference image'
-      : (context.engine === 'wan-animate2' ? 'character image' : 'first frame');
+    const role = context.engine === 'scail' ? 'reference image' : 'first frame';
     message = destination.targetFrame ? `Pasted image replaced the ${role}` : `Pasted image added as the ${role}`;
     requestAnimationFrame(() => flashClipboardPasteDestination($('#vidAttachThumb')));
   }
@@ -5800,18 +4844,13 @@ async function usePreviousGenerations(assets) {
       const prepared = [];
       for (const asset of chosen) {
         const url = assetPickerMediaUrl(asset);
-        const metadata = asset.kind === 'video' ? await directorProbeVideo(url) : null;
-        const dims = asset.kind === 'image' ? await imageDimensions(url) : {
-          w: metadata?.width || 0,
-          h: metadata?.height || 0,
-        };
+        const dims = asset.kind === 'image' ? await imageDimensions(url) : { w: 0, h: 0 };
         prepared.push({
           kind: asset.kind,
           name: asset.file,
           url,
           w: dims.w,
           h: dims.h,
-          dur: metadata?.seconds || 0,
           label: asset.label || `Uploaded ${asset.kind}`,
           hasAudio: asset.hasAudio === true,
           uploadedAssetId: asset.id,
@@ -5823,24 +4862,16 @@ async function usePreviousGenerations(assets) {
     }
     if (picker.galleryReference) {
       closeAssetPicker();
-      const prepared = await Promise.all(chosen.map(async (asset) => {
-        const url = assetPickerMediaUrl(asset);
-        const result = {
+      const prepared = chosen.map((asset) => ({
           kind: asset.kind,
           name: asset.file,
-          url,
+          url: assetPickerMediaUrl(asset),
           label: asset.label || 'Previous generation',
           srcItemId: asset.itemId,
           srcVideoId: asset.videoId,
           galleryFile: asset.file,
           hasAudio: false,
-        };
-        const metadata = asset.kind === 'video' ? await directorProbeVideo(url) : null;
-        result.w = metadata?.width || Number(asset.w) || 0;
-        result.h = metadata?.height || Number(asset.h) || 0;
-        result.dur = metadata?.seconds || Number(asset.dur) || 0;
-        return result;
-      }));
+        }));
       await picker.callback(picker.multiple ? prepared : prepared[0]);
       return;
     }
@@ -5853,14 +4884,9 @@ async function usePreviousGenerations(assets) {
       const blob = await response.blob();
       const res = await uploadInputAsset(blob, asset.file);
       const url = URL.createObjectURL(blob);
-      const metadata = asset.kind === 'video' ? await directorProbeVideo(url) : null;
-      const dims = asset.kind === 'image' ? await imageDimensions(url) : {
-        w: metadata?.width || 0,
-        h: metadata?.height || 0,
-      };
+      const dims = asset.kind === 'image' ? await imageDimensions(url) : { w: 0, h: 0 };
       prepared.push({
         kind: asset.kind, name: res.name, url, w: dims.w, h: dims.h,
-        dur: metadata?.seconds || 0,
         label: asset.label || 'Previous generation', hasAudio: res.hasAudio === true,
         srcItemId: asset.itemId,
         srcVideoId: asset.videoId,
@@ -6148,13 +5174,6 @@ $('#assetPickerSearchClear').addEventListener('click', () => {
   renderAssetPickerList();
   $('#assetPickerSearch').focus();
 });
-$$('#assetPickerKindFilter [data-asset-kind]').forEach((button) => button.addEventListener('click', () => {
-  if (!assetPickerState || button.hidden) return;
-  assetPickerState.mediaKind = button.dataset.assetKind;
-  closeAssetPickerMenus();
-  renderAssetPickerFilters();
-  renderAssetPickerList();
-}));
 $('#assetPickerPreviewBack').addEventListener('click', closeAssetPickerPreview);
 $('#assetPickerFolderTrigger').addEventListener('click', () => {
   if (!assetPickerState) return;
@@ -6804,7 +5823,6 @@ let createGuideTeachingIntentKey = '';
 async function setCreateImageGuideAsset(asset, mode = 'image') {
   const prepared = await prepareCreateImageGuideAsset(asset);
   arguments[2]?.();
-  releaseAssetObjectUrls([state.createRef], [prepared, state.promptSourceImage]);
   state.createRef = prepared;
   clearCreateDepthPreview();
   state.createGuideMode = ['image', 'depth', 'style'].includes(mode) ? mode : 'image';
@@ -6938,9 +5956,7 @@ async function createPromptFromImageName(image) {
     body: JSON.stringify({ imageName }),
   });
   state.prompts.create = res.prompt || '';
-  const nextPromptSource = asset ? imageAssetSnapshot(asset) : null;
-  releaseAssetObjectUrls([state.promptSourceImage], [nextPromptSource, state.createRef]);
-  state.promptSourceImage = nextPromptSource;
+  state.promptSourceImage = asset ? imageAssetSnapshot(asset) : null;
   state.promptAssistantUseSource = !!state.promptSourceImage;
   state.promptRevisionUndo = null;
   state.enhance = false;
@@ -6956,360 +5972,10 @@ async function createPromptFromImageName(image) {
   toast('Prompt created · use Revise to change it');
 }
 
-function h3PromptGuideActive() {
-  return state.view === 'video' && state.vidEngine === 'h3';
-}
-
-function h3PromptReferenceTokens(...values) {
-  return [...new Set(values.flatMap((value) => (
-    String(value || '').match(/<(?:Picture|Video|Audio)\s+\d+>/g) || []
-  )))];
-}
-
-function h3EffectiveDurationSeconds(value = Number($('#vidDur').value) || 5) {
-  return H3PromptGuide?.h3EffectiveDurationSeconds
-    ? H3PromptGuide.h3EffectiveDurationSeconds(value, h3LongContextActive() ? 120 : 15)
-    : Number(value) || 5;
-}
-
-function h3PromptGuideContext(overrides = {}) {
-  const referenceMode = h3ReferenceBackedMode();
-  return {
-    mode: referenceMode ? 'reference' : 'frames',
-    seconds: h3EffectiveDurationSeconds(),
-    longContext: h3LongContextActive(),
-    hasFirstFrame: !referenceMode && !!state.vidRef,
-    hasLastFrame: !referenceMode && !!state.vidEnd,
-    expectedReferenceTokens: [],
-    allowedReferenceTokens: referenceMode ? h3PromptReferenceEntries().map((entry) => entry.tag) : [],
-    ...overrides,
-  };
-}
-
-function h3PromptFingerprint(value) {
-  const text = String(value || '');
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `${text.length}:${(hash >>> 0).toString(16)}`;
-}
-
-function h3PromptStructureContextSignature() {
-  const referenceMode = h3ReferenceBackedMode();
-  return JSON.stringify({
-    mode: referenceMode ? 'reference' : 'frames',
-    seconds: h3EffectiveDurationSeconds().toFixed(3),
-    longContext: h3LongContextActive(),
-    first: referenceMode ? '' : String(state.vidRef?.name || ''),
-    last: referenceMode ? '' : String(state.vidEnd?.name || ''),
-    references: referenceMode
-      ? h3PromptReferenceEntries().map((entry) => [entry.tag, String(entry.asset?.name || '')])
-      : [],
-  });
-}
-
-function rememberH3PromptStructure(value) {
-  state.h3PromptStructure = {
-    fingerprint: h3PromptFingerprint(value),
-    context: h3PromptStructureContextSignature(),
-  };
-}
-
-function h3PromptLooksStructured(value) {
-  return /(?:^|\n)\s*(?:integrated_multimodal_description|subject_definitions)\s*:/i.test(String(value || ''));
-}
-
-function h3PromptGuideIssueText(issue) {
-  if (!issue) return '';
-  if (typeof issue === 'string') return issue;
-  const fieldLabels = {
-    integrated_multimodal_description: 'the main scene timeline',
-    subject_definitions: 'reference subject definitions',
-    summary: 'the reference summary',
-    retention_analysis: 'reference retention details',
-    detailed_description: 'the detailed shot timeline',
-    overall_soundscape: 'the overall soundscape',
-    non_diegetic_music: 'the background music field',
-  };
-  if (issue.code === 'missing-field') return `Add ${fieldLabels[issue.field] || 'the missing section'}`;
-  if (issue.code === 'empty-field') return `Add content to ${fieldLabels[issue.field] || 'the empty section'}`;
-  if (issue.code === 'field-order' || issue.code === 'leading-content') return 'Put the sections in the official order';
-  if (issue.code === 'alignment-line' || issue.code === 'unexpected-alignment') return 'Update the frame-alignment line';
-  if (issue.code === 'missing-shot-1' || issue.code === 'shot-1-position') return 'Begin the timeline with [Shot 1]';
-  if (issue.code === 'shot-1-timestamp') return 'Remove the timestamp from [Shot 1]';
-  if (String(issue.code || '').startsWith('shot-')) return 'Fix the later shot numbers and timestamps';
-  if (issue.code === 'missing-reference-token') return `Restore ${issue.token || 'the missing reference tag'}`;
-  if (issue.code === 'unexpected-reference-token') return `Remove ${issue.token || 'the invented reference tag'}`;
-  if (issue.code === 'missing-dialogue-format' || issue.code === 'dialogue-speaker-id') return 'Optional: format dialogue with speaker IDs';
-  if (issue.code === 'dialogue-language') return 'Optional: choose the dialogue language';
-  if (issue.code === 'speaker-id-instability' || issue.code === 'compound-speaker-id') return 'Optional: make speaker IDs consistent';
-  return String(issue.message || issue.detail || issue.code || 'Official structure is incomplete');
-}
-
-const H3_DIALOGUE_ISSUE_CODES = new Set([
-  'compound-speaker-id',
-  'dialogue-language',
-  'dialogue-speaker-id',
-  'missing-dialogue-format',
-  'speaker-id-instability',
-]);
-
-function h3PromptGuideAudit(value = promptDraft(), overrides = {}) {
-  const prompt = String(value || '');
-  const referenceMode = h3ReferenceBackedMode();
-  const requiredFields = referenceMode
-    ? ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music']
-    : ['integrated_multimodal_description', 'overall_soundscape', 'non_diegetic_music'];
-  const fallbackPresentFields = requiredFields.filter((field) => (
-    new RegExp(`(?:^|\\n)\\s*${field}\\s*:`, 'i').test(prompt)
-  ));
-  const structure = H3PromptGuide?.auditStructure
-    ? H3PromptGuide.auditStructure(prompt, h3PromptGuideContext(overrides))
-    : {
-      ready: fallbackPresentFields.length === requiredFields.length,
-      issues: [],
-      requiredFields,
-      presentFields: fallbackPresentFields,
-    };
-  const presentFields = Array.isArray(structure.presentFields)
-    ? structure.presentFields
-    : fallbackPresentFields;
-  const dialogue = H3PromptGuide?.analyzePrompt
-    ? H3PromptGuide.analyzePrompt(prompt)
-    : { entries: [], dialogueCount: 0, formattedDialogueCount: 0, unformattedDialogueCount: 0 };
-  const referenceTags = [...new Set(
-    (prompt.match(/<(?:Picture|Video|Audio)\s+\d+>/gi) || []).map((tag) => tag.toLowerCase()),
-  )];
-  const allStructureIssues = Array.isArray(structure.issues) ? structure.issues : [];
-  const structureIssues = allStructureIssues.filter((issue) => !H3_DIALOGUE_ISSUE_CODES.has(issue.code));
-  return {
-    prompt,
-    referenceMode,
-    requiredFields: Array.isArray(structure.requiredFields) ? structure.requiredFields : requiredFields,
-    presentFields,
-    structureReady: structure.ready === true || structureIssues.length === 0,
-    structureIssues,
-    dialogueIssues: allStructureIssues.filter((issue) => H3_DIALOGUE_ISSUE_CODES.has(issue.code)),
-    structure,
-    referenceTags,
-    dialogue,
-  };
-}
-
-function renderH3PromptGuideTrigger() {
-  const button = $('#h3PromptGuideBtn');
-  if (!button) return;
-  const active = h3PromptGuideActive();
-  button.hidden = !active;
-  if (!active) return;
-  const audit = h3PromptGuideAudit();
-  const ready = Number(audit.dialogue.unformattedDialogueCount) || 0;
-  const badge = $('#h3PromptGuideBadge');
-  badge.hidden = ready < 1;
-  badge.textContent = ready > 9 ? '9+' : String(ready);
-  button.title = ready
-    ? `${ready} dialogue line${ready === 1 ? '' : 's'} ready to format`
-    : (audit.structureReady ? 'This prompt follows the official H3 structure' : 'Check and structure this prompt for MiniMax H3');
-}
-
-function makeH3DialoguePreviewCard(entry) {
-  const card = document.createElement('article');
-  card.className = 'h3-prompt-dialogue-card';
-  const id = document.createElement('span');
-  id.className = 'h3-prompt-dialogue-id';
-  id.textContent = entry.speakerId ? `(${entry.speakerId})` : 'Voice';
-  const copy = document.createElement('span');
-  copy.className = 'h3-prompt-dialogue-copy';
-  const speaker = document.createElement('b');
-  speaker.textContent = entry.speaker || 'Identified speaker';
-  const quote = document.createElement('q');
-  quote.textContent = entry.text || '';
-  copy.append(speaker, quote);
-  card.append(id, copy);
-  return card;
-}
-
-let h3PromptGuideBusy = false;
-
-function setH3PromptGuideBusy(busy, message = '') {
-  h3PromptGuideBusy = busy;
-  const panel = $('#h3PromptGuideSheet .h3-prompt-guide-panel');
-  if (panel) panel.setAttribute('aria-busy', String(busy));
-  $('#h3PromptFormatDialogue').disabled = busy || $('#h3PromptFormatDialogue').dataset.available !== 'true';
-  $('#h3PromptStructure').disabled = busy || !promptDraft().trim();
-  $('#h3PromptDialogueLanguage').disabled = busy;
-  const status = $('#h3PromptGuideStatus');
-  status.hidden = !message;
-  status.textContent = message;
-}
-
-function renderH3PromptGuide() {
-  if (!h3PromptGuideActive()) return;
-  const audit = h3PromptGuideAudit();
-  const required = audit.requiredFields.length;
-  const effectiveDuration = Number(audit.structure?.duration) || h3EffectiveDurationSeconds();
-  $('#h3PromptGuideFormat').textContent = audit.referenceMode ? '6 sections' : '3 fields';
-  const formatStatus = audit.structureReady
-    ? 'Official structure ready'
-    : (h3PromptGuideIssueText(audit.structureIssues[0])
-      || `${audit.presentFields.length}/${required} present · Enhance will finish it`);
-  $('#h3PromptGuideFormatStatus').textContent = `${formatStatus} · ${effectiveDuration.toFixed(2)}s output`;
-
-  const dialogue = audit.dialogue;
-  const dialogueCount = Number(dialogue.dialogueCount) || 0;
-  const unformattedCount = Number(dialogue.unformattedDialogueCount) || 0;
-  $('#h3PromptGuideDialogue').textContent = dialogueCount
-    ? `${dialogueCount} line${dialogueCount === 1 ? '' : 's'}`
-    : 'None found';
-  $('#h3PromptGuideDialogueStatus').textContent = unformattedCount
-    ? `Optional · ${unformattedCount} ready to format`
-    : (dialogueCount ? 'Official tags already applied' : 'Quotes stay exact');
-
-  const attachedReferences = audit.referenceMode ? h3ReferenceCount() : 0;
-  const firstFrame = !audit.referenceMode && !!state.vidRef;
-  const lastFrame = !audit.referenceMode && !!state.vidEnd;
-  if (audit.referenceMode) {
-    $('#h3PromptGuideReferences').textContent = attachedReferences
-      ? `${attachedReferences} input${attachedReferences === 1 ? '' : 's'}`
-      : 'None';
-    $('#h3PromptGuideReferenceStatus').textContent = audit.referenceTags.length
-      ? `${audit.referenceTags.length} unique tag${audit.referenceTags.length === 1 ? '' : 's'} in prompt`
-      : 'Type @ to mention an input';
-  } else {
-    const frameCount = Number(firstFrame) + Number(lastFrame);
-    $('#h3PromptGuideReferences').textContent = frameCount ? `${frameCount} frame${frameCount === 1 ? '' : 's'}` : 'Text only';
-    $('#h3PromptGuideReferenceStatus').textContent = firstFrame && lastFrame
-      ? 'First + last alignment'
-      : (firstFrame ? 'First-frame alignment' : (lastFrame ? 'Last-frame alignment' : 'No alignment line'));
-  }
-
-  const preview = $('#h3PromptDialoguePreview');
-  const list = $('#h3PromptDialogueList');
-  list.replaceChildren();
-  const entries = Array.isArray(dialogue.entries) ? dialogue.entries : [];
-  preview.hidden = entries.length === 0;
-  entries.slice(0, 4).forEach((entry) => list.appendChild(makeH3DialoguePreviewCard(entry)));
-  if (entries.length > 4) {
-    const more = document.createElement('small');
-    more.className = 'h3-prompt-dialogue-more';
-    more.textContent = `+${entries.length - 4} more dialogue line${entries.length - 4 === 1 ? '' : 's'}`;
-    list.appendChild(more);
-  }
-
-  const format = $('#h3PromptFormatDialogue');
-  format.dataset.available = String(unformattedCount > 0);
-  format.textContent = unformattedCount
-    ? `Format ${unformattedCount} dialogue line${unformattedCount === 1 ? '' : 's'}`
-    : 'Dialogue is formatted';
-  $('#h3PromptStructure').textContent = audit.structureReady ? 'Recheck local format' : 'Add H3 structure locally';
-  const undo = state.promptRevisionUndo;
-  $('#h3PromptGuideUndo').hidden = !(undo && undo.view === 'video' && audit.prompt.trim() === undo.after);
-  setH3PromptGuideBusy(h3PromptGuideBusy, h3PromptGuideBusy ? 'Formatting locally…' : '');
-}
-
-function openH3PromptGuide() {
-  if (!h3PromptGuideActive()) return;
-  renderH3PromptGuide();
-  $('#h3PromptGuideSheet').classList.add('show');
-  $('#h3PromptGuideBtn').setAttribute('aria-expanded', 'true');
-  syncSheetScrollLock();
-  setTimeout(() => $('#h3PromptGuideSheet .h3-prompt-guide-panel').focus(), 80);
-}
-
-function closeH3PromptGuide({ restoreFocus = true } = {}) {
-  $('#h3PromptGuideSheet').classList.remove('show');
-  $('#h3PromptGuideBtn').setAttribute('aria-expanded', 'false');
-  syncSheetScrollLock();
-  if (restoreFocus && h3PromptGuideActive()) $('#h3PromptGuideBtn').focus({ preventScroll: true });
-}
-
-function formatCurrentH3Dialogue() {
-  if (h3PromptGuideBusy || !H3PromptGuide?.formatDialogue) return;
-  const before = promptDraft().trim();
-  const result = H3PromptGuide.formatDialogue(before, {
-    language: $('#h3PromptDialogueLanguage').value || 'English',
-  });
-  if (!result.changed) {
-    setH3PromptGuideBusy(false, 'No clearly attributed, unformatted dialogue was found.');
-    return;
-  }
-  checkpointDesktopInputSetup();
-  state.prompts.video = result.prompt;
-  state.promptRevisionUndo = { before, after: result.prompt, view: 'video' };
-  if (h3PromptLooksStructured(before)
-    && state.h3PromptStructure?.fingerprint === h3PromptFingerprint(before)) {
-    rememberH3PromptStructure(result.prompt);
-  }
-  setPromptDraft(result.prompt);
-  updatePromptClear();
-  saveForm();
-  appendDesktopInputSetup();
-  renderH3PromptGuide();
-  setH3PromptGuideBusy(false, `${result.replacements} dialogue line${result.replacements === 1 ? '' : 's'} formatted · exact words preserved.`);
-  toast('H3 dialogue formatted');
-}
-
-function structureCurrentH3Prompt() {
-  if (h3PromptGuideBusy || promptAssistantBusy || !h3PromptGuideActive()) return;
-  const before = promptDraft().trim();
-  if (!before) {
-    setH3PromptGuideBusy(false, 'Write a prompt first.');
-    return;
-  }
-  if (!H3PromptGuide?.structurePrompt) {
-    setH3PromptGuideBusy(false, 'Local H3 formatting is unavailable. Reload the app and try again.');
-    return;
-  }
-  const result = H3PromptGuide.structurePrompt(before, h3PromptGuideContext({
-    expectedReferenceTokens: h3ReferenceBackedMode() ? h3PromptReferenceTokens(before) : [],
-  }));
-  const localAudit = h3PromptGuideAudit(result.prompt, {
-    expectedReferenceTokens: h3ReferenceBackedMode() ? h3PromptReferenceTokens(result.prompt) : [],
-  });
-  if (!result.changed) {
-    const issue = h3PromptGuideIssueText(localAudit.structureIssues[0]);
-    setH3PromptGuideBusy(false, issue
-      ? `Local check: ${issue}.`
-      : 'Official H3 structure is already current. Dialogue formatting remains optional.');
-    return;
-  }
-  checkpointDesktopInputSetup();
-  state.prompts.video = result.prompt;
-  state.promptRevisionUndo = { before, after: result.prompt, view: 'video' };
-  setPromptDraft(result.prompt);
-  updatePromptClear();
-  saveForm();
-  appendDesktopInputSetup();
-  renderH3PromptGuide();
-  const issue = h3PromptGuideIssueText(localAudit.structureIssues[0]);
-  setH3PromptGuideBusy(
-    false,
-    issue
-      ? `Official skeleton added locally · ${issue}. Fill it manually or use Enhance.`
-      : 'Official H3 structure updated locally · no AI used.',
-  );
-  toast('H3 structure added locally · no AI used');
-}
-
-$('#h3PromptGuideBtn').addEventListener('click', openH3PromptGuide);
-$('#h3PromptFormatDialogue').addEventListener('click', formatCurrentH3Dialogue);
-$('#h3PromptStructure').addEventListener('click', structureCurrentH3Prompt);
-$('#h3PromptGuideSheet').addEventListener('click', (event) => {
-  if (event.target === $('#h3PromptGuideSheet') || event.target.closest('[data-close]')) closeH3PromptGuide();
-});
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && $('#h3PromptGuideSheet').classList.contains('show')) {
-    event.preventDefault();
-    closeH3PromptGuide();
-  }
-});
-
 function promptAssistantSourceImage() {
   if (state.view !== 'video') return state.promptSourceImage;
-  if (h3ReferenceModeActive()) return h3ActiveReferences().images[0] || null;
-  return state.vidRef || (state.vidEngine === 'h3' ? state.vidEnd : null) || null;
+  if (h3ReferenceModeActive()) return h3References().images[0] || null;
+  return state.vidRef || null;
 }
 
 function renderPromptAssistantSource() {
@@ -7318,13 +5984,7 @@ function renderPromptAssistantSource() {
   row.hidden = !source;
   if (source) $('#promptAssistantSourceImg').src = source.url || `/api/input?name=${encodeURIComponent(source.name)}`;
   $('#promptAssistantSourceTitle').textContent = state.view === 'video'
-    ? (h3ReferenceModeActive()
-      ? 'Use Picture 1 for context'
-      : (state.vidEngine === 'h3' && state.vidRef && state.vidEnd
-        ? 'Use first + last frames for context'
-        : (state.vidEngine === 'h3' && !state.vidRef && state.vidEnd
-          ? 'Use the last frame for context'
-          : 'Use the first frame for context')))
+    ? (h3ReferenceModeActive() ? 'Use Picture 1 for context' : 'Use the first frame for context')
     : 'Use the source image for context';
   const toggle = $('#promptAssistantSourceToggle');
   const enabled = !!source && state.promptAssistantUseSource;
@@ -7334,73 +5994,8 @@ function renderPromptAssistantSource() {
 }
 
 let promptAssistantBusy = false;
-let promptAssistantRequestId = '';
-let promptAssistantAbortController = null;
-let promptAssistantProgressTimer = null;
-let promptAssistantProgressState = {
-  title: 'Revising prompt',
-  detail: 'Reviewing your request',
-  value: 'Working',
-  percent: null,
-};
 
-function newPromptAssistantRequestId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return `revise_${crypto.randomUUID().replaceAll('-', '')}`;
-  }
-  return `revise_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
-}
-
-function stopPromptAssistantProgress() {
-  if (promptAssistantProgressTimer) clearTimeout(promptAssistantProgressTimer);
-  promptAssistantProgressTimer = null;
-}
-
-async function refreshPromptAssistantProgress(requestId) {
-  if (!requestId || requestId !== promptAssistantRequestId || !promptAssistantBusy) return;
-  try {
-    const response = await fetch(`/api/prompt/revise/status?requestId=${encodeURIComponent(requestId)}`);
-    const progress = await response.json().catch(() => ({}));
-    if (response.ok && requestId === promptAssistantRequestId && promptAssistantBusy) {
-      const detail = promptAssistantStageDetail(progress.message || 'Rewriting prompt…');
-      setPromptAssistantBusy(true, '', { detail, value: 'Working' });
-    }
-  } catch { /* the main request owns connection errors */ }
-  if (requestId === promptAssistantRequestId && promptAssistantBusy) {
-    promptAssistantProgressTimer = setTimeout(() => refreshPromptAssistantProgress(requestId), 1000);
-  }
-}
-function renderPromptAssistantProgress(overrides = {}) {
-  promptAssistantProgressState = Object.assign({}, promptAssistantProgressState, overrides);
-  const progress = $('#promptAssistantProgress');
-  progress.hidden = !promptAssistantBusy;
-  if (!promptAssistantBusy) return;
-  $('#promptAssistantProgressTitle').textContent = promptAssistantProgressState.title;
-  $('#promptAssistantProgressDetail').textContent = promptAssistantProgressState.detail;
-  const hasPercent = promptAssistantProgressState.percent !== null && promptAssistantProgressState.percent !== '';
-  const percent = Number(promptAssistantProgressState.percent);
-  const determinate = hasPercent && Number.isFinite(percent);
-  progress.classList.toggle('determinate', determinate);
-  $('#promptAssistantProgressValue').textContent = determinate
-    ? `${Math.max(0, Math.min(100, Math.round(percent)))}%`
-    : (promptAssistantProgressState.value || 'Working');
-  $('#promptAssistantProgressFill').style.width = determinate
-    ? `${Math.max(0, Math.min(100, percent))}%`
-    : '36%';
-}
-
-function promptAssistantStageDetail(value) {
-  const text = String(value || '').replace(/\.{3}$/, '').trim();
-  if (/queue|queued/i.test(text)) return 'Waiting for the local prompt model';
-  if (/loading text encoder/i.test(text)) return 'Loading the local prompt model';
-  if (/load(ing)? image/i.test(text)) return 'Reading the reference image';
-  if (/revis(ing|e).*prompt|rewrit(e|ing).*prompt/i.test(text)) return 'Writing the revised prompt';
-  if (/enhanc(ing)? prompt|textgenerate/i.test(text)) return 'Writing the revised prompt';
-  if (/preview|working/i.test(text)) return 'Finishing the revised prompt';
-  return text || 'Reviewing your request';
-}
-
-function setPromptAssistantBusy(busy, message = '', progress = {}) {
+function setPromptAssistantBusy(busy, message = '') {
   promptAssistantBusy = busy;
   const form = $('#promptAssistantForm');
   form.setAttribute('aria-busy', String(busy));
@@ -7409,42 +6004,21 @@ function setPromptAssistantBusy(busy, message = '', progress = {}) {
   $('#promptAssistantSourceToggle').disabled = busy || !promptAssistantSourceImage();
   $$('.prompt-assistant-starters button').forEach((button) => { button.disabled = busy; });
   const status = $('#promptAssistantStatus');
-  status.hidden = busy || !message;
+  status.hidden = !message;
   status.textContent = message;
-  const cancel = $('#promptAssistantCancel');
-  cancel.textContent = busy ? 'Cancel revision' : 'Cancel';
-  cancel.disabled = false;
-  if (busy) renderPromptAssistantProgress(progress);
-  else {
-    $('#promptAssistantProgress').hidden = true;
-    promptAssistantProgressState = {
-      title: 'Revising prompt',
-      detail: 'Reviewing your request',
-      value: 'Working',
-      percent: null,
-    };
-  }
 }
 
 function openPromptAssistant() {
   const currentPrompt = promptDraft().trim();
   const video = state.view === 'video';
-  const h3Video = video && state.vidEngine === 'h3';
   $('#promptAssistantTitle').textContent = currentPrompt
     ? (video ? 'Revise video prompt' : 'Revise prompt')
     : (video ? 'Build video prompt' : 'Build prompt');
   $('#promptAssistantApply').textContent = currentPrompt ? 'Revise prompt' : 'Build prompt';
   $('#promptAssistantCopy').textContent = video
-    ? (h3Video
-      ? 'Say what should change. Mix Studio follows MiniMax’s official format while preserving timing, reference tags, and every spoken word.'
-      : 'Say what should change. Mix Studio will rewrite the complete video prompt while preserving continuity, timing, camera direction, audio, and reference tags.')
+    ? 'Say what should change. Mix Studio will rewrite the complete video prompt while preserving continuity, timing, camera direction, audio, and reference tags.'
     : 'Say what should change. Mix Studio will rewrite the whole prompt, reconcile related details, and preserve everything else.';
-  const starters = h3Video ? [
-    ['Official H3 format', 'Refactor this into the official MiniMax H3 format for the current input mode. Preserve the idea, reference tags, and every spoken word exactly.'],
-    ['Format dialogue', 'Format only clearly attributed speech with stable speaker IDs and MiniMax dialogue tags. Keep every spoken word and punctuation mark exact, and leave signs or on-screen text quoted.'],
-    ['Improve sound', 'Improve the physical ambience, synchronized action sounds, and audience-only music while keeping dialogue and diegetic audio in the correct H3 sections.'],
-    ['Refine camera', 'Make the camera framing and movement more deliberate, and keep every cut timestamp strictly increasing within the clip duration.'],
-  ] : video ? [
+  const starters = video ? [
     ['Add shot beats', 'Restructure this as a coherent sequence with timestamped beats, purposeful camera angles, and only as many cuts as the duration can support.'],
     ['Change camera', 'Keep the subject and action, but change the camera direction to '],
     ['Improve motion', 'Make the subject movement, secondary motion, and transitions more specific and physically natural.'],
@@ -7461,13 +6035,11 @@ function openPromptAssistant() {
     button.dataset.promptRevision = starter[1];
   });
   $('#promptAssistantInput').placeholder = video
-    ? (h3Video
-      ? 'Add a close-up at 4 seconds, keep the dialogue exact, and end on the same action.'
-      : 'Add a low-angle close-up at 4 seconds, then cut wide as the subject turns. Keep the dialogue and end on the same action.')
+    ? 'Add a low-angle close-up at 4 seconds, then cut wide as the subject turns. Keep the dialogue and end on the same action.'
     : 'Change the woman to a man in a tailored navy suit, use teal and gold, and keep the lighting and composition.';
   if (!promptAssistantBusy) $('#promptAssistantInput').value = '';
   renderPromptAssistantSource();
-  setPromptAssistantBusy(promptAssistantBusy);
+  setPromptAssistantBusy(promptAssistantBusy, promptAssistantBusy ? 'Rewriting the complete prompt…' : '');
   const undo = state.promptRevisionUndo;
   $('#promptAssistantUndo').hidden = !(undo && undo.view === state.view && currentPrompt === undo.after);
   $('#promptAssistantSheet').classList.add('show');
@@ -7480,32 +6052,8 @@ function closePromptAssistant() {
   syncSheetScrollLock();
 }
 
-async function cancelPromptAssistantRevision() {
-  if (!promptAssistantBusy) {
-    closePromptAssistant();
-    return;
-  }
-  const requestId = promptAssistantRequestId;
-  $('#promptAssistantCancel').disabled = true;
-  try {
-    if (requestId) {
-      await fetch('/api/prompt/revise/cancel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestId }),
-      });
-    }
-  } catch { /* abort the browser request even if the server is reconnecting */ }
-  promptAssistantAbortController?.abort();
-  stopPromptAssistantProgress();
-  promptAssistantRequestId = '';
-  promptAssistantAbortController = null;
-  setPromptAssistantBusy(false, 'Prompt revision cancelled.');
-}
-
 $('#promptAssistantBtn').addEventListener('click', openPromptAssistant);
 $('#videoPromptAssistantBtn').addEventListener('click', openPromptAssistant);
-$('#promptAssistantCancel').addEventListener('click', cancelPromptAssistantRevision);
 $('#promptAssistantSourceToggle').addEventListener('click', () => {
   state.promptAssistantUseSource = !state.promptAssistantUseSource;
   renderPromptAssistantSource();
@@ -7519,30 +6067,18 @@ $$('.prompt-assistant-starters [data-prompt-revision]').forEach((button) => {
     input.setSelectionRange(input.value.length, input.value.length);
   });
 });
-
-function undoLatestPromptChange({ closeAssistant = false } = {}) {
+$('#promptAssistantUndo').addEventListener('click', () => {
   const undo = state.promptRevisionUndo;
-  if (!undo || undo.view !== state.view || promptDraft().trim() !== undo.after) return false;
+  if (!undo || undo.view !== state.view || promptDraft().trim() !== undo.after) return;
   checkpointDesktopInputSetup();
   state.prompts[state.view] = undo.before;
   setPromptDraft(undo.before);
   state.promptRevisionUndo = null;
-  if (h3PromptGuideActive() && h3PromptLooksStructured(undo.before)) rememberH3PromptStructure(undo.before);
   updatePromptClear();
   saveForm();
   appendDesktopInputSetup();
-  if (closeAssistant) closePromptAssistant();
+  closePromptAssistant();
   toast('Prompt revision undone');
-  return true;
-}
-
-$('#promptAssistantUndo').addEventListener('click', () => {
-  undoLatestPromptChange({ closeAssistant: true });
-});
-$('#h3PromptGuideUndo').addEventListener('click', () => {
-  if (!undoLatestPromptChange()) return;
-  renderH3PromptGuide();
-  setH3PromptGuideBusy(false, 'Last prompt change undone.');
 });
 $('#promptAssistantForm').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -7556,35 +6092,7 @@ $('#promptAssistantForm').addEventListener('submit', async (event) => {
   const before = promptDraft().trim();
   const revisionView = state.view;
   const source = state.promptAssistantUseSource ? promptAssistantSourceImage() : null;
-  const revisionEngine = revisionView === 'video' ? state.vidEngine : '';
-  const revisionH3Mode = revisionEngine === 'h3' ? state.vidH3Mode : '';
-  const requestedRevisionSeconds = Number($('#vidDur').value) || 5;
-  const revisionSeconds = revisionView === 'video'
-    ? (revisionEngine === 'h3' ? h3EffectiveDurationSeconds(requestedRevisionSeconds) : requestedRevisionSeconds)
-    : undefined;
-  const revisionH3LongContext = revisionEngine === 'h3' && h3LongContextActive();
-  const revisionHasFirstFrame = revisionEngine === 'h3'
-    && revisionH3Mode === 'frames' && !!state.vidRef;
-  const revisionHasLastFrame = revisionEngine === 'h3'
-    && revisionH3Mode === 'frames' && !!state.vidEnd;
-  const revisionEndImageName = source && revisionHasFirstFrame && revisionHasLastFrame
-    ? state.vidEnd.name
-    : undefined;
-  const allowedReferenceTokens = h3ReferenceBackedMode(revisionH3Mode)
-    ? h3PromptReferenceEntries().map((entry) => entry.tag)
-    : [];
-  const requestId = newPromptAssistantRequestId();
-  const requestController = new AbortController();
-  promptAssistantRequestId = requestId;
-  promptAssistantAbortController = requestController;
-  setPromptAssistantBusy(true, '', {
-    title: before ? 'Revising prompt' : 'Building prompt',
-    detail: before ? 'Reviewing your changes' : 'Turning your direction into a generation-ready prompt',
-    value: 'Starting',
-    percent: null,
-  });
-  stopPromptAssistantProgress();
-  promptAssistantProgressTimer = setTimeout(() => refreshPromptAssistantProgress(requestId), 250);
+  setPromptAssistantBusy(true, before ? 'Rewriting the complete prompt…' : 'Building a generation-ready prompt…');
   checkpointDesktopInputSetup();
   try {
     const result = await api('/api/prompt/revise', {
@@ -7593,30 +6101,20 @@ $('#promptAssistantForm').addEventListener('submit', async (event) => {
       body: JSON.stringify({
         currentPrompt: before,
         changeRequest,
-        requestId,
         imageName: source && source.name ? source.name : undefined,
-        endImageName: revisionEndImageName,
         kind: revisionView === 'video' ? 'video' : 'image',
-        engine: revisionEngine || undefined,
-        seconds: revisionSeconds,
-        h3Mode: revisionH3Mode || undefined,
-        h3LongContext: revisionEngine === 'h3' ? revisionH3LongContext : undefined,
-        hasFirstFrame: revisionEngine === 'h3' ? revisionHasFirstFrame : undefined,
-        hasLastFrame: revisionEngine === 'h3' ? revisionHasLastFrame : undefined,
-        allowedReferenceTokens: revisionEngine === 'h3' ? allowedReferenceTokens : undefined,
+        engine: revisionView === 'video' ? state.vidEngine : undefined,
+        seconds: revisionView === 'video' ? Number($('#vidDur').value) || 5 : undefined,
+        h3Mode: revisionView === 'video' && state.vidEngine === 'h3' ? state.vidH3Mode : undefined,
       }),
-      signal: requestController.signal,
     });
     const revised = String(result.prompt || '').trim();
     if (!revised) throw new Error('Prompt assistant returned no usable text');
-    if (state.view !== revisionView
-      || (revisionEngine === 'h3' && (state.vidEngine !== revisionEngine || state.vidH3Mode !== revisionH3Mode))
-      || promptDraft().trim() !== before) {
+    if (state.view !== revisionView || promptDraft().trim() !== before) {
       throw new Error('The prompt changed while the revision was running. Review it and try again.');
     }
     state.prompts[revisionView] = revised;
     state.promptRevisionUndo = { before, after: revised, view: revisionView };
-    if (revisionEngine === 'h3' && h3PromptLooksStructured(revised)) rememberH3PromptStructure(revised);
     state.enhance = false;
     setPromptDraft(revised);
     updatePromptClear();
@@ -7626,24 +6124,10 @@ $('#promptAssistantForm').addEventListener('submit', async (event) => {
     setPromptAssistantBusy(false);
     closePromptAssistant();
     $('#promptComposer').focus();
-    const hasGuideWarnings = revisionEngine === 'h3' && Array.isArray(result.warnings) && result.warnings.length > 0;
-    toast(revisionView === 'video'
-      ? (hasGuideWarnings ? 'Video prompt revised · optional H3 guide suggestions remain' : 'Video prompt revised')
-      : 'Prompt revised · Enhance turned off');
+    toast(revisionView === 'video' ? 'Video prompt revised' : 'Prompt revised · Enhance turned off');
   } catch (error) {
-    const cancelled = error?.name === 'AbortError' || isJobCancellation(error);
-    setPromptAssistantBusy(false, cancelled ? 'Prompt revision cancelled.' : (error.message || 'Could not revise this prompt'));
-    if (!cancelled) toast(error.message, true);
-  } finally {
-    if (promptAssistantRequestId === requestId) {
-      stopPromptAssistantProgress();
-      promptAssistantRequestId = '';
-      promptAssistantAbortController = null;
-    }
-    // The internal prompt writer is a short ComfyUI queue job. Its HTTP
-    // response arrives only after that job is removed, so refresh now to keep
-    // the queue badge/card in sync on every success and failure path.
-    refreshQueue().catch(() => { /* leave the last known queue state offline */ });
+    setPromptAssistantBusy(false, error.message || 'Could not revise this prompt');
+    if (!isJobCancellation(error)) toast(error.message, true);
   }
 });
 
@@ -7708,9 +6192,7 @@ $('#createImageToPrompt').addEventListener('click', async () => {
 $('#createImageGuideCrop').addEventListener('click', () => {
   if (!state.createRef) return;
   openInputImageCrop(state.createRef, async (next) => {
-    const prepared = await prepareCreateImageGuideAsset(next);
-    releaseAssetObjectUrls([state.createRef], [prepared, state.promptSourceImage]);
-    state.createRef = prepared;
+    state.createRef = await prepareCreateImageGuideAsset(next);
     clearCreateDepthPreview();
     applyCreateMatchedDimensions();
     renderCreateImageGuide();
@@ -7775,7 +6257,6 @@ $('#createDepthPreviewBtn').addEventListener('click', async () => {
   renderCreateImageGuide();
 });
 function clearCreateImageGuide() {
-  releaseAssetObjectUrls([state.createRef], [state.promptSourceImage]);
   state.createRef = null;
   state.createGuideActive = false;
   state.createImageGuideOpen = false;
@@ -8405,10 +6886,8 @@ async function uploadRegionReference(file) {
       body: buf,
     });
     if (res.asset) state.uploadedAssets = [res.asset, ...state.uploadedAssets.filter((asset) => asset.id !== res.asset.id)];
-    releaseAssetObjectUrl(region.refAsset || region.refUrl);
     region.refImageName = res.name;
     region.refUrl = URL.createObjectURL(file);
-    region.refAsset = null;
     renderRegionEditor();
     saveForm();
   } catch (e) { toast(e.message, true); }
@@ -8417,7 +6896,6 @@ async function uploadRegionReference(file) {
 function setRegionReference(asset, { announce = true } = {}) {
   const region = selectedRegion();
   if (!region || !asset) return;
-  releaseAssetObjectUrl(region.refAsset || region.refUrl, asset);
   region.refImageName = asset.name;
   region.refUrl = asset.url;
   region.refAsset = asset;
@@ -8430,7 +6908,6 @@ function clearKreaMask(silent) {
   const options = arguments[1] || {};
   cancelSmartMaskRequest();
   invalidateProcessedMask();
-  releaseAssetObjectUrl(state.kreaMask);
   state.kreaMask = null;
   state.kreaMaskPreview = null;
   state.kreaMaskDirty = false;
@@ -8796,7 +7273,6 @@ function rasterizeKreaMaskBoxes({ persist = false } = {}) {
   maskBoxGeometry.pixelRects(boxes, canvas.width, canvas.height).forEach((rect) => {
     context.fillRect(rect.x, rect.y, rect.w, rect.h);
   });
-  releaseAssetObjectUrl(state.kreaMask);
   state.kreaMask = null;
   state.kreaMaskPreview = canvas.toDataURL('image/png');
   state.kreaMaskDirty = true;
@@ -9528,9 +8004,7 @@ async function ensureKreaMaskUploaded() {
     headers: { 'x-filename': encodeURIComponent('edit_mask.png') },
     body: await blob.arrayBuffer(),
   });
-  const nextMask = { name: res.name, url: URL.createObjectURL(blob) };
-  releaseAssetObjectUrl(state.kreaMask, nextMask);
-  state.kreaMask = nextMask;
+  state.kreaMask = { name: res.name, url: URL.createObjectURL(blob) };
   state.kreaMaskDirty = false;
   renderKreaMaskTools();
   return state.kreaMask.name;
@@ -9655,7 +8129,6 @@ $('#regionRefInput').addEventListener('change', () => uploadRegionReference($('#
 $('#regionRefClear').addEventListener('click', () => {
   const region = selectedRegion();
   if (!region) return;
-  releaseAssetObjectUrl(region.refAsset || region.refUrl);
   region.refImageName = '';
   region.refUrl = '';
   region.refAsset = null;
@@ -9875,16 +8348,10 @@ function wireEndFrame(prefix, stateKey) {
     if (stateKey === 'vidEnd' && typeof updateSwapChip === 'function') updateSwapChip();
   };
   chip.addEventListener('click', () => {
-    pickUpload('image/*', (f) => {
-      releaseAssetObjectUrl(state[stateKey], f);
-      state[stateKey] = f;
-      refresh();
-    });
+    pickUpload('image/*', (f) => { state[stateKey] = f; refresh(); });
   });
   x.addEventListener('click', () => {
-    const previous = state[stateKey];
     state[stateKey] = null;
-    releaseAssetObjectUrl(previous);
     refresh();
     toast('Last frame removed');
     saveForm();
@@ -9894,7 +8361,6 @@ function wireEndFrame(prefix, stateKey) {
     const asset = state[stateKey];
     if (!asset) return;
     openInputImageCrop(asset, (next) => {
-      releaseAssetObjectUrl(state[stateKey], next);
       state[stateKey] = next;
       refresh();
       saveForm();
@@ -10222,7 +8688,6 @@ function wireAudioChip(prefix, stateKey, durInputId) {
         requestAnimationFrame(() => { drawWave(); layout(); });
         saveForm();
       } catch (e) { toast('Could not read audio: ' + e.message, true); }
-      finally { releaseAssetObjectUrl(asset); }
     }, 'Choose audio');
   });
 }
@@ -10236,6 +8701,9 @@ function setAudioChipVisual(chip, active) {
   } else {
     chip.textContent = active ? 'Audio added' : 'Audio';
   }
+  // Show/hide the dedicated remove button on either audio chip.
+  const removeBtn = chip.querySelector('.attach-x');
+  if (removeBtn) removeBtn.hidden = !active;
   // Face ID mode rewrites the video audio chip with lipsync copy.
   if (chip && chip.id === 'vidAudioChip' && typeof renderVidFace === 'function') renderVidFace();
 }
@@ -10291,26 +8759,6 @@ state.vidScailFps = 16;
 state.vidScailStableTracking = true;
 state.vidScailChunkFrames = 81;
 state.vidScailChunkOverlap = 13;
-function renderWanAnimate2Strengths() {
-  const identity = Math.max(0, Math.min(2, Number(state.vidWanAnimate2IdentityStrength) || 1));
-  const motion = Math.max(0, Math.min(2, Number(state.vidWanAnimate2MotionStrength) || 1));
-  state.vidWanAnimate2IdentityStrength = identity;
-  state.vidWanAnimate2MotionStrength = motion;
-  $('#vidWanAnimate2IdentityStrength').value = String(identity);
-  $('#vidWanAnimate2MotionStrength').value = String(motion);
-  $('#vidWanAnimate2IdentityVal').textContent = identity.toFixed(2);
-  $('#vidWanAnimate2MotionVal').textContent = motion.toFixed(2);
-}
-for (const [id, stateKey, outputId] of [
-  ['vidWanAnimate2IdentityStrength', 'vidWanAnimate2IdentityStrength', 'vidWanAnimate2IdentityVal'],
-  ['vidWanAnimate2MotionStrength', 'vidWanAnimate2MotionStrength', 'vidWanAnimate2MotionVal'],
-]) {
-  $('#' + id).addEventListener('input', (event) => {
-    state[stateKey] = Math.max(0, Math.min(2, Number(event.target.value) || 1));
-    $('#' + outputId).textContent = state[stateKey].toFixed(2);
-  });
-  $('#' + id).addEventListener('change', saveForm);
-}
 function renderScailFpsControls() {
   $$('#vidScailFpsRow .chip').forEach((chip) => {
     chip.classList.toggle('active', Number(chip.dataset.scailFps) === state.vidScailFps);
@@ -10679,14 +9127,13 @@ $('#qwenAnglesToggleAll').addEventListener('click', () => {
 function renderEnhance() {
   const btn = $('#enhanceBtn');
   const h3Video = state.view === 'video' && state.vidEngine === 'h3';
-  if (state.view === 'video' && ['ltx-edit', 'wan-animate2'].includes(state.vidEngine)) btn.hidden = true;
   const frameAwareVideo = state.view === 'video' && !!state.vidRef
     && !['ltx-edit'].includes(state.vidEngine);
   btn.classList.toggle('on', state.enhance);
   btn.setAttribute('aria-pressed', String(state.enhance));
   btn.title = state.enhance
     ? (h3Video
-      ? 'H3 prompt enhance: on · official structure, camera, sound, and exact dialogue'
+      ? 'H3 prompt enhance: on · timed shots, camera, sound, and dialogue when appropriate'
       : (frameAwareVideo ? 'Enhance with start frame + prompt: on' : 'Prompt enhance: on'))
     : 'Prompt enhance: off';
   btn.setAttribute('aria-label', btn.title);
@@ -11474,7 +9921,7 @@ function cameraMotionGuideLimit(guide = state.videoCameraGuide) {
 }
 
 function cameraMotionEngineLabel() {
-  return { ltx: 'LTX 2.3', 'ltx-edit': 'LTX Edit', eros: '10Eros DMD', wan: 'Wan 2.2', 'wan-animate2': 'Wan Animate 2' }[state.vidEngine] || 'this model';
+  return { ltx: 'LTX 2.3', 'ltx-edit': 'LTX Edit', eros: '10Eros DMD', wan: 'Wan 2.2' }[state.vidEngine] || 'this model';
 }
 
 function cameraMotionModeText(guide = state.videoCameraGuide, motions = state.videoCameraMotions) {
@@ -11611,13 +10058,10 @@ function renderCameraMotionCustom() {
 function chooseCustomCameraMotion() {
   pickUpload('video/*', async (asset) => {
     try {
-      const nextGuide = await prepareCameraMotionGuide(asset);
-      releaseAssetObjectUrls([cameraMotionGuideDraft], [state.videoCameraGuide, nextGuide]);
-      cameraMotionGuideDraft = nextGuide;
+      cameraMotionGuideDraft = await prepareCameraMotionGuide(asset);
       renderCameraMotionPicker();
       toast('Custom camera-motion clip ready');
     } catch (error) {
-      releaseAssetObjectUrl(asset, state.videoCameraGuide);
       toast(error.message, true);
     }
   }, 'Choose a camera-motion clip');
@@ -11626,7 +10070,6 @@ function chooseCustomCameraMotion() {
 $('#cameraMotionCustomChoose').addEventListener('click', chooseCustomCameraMotion);
 $('#cameraMotionCustomChange').addEventListener('click', chooseCustomCameraMotion);
 $('#cameraMotionCustomRemove').addEventListener('click', () => {
-  releaseAssetObjectUrl(cameraMotionGuideDraft, state.videoCameraGuide);
   cameraMotionGuideDraft = null;
   renderCameraMotionPicker();
 });
@@ -11761,9 +10204,7 @@ function applyCameraMotionSelection() {
   const applied = CameraMotion.applyCameraMotionPrompt(promptDraft(), state.videoCameraMotionPhrase, selected);
   state.videoCameraMotions = selected;
   state.videoCameraMotionPhrase = applied.phrase;
-  const nextGuide = cameraMotionGuideDraft ? Object.assign({}, cameraMotionGuideDraft) : null;
-  releaseAssetObjectUrl(state.videoCameraGuide, nextGuide);
-  state.videoCameraGuide = nextGuide;
+  state.videoCameraGuide = cameraMotionGuideDraft ? Object.assign({}, cameraMotionGuideDraft) : null;
   setPromptDraft(applied.prompt);
   state.prompts.video = applied.prompt;
   updatePromptClear();
@@ -11780,7 +10221,6 @@ function applyCameraMotionSelection() {
 $('#videoCameraMotionBtn').addEventListener('click', openCameraMotionPicker);
 $('#cameraMotionClear').addEventListener('click', () => {
   cameraMotionDraft = [];
-  releaseAssetObjectUrl(cameraMotionGuideDraft, state.videoCameraGuide);
   cameraMotionGuideDraft = null;
   renderCameraMotionPicker();
 });
@@ -11791,8 +10231,6 @@ new MutationObserver(() => {
   if (!open) {
     stopCameraMotionPreviews();
     $('#cameraMotionCustomVideo').pause();
-    releaseAssetObjectUrl(cameraMotionGuideDraft, state.videoCameraGuide);
-    cameraMotionGuideDraft = null;
   }
 }).observe($('#videoCameraMotionSheet'), { attributes: true, attributeFilter: ['class'] });
 
@@ -11864,34 +10302,9 @@ function renderAspects() {
     });
     row.appendChild(source);
   }
-  if (h3ResolutionActive() && state.vidH3Mode === 'reference' && h3ReferenceVideoAspectRatio() > 0) {
-    const videoAsset = h3ReferenceVideoAspectSource();
-    const videoRatio = h3ReferenceVideoAspectRatio();
-    const videoDimensions = H3Resolution.dimensions(videoRatio, 1, h3ResolutionSize());
-    const source = document.createElement('button');
-    source.type = 'button';
-    source.className = 'aspect-chip create-match-aspect' + (h3MatchReferenceVideoActive() ? ' active' : '');
-    source.setAttribute('aria-pressed', String(h3MatchReferenceVideoActive()));
-    source.setAttribute('aria-label', `Match Video 1 aspect at ${videoDimensions.width} by ${videoDimensions.height}`);
-    const maxSide = 22;
-    const iconWidth = videoRatio >= 1 ? maxSide : Math.max(7, Math.round(maxSide * videoRatio));
-    const iconHeight = videoRatio >= 1 ? Math.max(7, Math.round(maxSide / videoRatio)) : maxSide;
-    source.innerHTML = `<span class="ar-box" style="width:${iconWidth}px;height:${iconHeight}px"></span><span>Match video</span><small class="aspect-output-dims">${derivedAspectLabel(videoAsset.w, videoAsset.h)} · ${videoDimensions.width} × ${videoDimensions.height}</small>`;
-    source.addEventListener('click', () => {
-      state.vidH3MatchReferenceVideo = true;
-      state.vidH3MatchSource = false;
-      state.customDims = false;
-      computeDims();
-      renderAspects();
-      renderDims();
-      saveForm();
-    });
-    row.appendChild(source);
-  }
   for (const a of ASPECTS) {
     const btn = document.createElement('button');
-    const selected = a.label === state.aspect && !state.customDims
-      && !h3MatchSourceActive() && !h3MatchReferenceVideoActive();
+    const selected = a.label === state.aspect && !state.customDims && !h3MatchSourceActive();
     btn.className = 'aspect-chip' + (selected ? ' active' : '');
     btn.setAttribute('aria-pressed', String(selected));
     btn.dataset.aspect = a.label;
@@ -11902,10 +10315,7 @@ function renderAspects() {
     btn.innerHTML = `<span class="ar-box" style="width:${w}px;height:${h}px"></span><span>${a.label}</span>${h3Dimensions ? `<small class="aspect-output-dims">${h3Dimensions.width} × ${h3Dimensions.height}</small>` : ''}`;
     btn.addEventListener('click', () => {
       state.aspect = a.label;
-      if (h3ResolutionActive()) {
-        state.vidH3MatchSource = false;
-        state.vidH3MatchReferenceVideo = false;
-      }
+      if (h3ResolutionActive()) state.vidH3MatchSource = false;
       state.createMatchSource = false;
       state.createMatchNative = false;
       state.customDims = false;
@@ -11920,7 +10330,6 @@ function renderAspects() {
 function renderDims() {
   const h3Resolution = h3ResolutionActive();
   const h3FrameMatch = h3MatchSourceActive();
-  const h3VideoMatch = h3MatchReferenceVideoActive();
   const widthInput = $('#wInput');
   const heightInput = $('#hInput');
   widthInput.value = state.width;
@@ -11935,11 +10344,7 @@ function renderDims() {
   $('#h3ResolutionWarning').hidden = !h3Resolution || !state.vidH3Xl;
   $('#sizeSeg [data-h3-xl]').hidden = !h3Resolution;
   $('#resSummary').textContent = h3Resolution
-    ? `${h3FrameMatch
-      ? `First frame · ${derivedAspectLabel(state.vidRef.w, state.vidRef.h)}`
-      : (h3VideoMatch
-        ? `Video 1 · ${derivedAspectLabel(h3ReferenceVideoAspectSource().w, h3ReferenceVideoAspectSource().h)}`
-        : state.aspect)} · ${state.vidH3Xl ? 'XL' : createSizeLabel()} · ${state.width} × ${state.height}`
+    ? `${h3FrameMatch ? `First frame · ${derivedAspectLabel(state.vidRef.w, state.vidRef.h)}` : state.aspect} · ${state.vidH3Xl ? 'XL' : createSizeLabel()} · ${state.width} × ${state.height}`
     : state.view === 'create' && state.createMode === 'image' && state.createMatchSource && matchedCreateOutputDimensions()
     ? `${state.aspect} · ${state.createMatchNative ? 'Native image' : `Match image ${createSizeLabel()}`} · ${state.width} × ${state.height}`
     : (state.customDims
@@ -12690,38 +11095,8 @@ function normalizedH3Steps(value = state.vidH3Steps) {
   return Math.max(1, Math.min(100, Math.round(Number(value) || 20)));
 }
 
-function normalizedH3TurboSteps(value) {
-  const referenceMode = h3ReferenceBackedMode();
-  const fallback = 6;
-  const configured = value === undefined
-    ? (referenceMode ? state.vidH3RefTurboSteps : state.vidH3TurboSteps)
-    : value;
-  return Math.max(4, Math.min(100, Math.round(Number(configured) || fallback)));
-}
-
 function videoStepSpecification() {
   if (state.vidEngine === 'h3') {
-    if (h3TurboActive()) {
-      const value = normalizedH3TurboSteps();
-      const referenceMode = h3ReferenceBackedMode();
-      return {
-        value,
-        editable: true,
-        hint: referenceMode
-          ? (value === 6
-            ? 'H3 Reference Turbo · 6-step LightX2V audio-safe setup'
-            : 'H3 Reference Turbo · 6 steps is the tested audio-safe default')
-          : (h3FramesTurboIsLegacy()
-            ? (value === 4
-              ? 'H3 Turbo legacy v1/850 · original 4-step default'
-              : 'H3 Turbo legacy v1/850 · 4 steps recommended')
-            : (value === 6
-              ? 'H3 Turbo v4/600 · 6-step quality default'
-              : (value >= 7 && value <= 8
-                ? 'H3 Turbo v4/600 · creator-recommended 6–8 step range'
-                : 'H3 Turbo v4/600 · 6–8 steps recommended'))),
-      };
-    }
     return { value: normalizedH3Steps(), editable: true, hint: 'MiniMax H3 sampler · adjustable' };
   }
   if (state.vidEngine === 'wan') {
@@ -12729,9 +11104,6 @@ function videoStepSpecification() {
     return full
       ? { value: 20, editable: false, hint: 'Full Quality · fixed two-model handoff' }
       : { value: 4, editable: false, hint: 'Fast distilled schedule · fixed' };
-  }
-  if (state.vidEngine === 'wan-animate2') {
-    return { value: 6, editable: false, hint: 'Wan Animate 2 · official six-step LCM schedule' };
   }
   if (state.vidEngine === 'scail') {
     return { value: 6, editable: false, hint: 'SCAIL distilled schedule · fixed' };
@@ -12775,7 +11147,7 @@ function renderVideoStepControl() {
   input.readOnly = !spec.editable;
   input.setAttribute('aria-readonly', String(!spec.editable));
   input.classList.toggle('fixed-sampling', !spec.editable);
-  input.title = spec.hint;
+  input.title = spec.editable ? 'Sampling steps for MiniMax H3' : spec.hint;
   hint.textContent = spec.hint;
   hint.hidden = false;
 }
@@ -12831,9 +11203,7 @@ function captureGenerationTuning(mode = generationTuningMode()) {
   const previous = state.generationTuning[mode] || defaultGenerationTuning(mode);
   const qwenLocked = mode === 'edit' && state.editEngine === 'qwen';
   state.generationTuning[mode] = normalizeGenerationTuning(mode, {
-    steps: mode === 'video'
-      ? (h3TurboActive() ? normalizedH3TurboSteps() : normalizedH3Steps())
-      : (qwenLocked ? previous.steps : ($('#stepsInput').value || previous.steps)),
+    steps: mode === 'video' ? normalizedH3Steps() : (qwenLocked ? previous.steps : ($('#stepsInput').value || previous.steps)),
     cfg: qwenLocked ? previous.cfg : ($('#cfgInput').value === '' ? previous.cfg : $('#cfgInput').value),
     batch: $('#batchInput').value || previous.batch,
     denoise: mode === 'edit' ? $('#denoiseInput').value : undefined,
@@ -12866,15 +11236,8 @@ function resetGenerationControl(control) {
   const key = control.dataset.defaultReset;
   if (mode === 'video' && key === 'steps') {
     if (state.vidEngine !== 'h3') return renderVideoStepControl();
-    if (h3TurboActive()) {
-      const referenceMode = h3ReferenceBackedMode();
-      if (referenceMode) state.vidH3RefTurboSteps = 6;
-      else state.vidH3TurboSteps = h3FramesTurboIsLegacy() ? 4 : 6;
-      control.value = referenceMode ? 6 : state.vidH3TurboSteps;
-    } else {
-      state.vidH3Steps = 20;
-      control.value = 20;
-    }
+    state.vidH3Steps = 20;
+    control.value = 20;
   } else if (key === 'seed') control.value = defaults.seed;
   else if (Object.prototype.hasOwnProperty.call(defaults, key)) control.value = defaults[key];
   if (key === 'denoise') $('#denoiseVal').textContent = Number(control.value).toFixed(2);
@@ -13077,10 +11440,7 @@ function renderLoraCompatibility() {
   if (!warn) return;
   const bad = incompatibleSelectedLoras();
   warn.classList.toggle('hidden', bad.length === 0);
-  const warning = bad.length ? `May not work here: ${bad.map((l) => prettyLora(l.name)).join(', ')}` : '';
-  warn.dataset.iconTooltip = warning || 'LoRA compatibility caution';
-  warn.dataset.iconTooltipDetail = warning || 'The selected LoRA may not be compatible with this workflow.';
-  warn.setAttribute('aria-label', warning || 'LoRA compatibility caution');
+  warn.textContent = bad.length ? `May not work here: ${bad.map((l) => prettyLora(l.name)).join(', ')}` : '';
   const allBtn = $('#loraAllBtn');
   if (allBtn) {
     const filtering = !state.showAllLoras;
@@ -13510,12 +11870,6 @@ const VIDEO_ENGINE_TASKS = {
     detail: 'Physics + prompt accuracy',
     copy: 'Best for demanding action, physical motion, and prompt adherence.',
     preview: { type: 'video', src: '/guides/wan-knight-explosion.mp4' },
-  },
-  'wan-animate2': {
-    task: 'Character Animation', model: 'Wan Animate 2',
-    detail: 'Character image + performance video',
-    copy: 'Transfer body motion, expression, timing, and source audio onto a reference character.',
-    preview: { type: 'motion', tone: 'wan-animate2' },
   },
   scail: {
     task: 'Motion Transfer', model: 'SCAIL 2',
@@ -16164,7 +14518,7 @@ function videoDurationMax(engine) {
   if (engine === 'scail') return 60;
   if (engine === 'ltx' && cameraMotionReferenceSelected()) return cameraMotionGuideLimit();
   if (engine === 'ltx') return 20;
-  if (engine === 'h3') return h3LongContextActive() ? 120 : 15;
+  if (engine === 'h3') return 15;
   return 15;
 }
 
@@ -16407,7 +14761,6 @@ function exitFineVideoDuration({ immediate = false } = {}) {
 
 function updateVideoDurationFromControl() {
   updateVideoTuningSummary();
-  if (state.vidEngine === 'h3') renderH3LongContext();
   if ($('#videoCameraMotionSheet').classList.contains('show')) renderCameraMotionCustom();
 }
 
@@ -16447,9 +14800,7 @@ function updateVideoTuningSummary() {
   const scailMode = state.vidEngine === 'scail'
     ? `${state.vidScailMode[0].toUpperCase()}${state.vidScailMode.slice(1)}`
     : '';
-  const summary = state.vidEngine === 'wan-animate2'
-    ? '81 frames · source timing + audio'
-    : scailMode
+  const summary = scailMode
     ? `${duration}s · ${scailMode}`
     : (motionVisible ? `${duration}s · motion ${motion}` : `${duration}s`);
   $('#vidControlsNote').textContent = summary;
@@ -16653,11 +15004,7 @@ Object.entries(generationResetControls).forEach(([id, key]) => {
   });
   control.addEventListener('change', () => {
     if (id === 'stepsInput' && state.view === 'video' && state.vidEngine === 'h3') {
-      if (h3TurboActive()) {
-        if (h3ReferenceBackedMode()) state.vidH3RefTurboSteps = normalizedH3TurboSteps(control.value);
-        else state.vidH3TurboSteps = normalizedH3TurboSteps(control.value);
-      }
-      else state.vidH3Steps = normalizedH3Steps(control.value);
+      state.vidH3Steps = normalizedH3Steps(control.value);
     }
     captureGenerationTuning();
     if (id === 'stepsInput' && state.view === 'video') renderVideoStepControl();
@@ -16668,14 +15015,7 @@ Object.entries(generationResetControls).forEach(([id, key]) => {
 $('#stepsInput').addEventListener('input', () => {
   if (state.view === 'video' && state.vidEngine === 'h3') {
     const value = Number($('#stepsInput').value);
-    if (Number.isFinite(value) && value >= 1) {
-      if (h3TurboActive()) {
-        if (h3ReferenceBackedMode()) state.vidH3RefTurboSteps = normalizedH3TurboSteps(value);
-        else state.vidH3TurboSteps = normalizedH3TurboSteps(value);
-      }
-      else state.vidH3Steps = normalizedH3Steps(value);
-      renderH3TurboMode();
-    }
+    if (Number.isFinite(value) && value >= 1) state.vidH3Steps = normalizedH3Steps(value);
   }
   renderKrea2Mode();
 });
@@ -16871,12 +15211,10 @@ function renderRefs({ preservePromptComposer = false } = {}) {
       remove.addEventListener('click', (event) => {
         event.stopPropagation();
         if (idx === 0) {
-          releaseAssetObjectUrl(state.refs[0]);
           state.refs[0] = null;
           clearKreaMask(true);
         } else {
-          const [removed] = state.refs.splice(idx, 1);
-          releaseAssetObjectUrl(removed);
+          state.refs.splice(idx, 1);
           state.refs.push(null);
           state.editRefSlots = Math.max(1, state.editRefSlots - 1);
         }
@@ -16953,7 +15291,6 @@ function wireRefReorder(slot, index, maxSlots) {
 
 function pickRef(idx) {
   pickUpload('image/*', (file) => {
-    releaseAssetObjectUrl(state.refs[idx], file);
     state.refs[idx] = file;
     if (idx === 0) clearKreaMask(true);
     renderRefs();
@@ -16979,7 +15316,6 @@ async function sendToVideoTab(item, role = 'start') {
       body: buf,
     });
     const frame = { name: res.name, url: '/images/' + item.file, w: item.width || 1024, h: item.height || 1024, srcItemId: item.id };
-    if (role === 'end') releaseAssetObjectUrls([state.vidEnd], [frame, state.vidRef]);
     if (role === 'end') state.vidEnd = frame;
     else setVideoFirstFrame(frame);
     closeAnimateRouteSheet();
@@ -17029,7 +15365,6 @@ async function sendVideoAsDrive(it, v) {
     });
     const url = URL.createObjectURL(blob);
     const d = { name: res.name, url, label: 'from gallery', hasAudio: res.hasAudio === true };
-    releaseAssetObjectUrl(state.vidDrive, d);
     state.vidDrive = d;
     $('#vidDriveTrimChip').classList.remove('active');
     $('#vidDriveLabel').textContent = d.label;
@@ -17258,20 +15593,6 @@ function h3References() {
   return state.vidH3References;
 }
 
-function h3ReplacementReferences() {
-  return {
-    images: state.vidH3ReplaceImage ? [state.vidH3ReplaceImage] : [],
-    videos: state.vidH3ReplaceVideo ? [state.vidH3ReplaceVideo] : [],
-    audios: [],
-  };
-}
-
-function h3ActiveReferences() {
-  return state.vidH3Mode === 'replace' && h3ReplaceAvailable()
-    ? h3ReplacementReferences()
-    : h3References();
-}
-
 const H3_REFERENCE_LIMITS = Object.freeze({ images: 9, videos: 3, audios: 3 });
 
 function h3ReferenceCount() {
@@ -17279,7 +15600,7 @@ function h3ReferenceCount() {
 }
 
 function h3PromptReferenceEntries() {
-  const refs = h3ActiveReferences();
+  const refs = h3References();
   const entries = [];
   let audioIndex = 0;
   refs.images.forEach((asset, index) => entries.push({
@@ -17329,28 +15650,8 @@ function h3ReferenceKind(asset) {
   return 'images';
 }
 
-async function prepareH3ReferenceAsset(asset) {
-  if (!asset || h3ReferenceKind(asset) !== 'videos') return asset;
-  if (Number(asset.w) > 0 && Number(asset.h) > 0) return asset;
-  const metadata = await directorProbeVideo(asset.url || `/api/input?name=${encodeURIComponent(asset.name)}`);
-  if (metadata.width > 0 && metadata.height > 0) {
-    asset.w = metadata.width;
-    asset.h = metadata.height;
-  }
-  if (metadata.seconds > 0 && !(Number(asset.dur) > 0)) asset.dur = metadata.seconds;
-  return asset;
-}
-
-function refreshH3ReferenceResolution() {
-  if (!h3ResolutionActive()) return;
-  computeDims();
-  renderAspects();
-  renderDims();
-}
-
-async function addH3Reference(asset) {
+function addH3Reference(asset) {
   if (!asset) return;
-  await prepareH3ReferenceAsset(asset);
   const kind = h3ReferenceKind(asset);
   const refs = h3References();
   if (refs[kind].length >= H3_REFERENCE_LIMITS[kind]) {
@@ -17361,7 +15662,6 @@ async function addH3Reference(asset) {
   state.vidH3RefSlots = Math.max(1, Number(state.vidH3RefSlots) || 1, h3ReferenceCount());
   renderH3References();
   renderPromptComposer();
-  refreshH3ReferenceResolution();
   saveForm();
 }
 
@@ -17371,35 +15671,9 @@ function pickH3Reference() {
   pickUpload(accept, addH3Reference, 'Choose H3 reference input');
 }
 
-async function replaceH3Reference(kind, index, asset) {
-  const refs = h3References();
-  const current = refs[kind]?.[index];
-  if (!current || !asset) return;
-  await prepareH3ReferenceAsset(asset);
-  if (h3ReferenceKind(asset) !== kind) {
-    toast(`Choose another ${kind.slice(0, -1)}`, true);
-    return;
-  }
-  refs[kind][index] = asset;
-  releaseAssetObjectUrl(current, asset);
-  renderH3References();
-  renderPromptComposer();
-  refreshH3ReferenceResolution();
-  saveForm();
-  const labels = { images: 'Picture', videos: 'Video', audios: 'Audio' };
-  toast(`${labels[kind]} ${index + 1} replaced · prompt kept`);
-}
-
-function pickH3ReferenceReplacement(kind, index) {
-  const labels = { images: 'Picture', videos: 'Video', audios: 'Audio' };
-  const mediaKind = kind.slice(0, -1);
-  pickUpload(`${mediaKind}/*`, (asset) => replaceH3Reference(kind, index, asset), `Replace ${labels[kind]} ${index + 1}`);
-}
-
 function removeH3Reference(kind, index) {
   const before = h3PromptReferenceEntries();
-  const [removed] = h3References()[kind].splice(index, 1);
-  releaseAssetObjectUrl(removed);
+  h3References()[kind].splice(index, 1);
   const after = h3PromptReferenceEntries();
   const remap = new Map(before.map((entry) => {
     const replacement = after.find((candidate) => candidate.asset === entry.asset && candidate.role === entry.role);
@@ -17410,7 +15684,6 @@ function removeH3Reference(kind, index) {
   state.vidH3RefSlots = Math.max(1, Math.max(h3ReferenceCount(), (Number(state.vidH3RefSlots) || 1) - 1));
   setPromptDraft(nextPrompt);
   renderH3References();
-  refreshH3ReferenceResolution();
   saveForm();
 }
 
@@ -17439,7 +15712,6 @@ function swapH3References(kind, fromIndex, targetIndex) {
   [assets[fromIndex], assets[targetIndex]] = [assets[targetIndex], assets[fromIndex]];
   renderH3References();
   renderPromptComposer();
-  refreshH3ReferenceResolution();
   saveForm();
   toast('Reference inputs swapped');
   return true;
@@ -17454,7 +15726,7 @@ function wireH3ReferenceReorder(slot, entry) {
   slot.setAttribute('aria-roledescription', 'draggable H3 reference input');
   slot.title = 'Drag onto another matching reference to swap them';
   slot.addEventListener('pointerdown', (event) => {
-    if (event.target.closest('.ref-x, .ref-swap')) return;
+    if (event.target.closest('.ref-x')) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     clearH3ReferenceReorder();
     if (event.pointerType === 'mouse') event.preventDefault();
@@ -17519,184 +15791,26 @@ function wireH3ReferenceReorder(slot, entry) {
   });
 }
 
-function h3ReplacementPrompt() {
-  return H3PromptGuide?.buildReplacementPrompt
-    ? H3PromptGuide.buildReplacementPrompt({
-      kind: state.vidH3ReplaceKind,
-      target: state.vidH3ReplaceTarget,
-    })
-    : '';
-}
-
-function setH3ReplacementAsset(kind, asset) {
-  if (kind === 'video') {
-    releaseAssetObjectUrl(state.vidH3ReplaceVideo, asset);
-    state.vidH3ReplaceVideo = asset || null;
-  } else {
-    releaseAssetObjectUrl(state.vidH3ReplaceImage, asset);
-    state.vidH3ReplaceImage = asset || null;
-  }
-  renderH3References();
-  renderPromptComposer();
-  saveForm();
-}
-
-function renderH3Replacement() {
-  const panel = $('#vidH3ReplacePanel');
-  if (!panel) return;
-  const active = state.vidEngine === 'h3' && state.vidH3Mode === 'replace' && h3ReplaceAvailable();
-  panel.hidden = !active;
-  $$('#vidH3ReplaceKind [data-h3-replace-kind]').forEach((button) => {
-    const selected = button.dataset.h3ReplaceKind === state.vidH3ReplaceKind;
-    button.classList.toggle('active', selected);
-    button.setAttribute('aria-pressed', String(selected));
-  });
-  const target = $('#vidH3ReplaceTarget');
-  if (target && target.value !== state.vidH3ReplaceTarget) target.value = state.vidH3ReplaceTarget;
-
-  const video = state.vidH3ReplaceVideo;
-  $('#vidH3ReplaceVideoBtn').hidden = !!video;
-  $('#vidH3ReplaceVideoThumb').hidden = !video;
-  if (video) {
-    const preview = $('#vidH3ReplaceVideoPreview');
-    const src = video.url || `/api/input?name=${encodeURIComponent(video.name)}`;
-    if (preview.getAttribute('src') !== src) preview.src = src;
-    $('#vidH3ReplaceVideoLabel').textContent = video.label || 'Video 1';
-  } else {
-    const preview = $('#vidH3ReplaceVideoPreview');
-    preview.removeAttribute('src');
-    preview.controls = false;
-    $('#vidH3ReplaceVideoThumb').classList.remove('expanded');
-    setInlineVideoExpandIcon($('#vidH3ReplaceVideoExpand'), false, 'master video');
-  }
-
-  const image = state.vidH3ReplaceImage;
-  $('#vidH3ReplaceImageBtn').hidden = !!image;
-  $('#vidH3ReplaceImageThumb').hidden = !image;
-  if (image) {
-    $('#vidH3ReplaceImagePreview').src = image.url || `/api/input?name=${encodeURIComponent(image.name)}`;
-    $('#vidH3ReplaceImageLabel').textContent = image.label || 'Picture 1';
-  } else {
-    $('#vidH3ReplaceImagePreview').removeAttribute('src');
-  }
-
-  const descriptionReady = !!state.vidH3ReplaceTarget.trim();
-  const builtPrompt = descriptionReady ? h3ReplacementPrompt() : '';
-  const presetActive = !!builtPrompt && promptDraft().trim() === builtPrompt;
-  const promptButton = $('#vidH3ReplacePromptBtn');
-  promptButton.disabled = !descriptionReady;
-  promptButton.querySelector('span').textContent = presetActive ? 'Reapply preset' : 'Apply preset';
-  const promptStatus = $('#vidH3ReplacePromptStatus');
-  promptStatus.hidden = descriptionReady && !presetActive;
-  promptStatus.textContent = !descriptionReady
-    ? 'Add a target description, then apply the preset.'
-    : (presetActive ? 'Preset active · you can still edit the prompt before generating.' : '');
-}
-
-function applyH3ReplacementPrompt() {
-  if (!state.vidH3ReplaceTarget.trim()) {
-    $('#vidH3ReplaceTarget').focus();
-    return toast('Describe the original target first', true);
-  }
-  const prompt = h3ReplacementPrompt();
-  if (!prompt) return toast('Replacement prompt preset is unavailable. Reload the app and try again.', true);
-  checkpointDesktopInputSetup();
-  state.prompts.video = prompt;
-  state.enhance = false;
-  setPromptDraft(prompt);
-  updatePromptClear();
-  renderEnhance();
-  renderH3Replacement();
-  saveForm();
-  appendDesktopInputSetup();
-  $('#promptComposer').focus();
-  toast('Replacement prompt applied locally · Enhance turned off');
-}
-
-function h3StylePreset(id) {
-  return (H3PromptGuide?.styleTransferPresets || []).find((preset) => preset.id === id) || null;
-}
-
-function closeH3StylePicker() {
-  $('#h3StyleSheet').classList.remove('show');
-  syncSheetScrollLock();
-}
-
-function openH3StylePicker() {
-  const refs = h3References();
-  if (!refs.videos.length) return toast('Add the source video first', true);
-  $('#h3StyleSheet').classList.add('show');
-  syncSheetScrollLock();
-  requestAnimationFrame(() => $('#h3StyleGrid [data-h3-style]')?.focus({ preventScroll: true }));
-}
-
-function applyH3StyleTransferPrompt(style, label = 'Custom') {
-  const refs = h3References();
-  if (!refs.videos.length) return toast('Add the source video first', true);
-  if (!H3PromptGuide?.buildStyleTransferPrompt) {
-    return toast('The restyle presets are unavailable. Reload the app and try again.', true);
-  }
-  const before = promptDraft().trim();
-  const usesStyleImage = refs.images.length > 0;
-  const prompt = H3PromptGuide.buildStyleTransferPrompt({
-    style,
-    hasAudio: refs.videos[0].hasAudio === true,
-    hasStyleImage: usesStyleImage,
-  });
-  checkpointDesktopInputSetup();
-  state.prompts.video = prompt;
-  state.promptRevisionUndo = { before, after: prompt, view: 'video' };
-  state.enhance = false;
-  setPromptDraft(prompt);
-  rememberH3PromptStructure(prompt);
-  updatePromptClear();
-  renderEnhance();
-  renderH3PromptGuideTrigger();
-  saveForm();
-  appendDesktopInputSetup();
-  closeH3StylePicker();
-  $('#promptComposer').focus();
-  toast(usesStyleImage
-    ? `${label} restyle applied · Picture 1 guides the visual treatment`
-    : `${label} restyle applied locally · add Picture 1 for a specific look`);
-}
-
 function renderH3References() {
   clearH3ReferenceReorder();
   const h3 = state.vidEngine === 'h3';
-  const replaceAvailable = h3ReplaceAvailable();
-  if (!replaceAvailable && state.vidH3Mode === 'replace') state.vidH3Mode = 'frames';
-  const modeRow = $('#vidH3ModeRow');
-  const replaceButton = modeRow.querySelector('[data-h3-mode="replace"]');
-  replaceButton.hidden = !replaceAvailable;
-  modeRow.classList.toggle('has-replace', replaceAvailable);
   const referenceMode = h3 && state.vidH3Mode === 'reference';
-  const replaceMode = h3 && state.vidH3Mode === 'replace';
-  const referenceBacked = referenceMode || replaceMode;
   $('#vidH3ModePanel').hidden = !h3;
   $('#vidH3ReferencePanel').hidden = !referenceMode;
-  $('#vidStandardInputs').hidden = referenceBacked;
-  $('#vidStandardInputs').classList.toggle('h3-frame-inputs', h3 && !referenceBacked);
-  modeRow.style.setProperty('--h3-mode-index', replaceMode ? '2' : (referenceMode ? '1' : '0'));
-  modeRow.querySelectorAll('[data-h3-mode]').forEach((button) => {
+  $('#vidStandardInputs').hidden = referenceMode;
+  $('#vidStandardInputs').classList.toggle('h3-frame-inputs', h3 && !referenceMode);
+  $('#vidH3ModeRow').style.setProperty('--h3-mode-index', referenceMode ? '1' : '0');
+  $$('#vidH3ModeRow [data-h3-mode]').forEach((button) => {
     const active = button.dataset.h3Mode === state.vidH3Mode;
     button.classList.toggle('active', active);
     button.setAttribute('aria-pressed', String(active));
   });
-  renderH3Replacement();
   $$('#vidH3RefSize [data-h3-ref-size]').forEach((button) => {
     const active = button.dataset.h3RefSize === state.vidH3RefImageSize;
     button.classList.toggle('active', active);
     button.setAttribute('aria-pressed', String(active));
   });
   const refs = h3References();
-  const restyle = $('#vidH3Restyle');
-  if (restyle) {
-    restyle.disabled = refs.videos.length < 1;
-    restyle.title = refs.videos.length
-      ? 'Choose a visual style for this video'
-      : 'Add a source video to restyle it';
-  }
   const list = $('#vidH3ReferenceList');
   list.replaceChildren();
   let audioIndex = 0;
@@ -17737,37 +15851,6 @@ function renderH3References() {
         video.preload = 'metadata';
         video.draggable = false;
         slot.appendChild(video);
-        const aspectBadge = document.createElement('span');
-        aspectBadge.className = 'h3-reference-aspect';
-        aspectBadge.hidden = true;
-        const updateAspectBadge = () => {
-          const width = Number(asset.w);
-          const height = Number(asset.h);
-          if (!(width > 0 && height > 0)) {
-            aspectBadge.hidden = true;
-            return;
-          }
-          const ratio = width / height;
-          const maxSide = 12;
-          const iconWidth = ratio >= 1 ? maxSide : Math.max(4, Math.round(maxSide * ratio));
-          const iconHeight = ratio >= 1 ? Math.max(4, Math.round(maxSide / ratio)) : maxSide;
-          aspectBadge.innerHTML = `<i style="width:${iconWidth}px;height:${iconHeight}px"></i><b>${derivedAspectLabel(width, height)}</b>`;
-          aspectBadge.hidden = false;
-        };
-        updateAspectBadge();
-        video.addEventListener('loadedmetadata', () => {
-          const width = Number(video.videoWidth) || 0;
-          const height = Number(video.videoHeight) || 0;
-          if (!(Number(asset.w) > 0 && Number(asset.h) > 0) && width > 0 && height > 0) {
-            asset.w = width;
-            asset.h = height;
-            if (!(Number(asset.dur) > 0)) asset.dur = Number(video.duration) || 0;
-            if (index === 0) refreshH3ReferenceResolution();
-            saveForm();
-          }
-          updateAspectBadge();
-        }, { once: true });
-        slot.appendChild(aspectBadge);
       } else {
         const audio = document.createElement('span');
         audio.className = 'h3-reference-audio-art';
@@ -17787,17 +15870,7 @@ function renderH3References() {
         event.stopPropagation();
         removeH3Reference(kind, index);
       });
-      const swap = document.createElement('button');
-      swap.className = 'ref-swap';
-      swap.type = 'button';
-      swap.setAttribute('aria-label', `Replace ${tag.replace(/[<>]/g, '')} and keep its prompt reference`);
-      swap.title = `Replace ${tag.replace(/[<>]/g, '')}`;
-      swap.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h12m0 0-3-3m3 3-3 3M19 16H7m0 0 3-3m-3 3 3 3"/></svg>';
-      swap.addEventListener('click', (event) => {
-        event.stopPropagation();
-        pickH3ReferenceReplacement(kind, index);
-      });
-      slot.append(role, swap, remove);
+      slot.append(role, remove);
       slot.setAttribute('aria-label', `${role.textContent}, ${asset.label || asset.name}`);
       wireH3ReferenceReorder(slot, entry);
     } else {
@@ -17829,55 +15902,12 @@ function renderH3References() {
 }
 
 $$('#vidH3ModeRow [data-h3-mode]').forEach((button) => button.addEventListener('click', () => {
-  const requestedMode = button.dataset.h3Mode;
-  state.vidH3Mode = requestedMode === 'replace' && !h3ReplaceAvailable()
-    ? 'frames'
-    : (['reference', 'replace'].includes(requestedMode) ? requestedMode : 'frames');
+  state.vidH3Mode = button.dataset.h3Mode === 'reference' ? 'reference' : 'frames';
   renderVidAttach();
   updateVideoPanels();
   renderPromptComposer();
   saveForm();
 }));
-$$('#vidH3ReplaceKind [data-h3-replace-kind]').forEach((button) => button.addEventListener('click', () => {
-  state.vidH3ReplaceKind = button.dataset.h3ReplaceKind === 'character' ? 'character' : 'object';
-  renderH3Replacement();
-  saveForm();
-}));
-$('#vidH3ReplaceTarget').addEventListener('input', (event) => {
-  state.vidH3ReplaceTarget = event.target.value.slice(0, 240);
-  renderH3Replacement();
-  saveForm();
-});
-$('#vidH3ReplaceVideoBtn').addEventListener('click', () => {
-  pickUpload('video/*', (asset) => setH3ReplacementAsset('video', asset), 'Choose the master video');
-});
-$('#vidH3ReplaceImageBtn').addEventListener('click', () => {
-  pickUpload('image/*', (asset) => setH3ReplacementAsset('image', asset), 'Choose the replacement image');
-});
-$('#vidH3ReplaceVideoX').addEventListener('click', () => setH3ReplacementAsset('video', null));
-$('#vidH3ReplaceImageX').addEventListener('click', () => setH3ReplacementAsset('image', null));
-$('#vidH3ReplaceVideoExpand').addEventListener('click', () => {
-  toggleInlineVideoPreview($('#vidH3ReplaceVideoThumb'), $('#vidH3ReplaceVideoPreview'), $('#vidH3ReplaceVideoExpand'), 'master video');
-});
-$('#vidH3ReplacePromptBtn').addEventListener('click', applyH3ReplacementPrompt);
-$('#vidH3Restyle').addEventListener('click', openH3StylePicker);
-$$('#h3StyleGrid [data-h3-style]').forEach((button) => button.addEventListener('click', () => {
-  const preset = h3StylePreset(button.dataset.h3Style);
-  if (!preset) return toast('That style preset is unavailable. Reload the app and try again.', true);
-  applyH3StyleTransferPrompt(preset.prompt, preset.label);
-}));
-$('#h3StyleCustom').addEventListener('input', (event) => {
-  $('#h3StyleCustomApply').disabled = !event.target.value.trim();
-});
-$('#h3StyleCustom').addEventListener('keydown', (event) => {
-  if (event.key !== 'Enter' || !event.target.value.trim()) return;
-  event.preventDefault();
-  applyH3StyleTransferPrompt(event.target.value.trim(), 'Custom');
-});
-$('#h3StyleCustomApply').addEventListener('click', () => {
-  const style = $('#h3StyleCustom').value.trim();
-  if (style) applyH3StyleTransferPrompt(style, 'Custom');
-});
 $$('#vidH3RefSize [data-h3-ref-size]').forEach((button) => button.addEventListener('click', () => {
   state.vidH3RefImageSize = button.dataset.h3RefSize === 'max' ? 'max' : 'match';
   renderH3References();
@@ -17899,12 +15929,10 @@ function renderVidAttach() {
   const has = !!state.vidRef;
   const editAnything = state.vidEngine === 'ltx-edit';
   const scail = state.vidEngine === 'scail';
-  const wanAnimate2 = state.vidEngine === 'wan-animate2';
   const canSuggestMotion = !editAnything && !scail && !h3ReferenceModeActive() && has;
   $('#vidAttachBtn').hidden = editAnything || has || !!state.vidFace;
   $('#vidAttachThumb').hidden = editAnything || !has;
   $('#vidMotionPromptRow').hidden = !canSuggestMotion;
-  if (wanAnimate2) $('#vidMotionPromptRow').hidden = true;
   syncVideoAutoMotionUi();
   if (has) {
     $('#vidAttachImg').src = state.vidRef.url;
@@ -17918,7 +15946,7 @@ function renderVidAttach() {
 
 function syncVideoAutoMotionUi() {
   const armed = state.vidAutoMotionPrompt && !!state.vidRef
-    && !['ltx-edit', 'scail', 'wan-animate2'].includes(state.vidEngine)
+    && !['ltx-edit', 'scail'].includes(state.vidEngine)
     && !h3ReferenceModeActive();
   const toggle = $('#vidAutoMotionToggle');
   const action = $('#vidMotionPromptBtn');
@@ -17961,9 +15989,8 @@ function renderVidFace() {
   // RIFE can smooth any LTX, Wan, or SCAIL output. Motion freedom stays
   // specific to standard LTX only.
   const wanOrScail = state.vidEngine === 'wan' || state.vidEngine === 'scail';
-  const fixedMotion = wanOrScail || state.vidEngine === 'wan-animate2';
   $('#vidFpsRow').hidden = h3 || !(ltxFamily || wanOrScail);
-  $('#vidFreeField').hidden = h3 || fixedMotion || ltxEdit || faceMode;
+  $('#vidFreeField').hidden = h3 || wanOrScail || ltxEdit || faceMode;
   $('#vidAudioChip').hidden = h3;
   $('#vidAudioTrim').hidden = h3 || !state.vidAudio;
   renderVideoFpsChoices();
@@ -18007,16 +16034,30 @@ $('#vidFaceCrop').addEventListener('click', (event) => {
   event.stopPropagation();
   if (!state.vidFace) return;
   openInputImageCrop(state.vidFace, (next) => {
-    releaseAssetObjectUrl(state.vidFace, next);
     state.vidFace = next;
     renderVidAttach();
     saveForm();
   }, 'Crop Face ID image');
 });
 $('#vidFaceX').addEventListener('click', () => {
-  releaseAssetObjectUrl(state.vidFace);
   state.vidFace = null;
   renderVidAttach();
+});
+$('#vidAudioX').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (state.vidAudio) stopPreview();
+  state.vidAudio = null;
+  setAudioChipVisual($('#vidAudioChip'), false);
+  $('#vidAudioTrim').hidden = true;
+  saveForm();
+});
+$('#animAudioX').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (state.animAudio) stopPreview();
+  state.animAudio = null;
+  setAudioChipVisual($('#animAudioChip'), false);
+  $('#animAudioTrim').hidden = true;
+  saveForm();
 });
 
 /* ---------------- Face ID library (named, reusable faces) ------------ */
@@ -18089,9 +16130,7 @@ async function useFace(face) {
       headers: { 'x-filename': encodeURIComponent(face.name.replace(/[^\w]+/g, '_') + '.png') },
       body: buf,
     });
-    const nextFace = { name: res.name, url: URL.createObjectURL(blob), label: face.name, faceId: face.id };
-    releaseAssetObjectUrl(state.vidFace, nextFace);
-    state.vidFace = nextFace;
+    state.vidFace = { name: res.name, url: URL.createObjectURL(blob), label: face.name, faceId: face.id };
     $('#faceSheet').classList.remove('show');
     renderVidAttach();
     toast(`${face.name} set as the Face ID reference`);
@@ -18111,9 +16150,7 @@ $('#faceUploadBtn').addEventListener('click', () => {
       });
       faceLibrary = r.faces || [];
       const saved = faceLibrary.find((x) => x.name === name) || faceLibrary[0];
-      const nextFace = { name: f.name, url: f.url, label: name, faceId: saved && saved.id };
-      releaseAssetObjectUrl(state.vidFace, nextFace);
-      state.vidFace = nextFace;
+      state.vidFace = { name: f.name, url: f.url, label: name, faceId: saved && saved.id };
       $('#faceSheet').classList.remove('show');
       renderVidAttach();
       toast(`${name} saved to the library and set as reference`);
@@ -18141,13 +16178,10 @@ let preparedMotionPromptCache = null;
 let motionPromptRequest = null;
 
 function motionPromptContext(prompt) {
-  const requestedSeconds = Number($('#vidDur').value) || 5;
   return {
     imageName: state.vidRef ? state.vidRef.name : '',
-    endImageName: state.vidEngine === 'h3' && state.vidEnd ? state.vidEnd.name : '',
     engine: state.vidEngine,
-    seconds: state.vidEngine === 'h3' ? h3EffectiveDurationSeconds(requestedSeconds) : requestedSeconds,
-    h3LongContext: state.vidEngine === 'h3' && h3LongContextActive(),
+    seconds: Number($('#vidDur').value) || 5,
     input: String(prompt || '').trim(),
   };
 }
@@ -18155,10 +16189,8 @@ function motionPromptContext(prompt) {
 function sameMotionPromptContext(left, right, includeInput = true) {
   return !!left && !!right
     && left.imageName === right.imageName
-    && left.endImageName === right.endImageName
     && left.engine === right.engine
     && left.seconds === right.seconds
-    && left.h3LongContext === right.h3LongContext
     && (!includeInput || left.input === right.input);
 }
 
@@ -18179,11 +16211,9 @@ async function requestMotionPromptFromFirstFrame(initialPrompt) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       imageName: context.imageName,
-      endImageName: context.endImageName || undefined,
       prompt: context.input,
       engine: context.engine,
       seconds: context.seconds,
-      h3LongContext: context.h3LongContext,
     }),
   }).then((res) => {
     if (!res.prompt) throw new Error('Vision model returned no usable motion prompt');
@@ -18246,7 +16276,6 @@ function pickVidRef() {
 }
 
 function setVideoFirstFrame(asset, { matchH3Source = !!asset } = {}) {
-  releaseAssetObjectUrls([state.vidRef], [asset, state.vidEnd]);
   state.vidRef = asset || null;
   if (asset && matchH3Source) state.vidH3MatchSource = true;
 }
@@ -18332,32 +16361,22 @@ state.vidDrive = null;
 state.vidFace = null;
 function renderVidDrive() {
   const scail = state.vidEngine === 'scail';
-  const wanAnimate2 = state.vidEngine === 'wan-animate2';
   const editAnything = state.vidEngine === 'ltx-edit';
-  const usesGuideVideo = scail || wanAnimate2 || editAnything;
+  const usesGuideVideo = scail || editAnything;
   const has = !!state.vidDrive;
-  $('#vidDriveThumb').classList.toggle('preview-only', scail);
   $('#vidDriveBtn').hidden = !usesGuideVideo || has;
   $('#vidDriveThumb').hidden = !usesGuideVideo || !has;
   $('#vidDriveTools').hidden = !usesGuideVideo || !has;
-  $('#vidDriveTrimChip').hidden = wanAnimate2;
   $('#vidDriveTrim').hidden = !usesGuideVideo || !has || !$('#vidDriveTrimChip').classList.contains('active');
   $('#vidDriveFrameChip').hidden = editAnything;
-  $('#vidDriveTitle').textContent = editAnything ? 'Source video' : (wanAnimate2 ? 'Performance video' : 'Motion video');
-  $('#vidDriveSub').textContent = editAnything ? 'Required · video to edit' : (wanAnimate2 ? 'Required · motion, expression, and audio' : 'Required · drives movement');
-  $('#vidDriveFilledTitle').textContent = editAnything ? 'Source video' : (wanAnimate2 ? 'Performance video' : 'Motion video');
+  $('#vidDriveTitle').textContent = editAnything ? 'Source video' : 'Motion video';
+  $('#vidDriveSub').textContent = editAnything ? 'Required · video to edit' : 'Required · drives movement';
+  $('#vidDriveFilledTitle').textContent = editAnything ? 'Source video' : 'Motion video';
   $('#vidAttachTitle').textContent = scail ? 'Reference image' : 'First frame';
   $('#vidAttachFilledTitle').textContent = scail ? 'Reference image' : 'First frame';
   $('#vidAttachImg').alt = scail ? 'Reference image preview' : 'First frame preview';
-  if (wanAnimate2) {
-    $('#vidAttachTitle').textContent = 'Character image';
-    $('#vidAttachFilledTitle').textContent = 'Character image';
-    $('#vidAttachImg').alt = 'Character image preview';
-  }
   $('#vidAttachSub').textContent = scail
     ? 'required · the person to re-animate'
-    : wanAnimate2
-      ? 'required · identity and appearance'
     : 'optional · image → video';
   if (usesGuideVideo && has) {
     const v = $('#vidDriveVideo');
@@ -18368,7 +16387,6 @@ function renderVidDrive() {
 }
 $('#vidDriveBtn').addEventListener('click', () => {
   pickUpload('video/*', (f) => {
-    releaseAssetObjectUrl(state.vidDrive, f);
     state.vidDrive = f;
     $('#vidDriveTrimChip').classList.remove('active');
     $('#vidDriveLabel').textContent = f.label || 'drives the movement';
@@ -18389,7 +16407,6 @@ $('#vidDriveBtn').addEventListener('click', () => {
   });
 });
 $('#vidDriveX').addEventListener('click', () => {
-  releaseAssetObjectUrl(state.vidDrive);
   state.vidDrive = null;
   $('#vidDriveVideo').removeAttribute('src');
   $('#vidDriveTrimChip').classList.remove('active');
@@ -18531,20 +16548,16 @@ $('#vidDriveVideo').addEventListener('timeupdate', () => {
 $('#vidDriveVideo').addEventListener('play', () => setTrimPlaybackIcon($('#driveTrimPlay'), true));
 $('#vidDriveVideo').addEventListener('pause', () => setTrimPlaybackIcon($('#driveTrimPlay'), false));
 $('#vidDriveVideo').addEventListener('ended', () => setTrimPlaybackIcon($('#driveTrimPlay'), false));
-function setInlineVideoExpandIcon(button, expanded, subject = 'preview') {
-  button.innerHTML = expanded
-    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9H4V4M15 9h5V4M15 15h5v5M9 15H4v5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  button.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${subject} preview`);
-}
-function toggleInlineVideoPreview(thumb, video, button, subject = 'preview') {
-  const expanded = thumb.classList.toggle('expanded');
-  video.controls = expanded;
-  setInlineVideoExpandIcon(button, expanded, subject);
-}
 /* Expand the motion-video thumb into a full-width inline preview */
 $('#vidDriveExpand').addEventListener('click', () => {
-  toggleInlineVideoPreview($('#vidDriveThumb'), $('#vidDriveVideo'), $('#vidDriveExpand'), 'motion video');
+  const th = $('#vidDriveThumb');
+  const v = $('#vidDriveVideo');
+  const on = th.classList.toggle('expanded');
+  v.controls = on;
+  $('#vidDriveExpand').innerHTML = on
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9H4V4M15 9h5V4M15 15h5v5M9 15H4v5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  $('#vidDriveExpand').setAttribute('aria-label', on ? 'Collapse preview' : 'Expand preview');
 });
 $('#driveTrimPlay').addEventListener('click', () => {
   const dv = $('#vidDriveVideo');
@@ -18941,19 +16954,17 @@ wireEngineRow('vidEngineRow', (engine) => {
   }
   const h3 = engine === 'h3';
   const wan = engine === 'wan';
-  const wanAnimate2 = engine === 'wan-animate2';
   const scail = engine === 'scail';
   const ltxEdit = engine === 'ltx-edit';
   const ltxFamily = engine === 'ltx' || ltxEdit;
-  $('#vidFreeField').hidden = h3 || wan || wanAnimate2 || scail || ltxEdit;
+  $('#vidFreeField').hidden = h3 || wan || scail || ltxEdit;
   $('#vidQuality').hidden = !wan;
   $('#vidSigmaRow').hidden = engine !== 'eros';
   $('#vidFpsRow').hidden = h3 || !(ltxFamily || wan || scail);
-  $('#vidExtras').hidden = wan || wanAnimate2 || scail || ltxEdit || (h3 && h3ReferenceBackedMode());
+  $('#vidExtras').hidden = wan || scail || ltxEdit || (h3 && state.vidH3Mode === 'reference');
   // The Edit Anything workflow is trained on literal edit captions; do not
   // send those captions through the creative prompt enhancer.
   $('#enhanceBtn').hidden = ltxEdit;
-  if (wanAnimate2) $('#enhanceBtn').hidden = true;
   if (h3 || previousEngine === 'h3') {
     state.customDims = false;
     computeDims();
@@ -19047,10 +17058,9 @@ $('#generateBtn').addEventListener('click', async () => {
   const autoMotionPrompt = state.view === 'video'
     && state.vidAutoMotionPrompt
     && !!state.vidRef
-    && !['ltx-edit', 'scail', 'wan-animate2'].includes(state.vidEngine)
+    && !['ltx-edit', 'scail'].includes(state.vidEngine)
     && !h3ReferenceModeActive();
-  const promptOptional = (state.view === 'video'
-    && (state.vidEngine === 'scail' || autoMotionPrompt || state.vidEngine === 'wan-animate2')) || outpaintActive;
+  const promptOptional = (state.view === 'video' && (state.vidEngine === 'scail' || autoMotionPrompt)) || outpaintActive;
   if (!prompt && !promptOptional && !hasRegionPrompts && !qwenAngleExports.length) return toast('Type a prompt first', true);
   if (qwenAngleExports.length && !state.refs[0]) return toast('Camera variations need a source image in reference slot 1', true);
   if (outpaintActive && !state.refs[0]) return toast('Expand needs a source image in reference slot 1', true);
@@ -19062,20 +17072,13 @@ $('#generateBtn').addEventListener('click', async () => {
       return toast(capability.reason || 'This video model is not supported on the connected generation device.', true);
     }
     const ltxEdit = state.vidEngine === 'ltx-edit';
-    const h3Reference = state.vidEngine === 'h3'
-      && (state.vidH3Mode === 'reference' || (state.vidH3Mode === 'replace' && h3ReplaceAvailable()));
-    const h3GenerationReferences = h3ActiveReferences();
-    const h3ReferenceCount = Object.values(h3GenerationReferences).reduce((count, assets) => count + assets.length, 0);
+    const h3Reference = state.vidEngine === 'h3' && state.vidH3Mode === 'reference';
+    const h3ReferenceCount = Object.values(h3References()).reduce((count, assets) => count + assets.length, 0);
     if (h3Reference && !h3ReferenceCount) {
       return toast('MiniMax H3 Reference mode needs at least one image, video, or audio reference', true);
     }
-    if (state.vidEngine === 'h3' && state.vidH3Mode === 'replace' && h3ReplaceAvailable()) {
-      if (!state.vidH3ReplaceTarget.trim()) return toast('Describe the original target you want to replace', true);
-      if (!state.vidH3ReplaceVideo) return toast('Replace mode needs the master video', true);
-      if (!state.vidH3ReplaceImage) return toast('Replace mode needs the replacement image', true);
-    }
     if (!ltxEdit && !['ltx', 'h3'].includes(state.vidEngine) && !state.vidRef) {
-      const lbl = { wan: 'Wan 2.2', 'wan-animate2': 'Wan Animate 2', eros: '10Eros DMD', scail: 'SCAIL 2' }[state.vidEngine];
+      const lbl = { wan: 'Wan 2.2', eros: '10Eros DMD', scail: 'SCAIL 2' }[state.vidEngine];
       return toast(`${lbl} needs a source image — add one, or switch to LTX 2.3 for text-to-video`, true);
     }
     if (ltxEdit && !state.vidDrive) {
@@ -19083,9 +17086,6 @@ $('#generateBtn').addEventListener('click', async () => {
     }
     if (state.vidEngine === 'scail' && !state.vidDrive) {
       return toast('SCAIL 2 needs a motion video — attach the clip whose movement you want to copy', true);
-    }
-    if (state.vidEngine === 'wan-animate2' && !state.vidDrive) {
-      return toast('Wan Animate 2 needs a performance video for motion and expression', true);
     }
     if (!(await ensureGenerationSetup())) return;
     let vidAudioName;
@@ -19108,56 +17108,31 @@ $('#generateBtn').addEventListener('click', async () => {
       autoMotionPrompt,
       preparedMotionPrompt: false,
       engine: state.vidEngine,
-      steps: state.vidEngine === 'h3'
-        ? (h3TurboActive() ? normalizedH3TurboSteps() : normalizedH3Steps())
-        : undefined,
-      seconds: state.vidEngine === 'h3'
-        ? (h3LongContextActive()
-          ? Number($('#vidDur').value) || 30
-          : h3EffectiveDurationSeconds(Number($('#vidDur').value) || 5))
-        : Number($('#vidDur').value) || 5,
+      steps: state.vidEngine === 'h3' ? normalizedH3Steps() : undefined,
+      seconds: Number($('#vidDur').value) || 5,
       enhance: ltxEdit ? false : state.enhance,
-      fourK: state.vidEngine === 'wan-animate2' ? false : $('#vid4k').classList.contains('active'),
+      fourK: $('#vid4k').classList.contains('active'),
       fast: !$('#vidQuality').classList.contains('active'),
       motionFreedom: Number($('#vidFree').value),
       sigmaPreset: state.vidSigma,
-      smooth: state.vidEngine === 'wan-animate2' ? 1 : state.vidSmooth,
+      smooth: state.vidSmooth,
       scailMode: state.vidEngine === 'scail' ? state.vidScailMode : undefined,
       scailFps: state.vidEngine === 'scail' ? state.vidScailFps : undefined,
       scailStableTracking: state.vidEngine === 'scail' ? state.vidScailStableTracking !== false : undefined,
       scailChunkFrames: state.vidEngine === 'scail' ? state.vidScailChunkFrames : undefined,
       scailChunkOverlap: state.vidEngine === 'scail' ? state.vidScailChunkOverlap : undefined,
-      wanAnimate2IdentityStrength: state.vidEngine === 'wan-animate2' ? state.vidWanAnimate2IdentityStrength : undefined,
-      wanAnimate2MotionStrength: state.vidEngine === 'wan-animate2' ? state.vidWanAnimate2MotionStrength : undefined,
       sourceItemId: !h3Reference && state.vidRef ? state.vidRef.srcItemId : undefined,
       loras: state.vidEngine === 'h3' ? [] : state.videoLoras,
-      h3Mode: state.vidEngine === 'h3'
-        ? (state.vidH3Mode === 'replace' && !h3ReplaceAvailable() ? 'frames' : state.vidH3Mode)
-        : undefined,
-      h3ReplaceKind: state.vidEngine === 'h3' && state.vidH3Mode === 'replace' && h3ReplaceAvailable()
-        ? state.vidH3ReplaceKind : undefined,
-      h3ReplaceTarget: state.vidEngine === 'h3' && state.vidH3Mode === 'replace' && h3ReplaceAvailable()
-        ? state.vidH3ReplaceTarget.trim() : undefined,
-      h3Turbo: state.vidEngine === 'h3' ? h3TurboActive() : undefined,
-      h3LongContext: state.vidEngine === 'h3' ? h3LongContextActive() : undefined,
-      h3TurboStrength: h3TurboActive() ? state.vidH3TurboStrength : undefined,
+      h3Mode: state.vidEngine === 'h3' ? state.vidH3Mode : undefined,
       h3ResolutionSize: state.vidEngine === 'h3' ? h3ResolutionSize() : undefined,
       h3AspectRatio: state.vidEngine === 'h3' ? h3ResolutionAspectRatio() : undefined,
       h3MatchSource: state.vidEngine === 'h3' && state.vidH3Mode === 'frames'
         ? h3MatchSourceActive() : undefined,
-      h3MatchReferenceVideo: state.vidEngine === 'h3' && state.vidH3Mode === 'reference'
-        ? h3MatchReferenceVideoActive() : undefined,
       sageAttention: state.vidEngine === 'h3' ? state.vidH3SageAttention !== false : undefined,
       h3RefImageSize: h3Reference ? state.vidH3RefImageSize : undefined,
-      h3References: h3Reference ? Object.fromEntries(Object.entries(h3GenerationReferences).map(([kind, assets]) => [
+      h3References: h3Reference ? Object.fromEntries(Object.entries(h3References()).map(([kind, assets]) => [
         kind,
-        assets.map((asset) => ({
-          name: asset.name,
-          label: asset.label || '',
-          hasAudio: asset.hasAudio === true,
-          w: Math.max(0, Math.round(Number(asset.w) || 0)),
-          h: Math.max(0, Math.round(Number(asset.h) || 0)),
-        })),
+        assets.map((asset) => ({ name: asset.name, label: asset.label || '', hasAudio: asset.hasAudio === true })),
       ])) : undefined,
       cameraMotions: cameraMotionsForEngine(),
       cameraGuideVideoName: cameraMotionReferenceActive() && state.videoCameraGuide ? state.videoCameraGuide.name : undefined,
@@ -19167,10 +17142,10 @@ $('#generateBtn').addEventListener('click', async () => {
         ? Math.max(0, Number(state.videoCameraGuide.dur) || 0) : undefined,
       audioName: vidAudioName,
       faceImageName: state.vidEngine === 'ltx' && state.vidFace && !state.vidRef ? state.vidFace.name : undefined,
-      driveVideoName: (['scail', 'wan-animate2'].includes(state.vidEngine) || ltxEdit) && state.vidDrive ? state.vidDrive.name : undefined,
+      driveVideoName: (state.vidEngine === 'scail' || ltxEdit) && state.vidDrive ? state.vidDrive.name : undefined,
       driveHasAudio: state.vidEngine === 'scail' && state.vidDrive ? state.vidDrive.hasAudio === true : undefined,
       driveStartSeconds: (state.vidEngine === 'scail' || ltxEdit) && state.vidDrive ? state.vidDrive.trimStart || 0 : undefined,
-      driveDurSeconds: (['scail', 'wan-animate2'].includes(state.vidEngine) || ltxEdit) && state.vidDrive && state.vidDrive.dur
+      driveDurSeconds: (state.vidEngine === 'scail' || ltxEdit) && state.vidDrive && state.vidDrive.dur
         ? Math.max(0.5, (state.vidDrive.trimEnd || state.vidDrive.dur) - (state.vidDrive.trimStart || 0)) : undefined,
       endImageName: state.vidEnd && !h3Reference ? state.vidEnd.name : undefined,
       imageName: state.vidRef && !h3Reference ? state.vidRef.name : undefined,
@@ -19186,10 +17161,6 @@ $('#generateBtn').addEventListener('click', async () => {
         : (!h3Reference && state.vidRef ? state.vidRef.h : state.height),
       seed: baseSeed,
     };
-    if (state.vidEngine === 'wan-animate2') {
-      body.enhance = false;
-      body.driveHasAudio = state.vidDrive?.hasAudio === true;
-    }
     if (autoMotionPrompt) {
       state.motionPromptRequestsPending += 1;
       $('#genLbl').textContent = genLabel();
@@ -19199,23 +17170,32 @@ $('#generateBtn').addEventListener('click', async () => {
       const requests = Array.from({ length: batch }, (_, index) => Object.assign({}, body, {
         seed: baseSeed == null ? undefined : baseSeed + index,
       }));
-      const settled = await Promise.allSettled(requests.map(async (request) => {
-          const result = await generationApi('/api/animate', {
+      // Submit the batch strictly sequentially. The server serializes all
+      // ComfyUI submissions anyway, and firing N video requests at once would
+      // stack N reference-upload buffers in memory before the first job even
+      // reaches the queue. Each request returns only after its own
+      // reference-upload + graph-build completes, so a for-loop is the safe
+      // order: one upload in flight at a time.
+      const results = [];
+      const failures = [];
+      for (const request of requests) {
+        try {
+          const result = await api('/api/animate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(request),
           });
           state.activeJobs.add(result.jobId);
-          if (result.sequenceId) state.activeJobSequences.set(result.jobId, result.sequenceId);
-          return result;
-      }));
-      const results = settled.filter((result) => result.status === 'fulfilled').map((result) => result.value);
-      const failures = settled.filter((result) => result.status === 'rejected');
-      if (!results.length && failures.length) throw failures[0].reason;
+          results.push(result);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (!results.length && failures.length) throw failures[0];
       $('#genLbl').textContent = genLabel();
       queueRefreshSoon();
       if (failures.length) {
-        const detail = failures[0].reason && failures[0].reason.message ? ` · ${failures[0].reason.message}` : '';
+        const detail = failures[0] && failures[0].message ? ` · ${failures[0].message}` : '';
         toast(`${results.length} queued · ${failures.length} failed${detail}`, true);
       } else if (results.length > 1) toast(`${results.length} videos queued`);
     } catch (e) {
@@ -19377,7 +17357,7 @@ $('#generateBtn').addEventListener('click', async () => {
       let res;
       while (!res) {
         try {
-          res = await generationApi('/api/generate', {
+          res = await api('/api/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(Object.assign({}, request, lowVramChoice ? { lowVramChoice } : {})),
@@ -19472,13 +17452,11 @@ function setGenerating(on, statusText) {
 state.queueProgress = {};
 let queueRefreshAt = 0;
 let queueDrag = null;
-let queueView = 'jobs';
-let queueDownloadsWereActive = false;
 
 async function refreshQueue() {
   const q = await api('/api/queue');
   reconcileGenerationState(q);
-  const total = (q.running || []).length + (q.pending || []).length + (q.finalizing || []).length + (q.downloads || []).length;
+  const total = (q.running || []).length + (q.pending || []).length + (q.finalizing || []).length;
   $('#queueCount').hidden = total === 0;
   $('#queueCount').textContent = String(total);
   if ($('#queueSheet').classList.contains('show')) renderQueue(q);
@@ -19806,78 +17784,7 @@ function queueThumbnail(entry) {
   return thumb;
 }
 
-function setQueueView(view) {
-  queueView = view === 'downloads' ? 'downloads' : 'jobs';
-  const jobsActive = queueView === 'jobs';
-  $('#queueJobsPanel').hidden = !jobsActive;
-  $('#queueDownloadsPanel').hidden = jobsActive;
-  $('#queueJobsTab').classList.toggle('active', jobsActive);
-  $('#queueDownloadsTab').classList.toggle('active', !jobsActive);
-  $('#queueJobsTab').setAttribute('aria-selected', String(jobsActive));
-  $('#queueDownloadsTab').setAttribute('aria-selected', String(!jobsActive));
-}
-
-function syncQueueTabs(q) {
-  const downloads = q.downloads || [];
-  const jobs = (q.running || []).length + (q.pending || []).length + (q.finalizing || []).length;
-  const hasDownloads = downloads.length > 0;
-  $('#queueTabs').hidden = !hasDownloads;
-  $('#queueJobsCount').textContent = String(jobs);
-  $('#queueDownloadsCount').textContent = String(downloads.length);
-  if (hasDownloads && !queueDownloadsWereActive && jobs === 0) queueView = 'downloads';
-  if (!hasDownloads) queueView = 'jobs';
-  queueDownloadsWereActive = hasDownloads;
-  setQueueView(queueView);
-}
-
-function renderQueueDownloads(downloads) {
-  const list = $('#queueDownloadsList');
-  list.innerHTML = '';
-  if (!downloads.length) {
-    list.innerHTML = '<div class="queue-empty">No active downloads.</div>';
-    return;
-  }
-  for (const download of downloads) {
-    const metrics = dependencyProgressMetrics(Object.assign({ phase: 'downloading-model', state: 'running' }, download));
-    const card = document.createElement('div');
-    card.className = 'queue-download-card';
-    const head = document.createElement('div');
-    head.className = 'queue-download-head';
-    head.innerHTML = `<span class="queue-download-icon" aria-hidden="true">↓</span><span><strong>${escapeHtml(download.filename || download.label || 'Model download')}</strong><small>${escapeHtml(download.message || 'Downloading model')}</small></span>`;
-    const progress = document.createElement('div');
-    progress.className = `queue-download-progress${metrics.determinate ? '' : ' indeterminate'}`;
-    progress.innerHTML = `<i style="width:${metrics.determinate ? Math.max(0, Math.min(100, metrics.percent)) : 34}%"></i>`;
-    const footer = document.createElement('div');
-    footer.className = 'queue-download-footer';
-    const label = document.createElement('span');
-    label.textContent = metrics.label || 'Download active';
-    footer.appendChild(label);
-    if (download.canCancel) {
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.textContent = 'Cancel';
-      cancel.addEventListener('click', async () => {
-        if (!await askConfirm({ title: 'Cancel this download?', message: 'Completed files are kept and partial model data is removed safely.', confirmLabel: 'Cancel download', danger: true })) return;
-        cancel.disabled = true;
-        try {
-          await api('/api/dependencies/cancel', { method: 'POST' });
-          toast('Stopping download safely…');
-          refreshQueue();
-        } catch (error) {
-          cancel.disabled = false;
-          toast(error.message, true);
-        }
-      });
-      footer.appendChild(cancel);
-    }
-    card.append(head, progress, footer);
-    list.appendChild(card);
-  }
-}
-
 function renderQueue(q) {
-  syncQueueTabs(q);
-  renderQueueDownloads(q.downloads || []);
   renderQueueHealth(q.health);
   if (queueDrag) return;
   const list = $('#queueList');
@@ -19988,8 +17895,6 @@ $('#queueBtn').addEventListener('click', async () => {
   }, 3000);
 });
 
-$$('[data-queue-view]').forEach((button) => button.addEventListener('click', () => setQueueView(button.dataset.queueView)));
-
 $('#queueResetBtn').addEventListener('click', async () => {
   if (!await askConfirm({ title: 'Hard reset ComfyUI?', message: 'This stops the active job, clears queued jobs, and unloads model memory.', confirmLabel: 'Hard reset', danger: true })) return;
   const btn = $('#queueResetBtn');
@@ -20068,11 +17973,6 @@ function renderGenerationProgress(d) {
 
 function renderGenerationStatus(d) {
   if (d.profileId && state.profile && d.profileId !== state.profile.id) return;
-  // Manual Revise Prompt requests report progress inside their sheet, not in
-  // the generation/result card. Ignore this legacy server status defensively
-  // so mixed-version updates cannot leave a stale "Revising prompt" card.
-  if (d.jobId === 'pre'
-    && (d.scope !== 'generation-preflight' || promptAssistantBusy || generationPreflightRequests < 1)) return;
   const phaseText = generationPhaseText(d);
   if (d.kind === 'smartMask' && smartMaskRunning) setSmartMaskLoading(d.text || 'Finding selection…');
   if (state.activeJobs.has(d.jobId) || d.jobId === 'pre') {
@@ -20117,16 +18017,6 @@ function connectEvents() {
     }
     toast(`Step ${d.completedStep} complete · running ${d.nextStep} of ${d.total}`);
     refreshGallery(true);
-    queueRefreshSoon();
-  });
-  es.addEventListener('videoChunkStep', (ev) => {
-    const d = JSON.parse(ev.data);
-    const longContext = d.sequenceKind === 'long-context';
-    if (state.activeJobs.has(d.jobId)) {
-      applyQueueJobMapping({ [d.jobId]: d.nextJobId });
-      setGenerating(true, `${longContext ? 'H3 Long context clip' : 'H3 Turbo chunk'} ${d.nextChunk} of ${d.total}…`);
-    }
-    toast(`${longContext ? 'Long context clip' : 'H3 chunk'} ${d.completedChunk} complete · running ${d.nextChunk} of ${d.total}`);
     queueRefreshSoon();
   });
   es.addEventListener('jobDone', (ev) => {
@@ -20290,10 +18180,6 @@ function connectEvents() {
     refreshGallery(true).catch(() => { /* noop */ });
     queueRefreshSoon();
   });
-  es.addEventListener('dependencyInstall', (event) => {
-    try { setupDependencyState = JSON.parse(event.data); } catch { /* Queue refresh remains authoritative. */ }
-    queueRefreshSoon();
-  });
   es.onerror = () => { /* browser auto-reconnects */ };
 }
 function isUpscaleJob() { return state.upscaling.size > 0; }
@@ -20302,45 +18188,27 @@ function isUpscaleJob() { return state.upscaling.size > 0; }
 /* Gallery                                                             */
 /* ------------------------------------------------------------------ */
 
-function refreshGallery(soft, options = {}) {
-  const request = (async () => {
-    try {
-      const conditionalRevision = options.conditional ? galleryDataRevision : '';
-      const data = await api('/api/gallery' + (conditionalRevision
-        ? `?revision=${encodeURIComponent(conditionalRevision)}`
-        : ''));
-      galleryDataUpdatedAt = Date.now();
-      if (data.unchanged) {
-        galleryDataRevision = String(data.revision || galleryDataRevision);
-        return;
-      }
-      state.folders = data.folders;
-      state.items = data.items;
-      state.uploadedAssets = Array.isArray(data.uploadedAssets) ? data.uploadedAssets : [];
-      state.privateUnlocked = !!data.unlocked;
-      galleryDataRevision = String(data.revision || '');
-      if (!['all', 'uploaded-assets'].includes(state.activeFolder) && !state.folders.some((f) => f.id === state.activeFolder)) {
-        state.activeFolder = 'all';
-      }
-      // LoRA context is unrelated to Library rendering; do not hold the grid
-      // behind a second request before it can become interactive.
-      void refreshLoraContext();
-      renderFolders();
-      renderGrid();
-      renderDesktopStage();
-      updatePrivacyButton();
-    } catch (e) {
-      if (!soft) toast(e.message, true);
-    } finally {
-      firstRunTutorialGalleryLoaded = true;
-      maybeShowFirstRunTutorial();
+async function refreshGallery(soft) {
+  try {
+    const data = await api('/api/gallery');
+    state.folders = data.folders;
+    state.items = data.items;
+    state.uploadedAssets = Array.isArray(data.uploadedAssets) ? data.uploadedAssets : [];
+    state.privateUnlocked = !!data.unlocked;
+    if (!['all', 'uploaded-assets'].includes(state.activeFolder) && !state.folders.some((f) => f.id === state.activeFolder)) {
+      state.activeFolder = 'all';
     }
-  })();
-  const tracked = request.finally(() => {
-    if (galleryRefreshPromise === tracked) galleryRefreshPromise = null;
-  });
-  galleryRefreshPromise = tracked;
-  return tracked;
+    await refreshLoraContext();
+    renderFolders();
+    renderGrid();
+    renderDesktopStage();
+    updatePrivacyButton();
+  } catch (e) {
+    if (!soft) toast(e.message, true);
+  } finally {
+    firstRunTutorialGalleryLoaded = true;
+    maybeShowFirstRunTutorial();
+  }
 }
 
 function updatePrivacyButton() {
@@ -20620,19 +18488,12 @@ function itemActivity(it) {
 
 function videoEngineLabel(engine, info) {
   if (info?.workflow === 'director') return 'LTX 2.3 Director';
-  if (engine === 'h3' && info?.h3Mode === 'replace') {
-    return info?.h3Turbo === true ? 'MiniMax H3 Replace Turbo' : 'MiniMax H3 Replace';
-  }
-  if (engine === 'h3' && info?.h3Turbo === true) {
-    return info?.h3Mode === 'reference' ? 'MiniMax H3 Reference Turbo' : 'MiniMax H3 Turbo';
-  }
   return {
     ltx: 'LTX 2.3',
     h3: 'MiniMax H3',
     'ltx-edit': 'LTX Edit',
     eros: '10Eros DMD',
     wan: 'Wan 2.2',
-    'wan-animate2': 'Wan Animate 2',
     scail: 'SCAIL 2',
   }[engine] || 'LTX 2.3';
 }
@@ -20676,10 +18537,6 @@ function focusCompletedDesktopOutput(itemId, media = 'image') {
   state.desktopSettingsReady = false;
   state.desktopStageDismissed = false;
   const item = state.items.find((entry) => entry.id === itemId) || null;
-  if (!desktopWorkspaceActive()) {
-    setDesktopStageMedia();
-    return;
-  }
   renderDesktopStage(item || undefined, item ? media : undefined);
   syncDesktopGallerySelection();
 }
@@ -20689,7 +18546,6 @@ function setDesktopStageMedia({ image = '', video = '', poster = '' } = {}) {
   const vid = $('#desktopStageVideo');
   const empty = $('#desktopStageEmpty');
   if (!img || !vid || !empty) return;
-  const hadVideoSource = !!(vid.dataset.src || vid.currentSrc || vid.getAttribute('src'));
   try { vid.pause(); } catch { /* noop */ }
   vid.hidden = true;
   img.hidden = true;
@@ -20707,17 +18563,11 @@ function setDesktopStageMedia({ image = '', video = '', poster = '' } = {}) {
       vid.play().catch(() => { /* autoplay is an enhancement */ });
     }
   } else {
-    vid.removeAttribute('poster');
-    if (hadVideoSource) {
-      vid.removeAttribute('src');
-      vid.dataset.src = '';
-      vid.load();
-    }
+    vid.removeAttribute('src');
+    vid.dataset.src = '';
     if (image) {
       img.src = image;
       img.hidden = false;
-    } else {
-      img.removeAttribute('src');
     }
   }
 }
@@ -20739,7 +18589,6 @@ function desktopStageSelection() {
 }
 
 function syncDesktopGallerySelection() {
-  if (!desktopWorkspaceActive()) return;
   $$('#galleryGrid .card').forEach((card) => {
     const groupedIds = (card.dataset.groupItemIds || '').split(',').filter(Boolean);
     const itemMatches = card.dataset.id === state.desktopItemId || groupedIds.includes(state.desktopItemId);
@@ -20906,15 +18755,6 @@ function renderDesktopStagePicker(item, media = 'image') {
 function renderDesktopStage(item, mediaSel) {
   const open = $('#desktopStageOpen');
   if (!open) return;
-  if (!desktopWorkspaceActive()) {
-    setDesktopStageMedia();
-    const picker = $('#desktopStagePicker');
-    if (picker) {
-      picker.replaceChildren();
-      picker.hidden = true;
-    }
-    return;
-  }
   const resolved = item ? { item, media: mediaSel || 'image', selected: !!state.desktopItemId } : desktopStageSelection();
   item = resolved.item;
   const status = $('#desktopStageStatus');
@@ -20999,10 +18839,6 @@ function renderDesktopStage(item, mediaSel) {
 function renderDesktopStageGenerating(statusText = 'Working…') {
   const open = $('#desktopStageOpen');
   if (!open) return;
-  if (!desktopWorkspaceActive()) {
-    setDesktopStageMedia();
-    return;
-  }
   state.desktopStageDismissed = false;
   open.disabled = true;
   $('#desktopStageInfo').disabled = true;
@@ -21093,7 +18929,7 @@ const DESKTOP_INPUT_STATE_KEYS = [
   'kreaBrush', 'kreaMaskFeather', 'editMaskInfluence', 'editMaskExpand', 'kreaMaskInvert', 'kreaMaskPoints',
   'kreaMaskPointForeground', 'kreaMaskPointDeleteMode', 'kreaMaskPreviewCutout', 'kreaMaskViewMode',
   'vidRef', 'vidEnd', 'vidDrive', 'vidFace', 'vidAudio', 'vidEngine', 'vidSigma', 'vidSmooth',
-  'vidH3Mode', 'vidH3MatchSource', 'vidH3MatchReferenceVideo', 'vidH3Xl', 'vidH3SageAttention', 'vidH3Turbo', 'vidH3LongContext', 'vidH3TurboStrength', 'vidH3TurboSteps', 'vidH3RefTurboSteps', 'vidH3Steps', 'vidH3RefImageSize', 'vidH3RefSlots', 'vidH3References',
+  'vidH3Mode', 'vidH3MatchSource', 'vidH3Xl', 'vidH3SageAttention', 'vidH3Steps', 'vidH3RefImageSize', 'vidH3RefSlots', 'vidH3References',
   'vidScailMode', 'vidScailFps', 'vidScailStableTracking', 'vidScailChunkFrames', 'vidScailChunkOverlap', 'vidAutoMotionPrompt',
   'videoCameraMotions', 'videoCameraMotionPhrase', 'videoCameraGuide',
   'generationTuning',
@@ -21228,7 +19064,6 @@ function resetActiveGenerationForm() {
   if (mode === 'edit') {
     switchEditEngine(enabledEditEngines()[0] || state.editEngineDefault || EDIT_ENGINES[0]);
     markEngineRow('editEngineRow', state.editEngine);
-    releaseAssetObjectUrls(state.refs);
     state.refs = [null, null, null];
     state.editRefSlots = 1;
     state.editLoras = [];
@@ -21245,26 +19080,15 @@ function resetActiveGenerationForm() {
     renderEditUpscale();
     renderQwenAngleTool();
   } else if (mode === 'video') {
-    releaseCurrentVideoAssetUrls();
     state.vidRef = null;
     state.vidH3Mode = 'frames';
     state.vidH3MatchSource = true;
-    state.vidH3MatchReferenceVideo = false;
     state.vidH3Xl = false;
     state.vidH3SageAttention = true;
-    state.vidH3Turbo = false;
-    state.vidH3LongContext = false;
-    state.vidH3TurboStrength = 1;
-    state.vidH3TurboSteps = 6;
-    state.vidH3RefTurboSteps = 6;
     state.vidH3Steps = 20;
     state.vidH3RefImageSize = 'match';
     state.vidH3RefSlots = 1;
     state.vidH3References = { images: [], videos: [], audios: [] };
-    state.vidH3ReplaceKind = 'object';
-    state.vidH3ReplaceTarget = '';
-    state.vidH3ReplaceVideo = null;
-    state.vidH3ReplaceImage = null;
     state.vidEnd = null;
     state.vidDrive = null;
     state.vidFace = null;
@@ -21289,11 +19113,6 @@ function resetActiveGenerationForm() {
     updateVideoPanels();
     syncCameraMotionTool();
   } else {
-    releaseAssetObjectUrls([
-      state.createRef,
-      state.promptSourceImage,
-      state.regions.map((region) => region.refAsset || region.refUrl),
-    ]);
     state.loras = [];
     state.promptPresetSelections = { camera: [] };
     state.regions = [];
@@ -21420,8 +19239,7 @@ $('#desktopStageUpscale').addEventListener('click', () => {
   if (!item) return;
   if (!video) return openUpscaleSheet(item);
   const choices = [
-    { label: 'SeedVR2 upscale', detail: 'AI detail restoration · 2×', icon: 'process', action: () => processVideo(item, video, 'upscale', 'seedvr2') },
-    { label: 'RTX upscale', detail: 'Fast video super resolution · 2×', icon: 'process', action: () => processVideo(item, video, 'upscale', 'rtx') },
+    { label: 'Upscale video', detail: 'SeedVR2 finish', icon: 'process', action: () => processVideo(item, video, 'upscale') },
     { label: 'Increase FPS', detail: 'RIFE interpolation', icon: 'process', action: () => processVideo(item, video, 'interpolate') },
   ];
   if (video.info?.engine === 'scail' && video.info?.driveVideoName && !video.info?.composite) choices.push({
@@ -22611,283 +20429,35 @@ function useCachedGalleryImage(target, source, property = 'src') {
 
 let galleryPreviewObserver = null;
 let galleryPreviewActive = new Set();
-let galleryPreviewLoaded = new Set();
-let galleryPreviewIntersecting = new Set();
 let galleryPreviewSettleTimer = null;
 let galleryPreviewScrollTimer = null;
-let galleryPreviewWakeTimer = null;
-let galleryPreviewWakeIdle = null;
-let galleryPreviewWakePending = false;
-let galleryPreviewRotationTimer = null;
-let galleryPreviewRotationIdle = null;
-let galleryPreviewWakeSequence = 0;
-const MOBILE_GALLERY_PREVIEW_WAKE_DELAY_MS = 2600;
-const MOBILE_GALLERY_PREVIEW_QUIET_MS = 850;
-const MOBILE_GALLERY_PREVIEW_ROTATE_MS = 4800;
-
-function cancelGalleryPreviewWake() {
-  galleryPreviewWakeSequence += 1;
-  if (galleryPreviewWakeTimer != null) clearTimeout(galleryPreviewWakeTimer);
-  if (galleryPreviewWakeIdle != null && typeof window.cancelIdleCallback === 'function') {
-    window.cancelIdleCallback(galleryPreviewWakeIdle);
-  }
-  galleryPreviewWakeTimer = null;
-  galleryPreviewWakeIdle = null;
-  galleryPreviewWakePending = false;
-}
-
-function scheduleGalleryPreviewWake(delay = null) {
-  cancelGalleryPreviewWake();
-  const wakeSequence = galleryPreviewWakeSequence;
-  const touchFirst = touchFirstGalleryDevice();
-  const wait = delay == null ? (touchFirst ? MOBILE_GALLERY_PREVIEW_WAKE_DELAY_MS : 0) : delay;
-  galleryPreviewWakePending = true;
-  galleryPreviewWakeTimer = setTimeout(() => {
-    galleryPreviewWakeTimer = null;
-    const wake = () => {
-      if (wakeSequence !== galleryPreviewWakeSequence) return;
-      galleryPreviewWakeTimer = null;
-      galleryPreviewWakeIdle = null;
-      if (state.view !== 'gallery' || $('#lightbox')?.classList.contains('show')) {
-        galleryPreviewWakePending = false;
-        return;
-      }
-      if (touchFirst) {
-        const quietFor = performance.now() - galleryLastInteractionAt;
-        if (galleryInputPending() || quietFor < MOBILE_GALLERY_PREVIEW_QUIET_MS) {
-          scheduleGalleryPreviewWake(Math.max(300, MOBILE_GALLERY_PREVIEW_QUIET_MS - quietFor));
-          return;
-        }
-        if (galleryRefreshPromise) {
-          const refresh = galleryRefreshPromise;
-          const resume = () => {
-            if (wakeSequence === galleryPreviewWakeSequence && state.view === 'gallery') {
-              scheduleGalleryPreviewWake(650);
-            }
-          };
-          refresh.then(resume, resume);
-          return;
-        }
-      }
-      galleryPreviewWakePending = false;
-      resetGalleryPreviewObservation();
-    };
-    if (typeof window.requestIdleCallback === 'function') {
-      galleryPreviewWakeIdle = touchFirst
-        ? window.requestIdleCallback(wake)
-        : window.requestIdleCallback(wake, { timeout: 900 });
-    } else {
-      galleryPreviewWakeTimer = setTimeout(wake, touchFirst ? 180 : 0);
-    }
-  }, Math.max(0, wait));
-}
-
-function deferGalleryPreviewWakeForInteraction() {
-  if (state.view !== 'gallery') return;
-  noteGalleryInteraction();
-  const touchFirst = touchFirstGalleryDevice();
-  if (!touchFirst) {
-    if (galleryPreviewWakePending) scheduleGalleryPreviewWake();
-    return;
-  }
-  cancelGalleryPreviewRotation();
-  clearTimeout(galleryPreviewSettleTimer);
-  galleryPreviewSettleTimer = null;
-  scheduleGalleryPreviewWake();
-}
-
-function cancelGalleryPreviewRotation() {
-  if (galleryPreviewRotationTimer != null) clearTimeout(galleryPreviewRotationTimer);
-  if (galleryPreviewRotationIdle != null && typeof window.cancelIdleCallback === 'function') {
-    window.cancelIdleCallback(galleryPreviewRotationIdle);
-  }
-  galleryPreviewRotationTimer = null;
-  galleryPreviewRotationIdle = null;
-}
-
-function scheduleGalleryPreviewRotation() {
-  cancelGalleryPreviewRotation();
-  galleryPreviewRotationTimer = setTimeout(() => {
-    galleryPreviewRotationTimer = null;
-    const rotate = () => {
-      galleryPreviewRotationIdle = null;
-      if (state.view !== 'gallery') return;
-      const quietFor = performance.now() - galleryLastInteractionAt;
-      if (galleryInputPending() || quietFor < MOBILE_GALLERY_PREVIEW_QUIET_MS) {
-        scheduleGalleryPreviewRotation();
-        return;
-      }
-      settleGalleryPreviewPlayback(true);
-    };
-    if (touchFirstGalleryDevice() && typeof window.requestIdleCallback === 'function') {
-      galleryPreviewRotationIdle = window.requestIdleCallback(rotate);
-    } else {
-      rotate();
-    }
-  }, MOBILE_GALLERY_PREVIEW_ROTATE_MS);
-}
-
 function galleryPreviewMotionAllowed() {
   return document.visibilityState === 'visible'
     && state.mediaPreferences.videoPreviews
-    && !$('#lightbox')?.classList.contains('show')
-    && !$('.sheet.show')
-    && !$('#appDrawer')?.classList.contains('show')
-    && !actionMenuEl
     && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-function galleryVideoPreviewSource(video) {
-  const file = String(video?.file || '');
-  const resolution = normalizedGalleryPreviewResolution(state.mediaPreferences.previewResolution);
-  const frameRate = normalizedGalleryPreviewFrameRate(state.mediaPreferences.previewFrameRate);
-  const info = video?.info || {};
-  const width = Math.round(Number(info.width) || 0);
-  const height = Math.round(Number(info.height) || 0);
-  const sourceFrameRate = Number(info.fps) || 0;
-  const nativeEdgeLimit = touchFirstGalleryDevice() ? resolution : MAX_NATIVE_GALLERY_PREVIEW_EDGE;
-  const nativePreviewCompatible = /\.mp4$/i.test(file)
-    && width > 0 && height > 0
-    && Math.max(width, height) <= nativeEdgeLimit
-    && sourceFrameRate > 0 && sourceFrameRate <= frameRate;
-  if (nativePreviewCompatible) return `/videos/${encodeURIComponent(file)}`;
-  return `/video-previews/${encodeURIComponent(file)}?size=${resolution}&fps=${frameRate}`;
-}
-function createGalleryCardPreview(card, source, options = {}) {
-  if (!card || !source) return null;
-  const existing = card.querySelector('.gallery-card-video');
-  if (existing) return existing;
-  const preview = document.createElement('video');
-  preview.className = 'gallery-card-video';
-  preview.muted = true;
-  preview.loop = true;
-  preview.playsInline = true;
-  preview.preload = 'none';
-  preview.draggable = false;
-  preview.dataset.src = source;
-  preview.dataset.loaded = 'false';
-  preview.dataset.mobileDynamic = options.mobileDynamic ? 'true' : 'false';
-  preview.tabIndex = -1;
-  preview.setAttribute('aria-hidden', 'true');
-  const reveal = () => preview.classList.add('is-ready');
-  preview.addEventListener('loadeddata', reveal);
-  preview.addEventListener('playing', reveal);
-  const poster = card.querySelector('.gallery-card-poster');
-  if (poster) poster.after(preview);
-  else card.prepend(preview);
-  return preview;
-}
-function ensureMobileGalleryCardPreview(card) {
-  if (!card) return null;
-  return card.querySelector('.gallery-card-video')
-    || createGalleryCardPreview(card, card.dataset.galleryPreviewSrc, { mobileDynamic: true });
-}
-function galleryPreviewCandidateIsActive(candidate) {
-  const preview = candidate?.matches?.('.gallery-card-video')
-    ? candidate
-    : candidate?.querySelector?.('.gallery-card-video');
-  return !!preview && galleryPreviewActive.has(preview);
-}
-function desktopSideLibraryHoverPreviewAllowed() {
-  return desktopWorkspaceActive()
-    && desktopResolutionPickerQuery.matches
-    && state.view !== 'gallery'
-    && galleryPreviewMotionAllowed();
-}
-function cancelGalleryPreviewUnload(video) {
-  if (!video) return;
-  clearTimeout(video._previewUnloadTimer);
-  video._previewUnloadTimer = null;
-  if (video._previewUnloadIdle != null && typeof window.cancelIdleCallback === 'function') {
-    window.cancelIdleCallback(video._previewUnloadIdle);
-  }
-  video._previewUnloadIdle = null;
-}
-function unloadGalleryPreview(video) {
-  if (!video) return;
-  cancelGalleryPreviewUnload(video);
-  video.pause();
-  galleryPreviewLoaded.delete(video);
-  video.classList.remove('is-ready');
-  if (video.dataset.loaded === 'true') {
-    try { video.currentTime = 0; } catch { /* noop */ }
-    video.removeAttribute('src');
-    video.dataset.loaded = 'false';
-    video.load();
-  }
-  if (video.dataset.mobileDynamic === 'true') {
-    galleryPreviewActive.delete(video);
-    galleryPreviewIntersecting.delete(video);
-    video.remove();
-  }
-}
-function releaseGalleryGridPreviews(grid) {
-  if (!grid) return;
-  const registered = new Set([...galleryPreviewLoaded, ...galleryPreviewActive, ...galleryPreviewIntersecting]);
-  const stale = [...registered].filter((video) => !video.isConnected || grid.contains(video));
-  stale.forEach((video) => {
-    cancelGalleryPreviewUnload(video);
-    galleryPreviewActive.delete(video);
-    galleryPreviewIntersecting.delete(video);
-    galleryPreviewLoaded.delete(video);
-    if (video.dataset.loaded === 'true') {
-      video.pause();
-      video._previewUnloadTimer = setTimeout(() => unloadGalleryPreview(video), 0);
-    }
-  });
 }
 function pauseGalleryPreview(video, unloadDelay = 2800) {
   if (!video) return;
   video.pause();
-  cancelGalleryPreviewUnload(video);
+  clearTimeout(video._previewUnloadTimer);
   video._previewUnloadTimer = setTimeout(() => {
-    video._previewUnloadTimer = null;
-    const release = () => {
-      video._previewUnloadIdle = null;
-      if (galleryPreviewActive.has(video) || video.dataset.loaded !== 'true') return;
-      if (video.isConnected) {
-        const rect = video.getBoundingClientRect();
-        if (rect.bottom > 0 && rect.top < window.innerHeight) return;
-      }
-      unloadGalleryPreview(video);
-    };
-    if (touchFirstGalleryDevice() && typeof window.requestIdleCallback === 'function') {
-      video._previewUnloadIdle = window.requestIdleCallback(release);
-    } else {
-      release();
-    }
+    if (galleryPreviewActive.has(video) || !video.isConnected || video.dataset.loaded !== 'true') return;
+    const rect = video.getBoundingClientRect();
+    if (rect.bottom > 0 && rect.top < window.innerHeight) return;
+    try { video.currentTime = 0; } catch { /* noop */ }
+    video.removeAttribute('src');
+    video.dataset.loaded = 'false';
+    video.load();
   }, unloadDelay);
 }
 function playGalleryPreview(video) {
   if (!video || !galleryPreviewMotionAllowed()) return;
-  cancelGalleryPreviewUnload(video);
+  clearTimeout(video._previewUnloadTimer);
   if (video.dataset.loaded !== 'true' && video.dataset.src) {
     video.src = video.dataset.src;
     video.dataset.loaded = 'true';
   }
-  if (video.dataset.loaded === 'true') galleryPreviewLoaded.add(video);
   video.play().catch(() => { /* autoplay may be blocked */ });
-}
-function startDesktopSideLibraryPreview(video) {
-  if (!video || !desktopSideLibraryHoverPreviewAllowed()) return;
-  video._desktopSideLibraryHovered = true;
-  galleryPreviewActive.forEach((activeVideo) => {
-    if (activeVideo === video) return;
-    activeVideo._desktopSideLibraryHovered = false;
-    unloadGalleryPreview(activeVideo);
-  });
-  galleryPreviewActive = new Set([video]);
-  playGalleryPreview(video);
-}
-function stopDesktopSideLibraryPreview(video) {
-  if (!video?._desktopSideLibraryHovered) return;
-  video._desktopSideLibraryHovered = false;
-  galleryPreviewActive.delete(video);
-  video.pause();
-  clearTimeout(video._previewUnloadTimer);
-  video._previewUnloadTimer = setTimeout(() => {
-    if (video._desktopSideLibraryHovered || galleryPreviewActive.has(video) || state.view === 'gallery') return;
-    unloadGalleryPreview(video);
-  }, 420);
 }
 function centeredGalleryPreviewRow(candidates, center) {
   const rows = [];
@@ -22913,79 +20483,27 @@ function centeredGalleryPreviewRow(candidates, center) {
   const best = rows.reduce((nearest, row) => (
     Math.abs(row.middle - center) < Math.abs(nearest.middle - center) ? row : nearest
   ));
-  const current = rows.find((row) => row.videos.some(galleryPreviewCandidateIsActive));
+  const current = rows.find((row) => row.videos.some((video) => galleryPreviewActive.has(video)));
   if (current) {
     const hysteresis = Math.max(18, current.height * .12);
     if (Math.abs(current.middle - center) <= Math.abs(best.middle - center) + hysteresis) return current.videos;
   }
   return best.videos;
 }
-
-function mobileGalleryPreviewCandidates(center = window.innerHeight / 2) {
-  const grid = $('#galleryGrid');
-  if (!grid || grid.hidden) return [];
-  const rect = grid.getBoundingClientRect();
-  const left = Math.max(0, rect.left);
-  const right = Math.min(window.innerWidth, rect.right);
-  const top = Math.max(0, rect.top);
-  const bottom = Math.min(window.innerHeight, rect.bottom);
-  const width = right - left;
-  if (width < 40 || bottom <= top) return [];
-  const columns = Math.max(2, Math.min(5, Math.round(width / 132)));
-  const rowOffset = Math.max(56, Math.min(110, window.innerHeight * .12));
-  const sampleRows = [center, center - rowOffset, center + rowOffset]
-    .filter((y) => y >= top && y <= bottom);
-  const videos = new Set();
-  sampleRows.forEach((y) => {
-    for (let column = 0; column < columns; column += 1) {
-      const x = left + ((column + .5) * width / columns);
-      const card = document.elementFromPoint(x, y)?.closest?.('#galleryGrid .card');
-      if (card?.isConnected && card.dataset.galleryPreviewSrc) videos.add(card);
-    }
-  });
-  return [...videos];
-}
-
-function settleGalleryPreviewPlayback(advanceMobile = false) {
+function settleGalleryPreviewPlayback() {
   galleryPreviewSettleTimer = null;
-  cancelGalleryPreviewRotation();
-  if (!galleryPreviewMotionAllowed() || state.view !== 'gallery' || galleryPreviewWakePending) return;
+  if (!galleryPreviewMotionAllowed() || state.view !== 'gallery') return;
   const center = window.innerHeight / 2;
-  const touchFirst = touchFirstGalleryDevice();
-  if (touchFirst) {
-    const quietFor = performance.now() - galleryLastInteractionAt;
-    if (galleryInputPending() || quietFor < MOBILE_GALLERY_PREVIEW_QUIET_MS) {
-      scheduleGalleryPreviewWake(Math.max(300, MOBILE_GALLERY_PREVIEW_QUIET_MS - quietFor));
-      return;
-    }
-  }
-  const previewPool = touchFirst ? mobileGalleryPreviewCandidates(center) : [...galleryPreviewIntersecting];
-  const candidates = previewPool.filter((video) => {
-    if (!video.isConnected) return false;
+  const candidates = $$('.gallery-card-video').filter((video) => {
     const rect = video.getBoundingClientRect();
     return rect.bottom > window.innerHeight * 0.16 && rect.top < window.innerHeight * 0.84;
   });
-  let centered = centeredGalleryPreviewRow(candidates, center);
-  const mobileAlternates = touchFirst && centered.length > 1;
-  if (mobileAlternates) {
-    const ordered = [...centered].sort((a, b) => (
-      a.getBoundingClientRect().left - b.getBoundingClientRect().left
-    ));
-    const currentIndex = ordered.findIndex(galleryPreviewCandidateIsActive);
-    const nextIndex = currentIndex < 0 ? 0 : (advanceMobile ? (currentIndex + 1) % ordered.length : currentIndex);
-    centered = [ordered[nextIndex]];
-  }
-  if (touchFirst) centered = centered.map(ensureMobileGalleryCardPreview).filter(Boolean);
-  const next = new Set(centered);
+  const next = new Set(centeredGalleryPreviewRow(candidates, center));
   galleryPreviewActive.forEach((video) => {
-    if (!next.has(video)) {
-      if (touchFirst) pauseGalleryPreview(video, 10000);
-      else pauseGalleryPreview(video);
-    }
+    if (!next.has(video)) pauseGalleryPreview(video);
   });
   galleryPreviewActive = next;
   galleryPreviewActive.forEach(playGalleryPreview);
-  if (mobileAlternates) scheduleGalleryPreviewRotation();
 }
 function scheduleGalleryPreviewPlayback(delay = 140) {
   clearTimeout(galleryPreviewSettleTimer);
@@ -22993,105 +20511,24 @@ function scheduleGalleryPreviewPlayback(delay = 140) {
 }
 function ensureGalleryPreviewObserver() {
   if (galleryPreviewObserver || !('IntersectionObserver' in window)) return;
-  galleryPreviewObserver = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (entry.isIntersecting) galleryPreviewIntersecting.add(entry.target);
-      else galleryPreviewIntersecting.delete(entry.target);
-    });
-    scheduleGalleryPreviewPlayback();
-  }, {
+  galleryPreviewObserver = new IntersectionObserver(() => scheduleGalleryPreviewPlayback(), {
     root: null,
     rootMargin: '-16% 0px -16% 0px',
     threshold: [0, 0.25, 0.5, 0.75],
   });
 }
 function resetGalleryPreviewObservation() {
-  cancelGalleryPreviewRotation();
-  clearTimeout(galleryPreviewSettleTimer);
-  if (galleryPreviewObserver) galleryPreviewObserver.disconnect();
-  galleryPreviewIntersecting.clear();
-  galleryPreviewLoaded.forEach((video) => {
-    if (!video.isConnected) pauseGalleryPreview(video, 0);
-  });
-  galleryPreviewLoaded = new Set([...galleryPreviewLoaded].filter((video) => (
-    video.isConnected && video.dataset.loaded === 'true'
-  )));
-  galleryPreviewActive.forEach((video) => {
-    if (!video.isConnected) pauseGalleryPreview(video, 0);
-  });
-  galleryPreviewActive = new Set([...galleryPreviewActive].filter((video) => video.isConnected));
-  if (state.view !== 'gallery' || galleryPreviewWakePending) return;
-  if (touchFirstGalleryDevice()) {
-    scheduleGalleryPreviewPlayback(180);
-    return;
-  }
   if (!galleryPreviewObserver) return;
+  clearTimeout(galleryPreviewSettleTimer);
+  galleryPreviewObserver.disconnect();
+  galleryPreviewActive = new Set([...galleryPreviewActive].filter((video) => video.isConnected));
   $$('.gallery-card-video').forEach((video) => galleryPreviewObserver.observe(video));
   scheduleGalleryPreviewPlayback(180);
 }
 
-function suspendGalleryPreviewPlayback() {
-  cancelGalleryPreviewWake();
-  cancelGalleryPreviewRotation();
-  clearTimeout(galleryPreviewSettleTimer);
-  clearTimeout(galleryPreviewScrollTimer);
-  galleryPreviewSettleTimer = null;
-  galleryPreviewScrollTimer = null;
-  if (galleryPreviewObserver) galleryPreviewObserver.disconnect();
-  galleryPreviewIntersecting.clear();
-  const loaded = new Set([...galleryPreviewActive, ...galleryPreviewLoaded]);
-  const touchFirst = touchFirstGalleryDevice();
-  loaded.forEach((video) => {
-    video._desktopSideLibraryHovered = false;
-    cancelGalleryPreviewUnload(video);
-    if (touchFirst) pauseGalleryPreview(video, 30000);
-    else unloadGalleryPreview(video);
-  });
-  galleryPreviewActive.clear();
-}
-
-function handoffGalleryPreviewsToFocusedMedia() {
-  cancelGalleryPreviewWake();
-  cancelGalleryPreviewRotation();
-  clearTimeout(galleryPreviewSettleTimer);
-  clearTimeout(galleryPreviewScrollTimer);
-  galleryPreviewSettleTimer = null;
-  galleryPreviewScrollTimer = null;
-  if (galleryPreviewObserver) galleryPreviewObserver.disconnect();
-  galleryPreviewIntersecting.clear();
-  const active = [...galleryPreviewActive];
-  const touchFirst = touchFirstGalleryDevice();
-  active.forEach((video) => {
-    cancelGalleryPreviewUnload(video);
-    video.pause();
-  });
-  galleryPreviewActive.clear();
-  // Let the expanded player claim the source first, then release the hidden
-  // card decoders without holding the tap-to-open path on mobile browsers.
-  setTimeout(() => {
-    const focused = $('#lightbox')?.classList.contains('show');
-    active.forEach((video) => {
-      if (!video.isConnected) {
-        unloadGalleryPreview(video);
-        return;
-      }
-      if (!focused) return;
-      if (touchFirst) pauseGalleryPreview(video, 30000);
-      else unloadGalleryPreview(video);
-    });
-  }, 0);
-}
-
 window.addEventListener('scroll', () => {
-  deferGalleryPreviewWakeForInteraction();
   if (state.view !== 'gallery' || !galleryPreviewMotionAllowed()) return;
-  cancelGalleryPreviewRotation();
   clearTimeout(galleryPreviewScrollTimer);
-  const touchFirst = touchFirstGalleryDevice();
-  if (touchFirst) {
-    galleryPreviewLoaded.forEach((video) => pauseGalleryPreview(video, 10000));
-    return;
-  }
   galleryPreviewActive.forEach((video) => pauseGalleryPreview(video, 3600));
   galleryPreviewScrollTimer = setTimeout(() => scheduleGalleryPreviewPlayback(0), 150);
 }, { passive: true });
@@ -23389,7 +20826,7 @@ function beginGalleryDateScrub() {
   document.body.classList.add('gallery-date-scrubbing');
   galleryDateScrub.previewTarget = galleryScrollTop();
   if (galleryPreviewObserver) galleryPreviewObserver.disconnect();
-  galleryPreviewLoaded.forEach((video) => video.pause());
+  $$('.gallery-card-video').forEach((video) => video.pause());
   if (navigator.vibrate) navigator.vibrate(10);
 }
 
@@ -23533,9 +20970,7 @@ function stopGallerySelectionDrag(event) {
 }
 
 function renderGrid() {
-  if (actionMenuEl?.dataset.scope === 'gallery-selection') closeActionMenu();
   const grid = $('#galleryGrid');
-  releaseGalleryGridPreviews(grid);
   syncLibraryCollectionControls();
   const focusedGroup = resolvedLibraryGroupFocus();
   const groupFocusBar = $('#libraryGroupFocus');
@@ -23560,12 +20995,11 @@ function renderGrid() {
   ensureGalleryPreviewObserver();
   if (galleryPreviewObserver) galleryPreviewObserver.disconnect();
   releasePreviewCacheObjectUrls();
-  grid.replaceChildren();
+  grid.innerHTML = '';
   const items = focusedGroup ? orderedLibraryGroupFocusItems(focusedGroup) : visibleItems();
   const entries = focusedGroup
     ? items.map((item) => ({ item, items: [item] }))
     : galleryEntries(items);
-  const fragment = document.createDocumentFragment();
   const dateItemIds = new Map();
   items.forEach((item) => {
     const key = galleryDateKey(item.createdAt);
@@ -23597,7 +21031,7 @@ function renderGrid() {
       divider.setAttribute('aria-label', `Select all from ${galleryDateLabel(it.createdAt)}`);
       divider.innerHTML = `<span>${escapeHtml(galleryDateLabel(it.createdAt))}</span>`;
       divider.addEventListener('click', () => toggleBulkSelection(dateIds));
-      fragment.appendChild(divider);
+      grid.appendChild(divider);
     }
     const card = document.createElement('button');
     const hasAttachedComposite = Array.isArray(it.composites) && it.composites.length > 0;
@@ -23608,29 +21042,25 @@ function renderGrid() {
       + (hasAttachedComposite ? ' has-attached-composite' : '');
     const latestVideo = latestGalleryVideo(it);
     if (latestVideo && state.mediaPreferences.videoPreviews) {
+      const preview = document.createElement('video');
+      preview.className = 'gallery-card-video';
+      preview.muted = true;
+      preview.loop = true;
+      preview.playsInline = true;
+      preview.preload = 'none';
+      preview.draggable = false;
       const posterSource = galleryImageSource(it);
-      const poster = document.createElement('img');
-      poster.className = 'gallery-card-poster';
-      poster.loading = 'lazy';
-      poster.decoding = 'async';
-      poster.draggable = false;
-      poster.src = posterSource;
-      useCachedGalleryImage(poster, posterSource);
-      card.appendChild(poster);
-      const previewSource = galleryVideoPreviewSource(latestVideo);
-      if (touchFirstGalleryDevice() && !desktopWorkspaceActive()) {
-        // Mobile Chrome eagerly initializes every <video> and poster in a large
-        // grid. Keep only a lazy image until this card is chosen to play.
-        card.dataset.galleryPreviewSrc = previewSource;
-      } else {
-        const preview = createGalleryCardPreview(card, previewSource);
-        card.addEventListener('pointerenter', () => startDesktopSideLibraryPreview(preview), { passive: true });
-        card.addEventListener('pointerleave', () => stopDesktopSideLibraryPreview(preview), { passive: true });
-      }
+      preview.poster = posterSource;
+      useCachedGalleryImage(preview, posterSource, 'poster');
+      preview.dataset.src = '/videos/' + latestVideo.file;
+      preview.dataset.loaded = 'false';
+      preview.tabIndex = -1;
+      preview.setAttribute('aria-hidden', 'true');
+      if (!galleryPreviewObserver) preview.src = preview.dataset.src;
+      card.appendChild(preview);
     } else {
       const img = document.createElement('img');
       img.loading = 'lazy';
-      img.decoding = 'async';
       img.draggable = false;
       const source = galleryImageSource(it);
       img.src = source;
@@ -23725,7 +21155,6 @@ function renderGrid() {
     }
     card.dataset.media = latestVideo ? latestVideo.id : 'image';
     card.draggable = false;
-    if (desktopGalleryContextMenuAvailable()) card.setAttribute('aria-haspopup', 'menu');
     if (entry.items.length > 1) {
       const warmGroupThumbnails = () => preloadLightboxGroupThumbnails(entry.items, it.id);
       card.addEventListener('pointerenter', warmGroupThumbnails, { once: true, passive: true });
@@ -23742,11 +21171,6 @@ function renderGrid() {
     let pointerId = null;
     let desktopPointerCandidate = null;
     card.addEventListener('pointerdown', (e) => {
-      if (e.button !== undefined && e.button !== 0) {
-        clearTimeout(lpTimer);
-        desktopPointerCandidate = null;
-        return;
-      }
       if (entry.items.length > 1) preloadLightboxGroupThumbnails(entry.items, it.id);
       lpFired = false;
       pointerId = e.pointerId;
@@ -23818,20 +21242,7 @@ function renderGrid() {
       desktopPointerCandidate = null;
       stopGallerySelectionDrag(event);
     });
-    card.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      clearTimeout(lpTimer);
-      desktopPointerCandidate = null;
-      if (!desktopGalleryContextMenuAvailable()) return;
-      e.stopPropagation();
-      openGallerySelectionContextMenu(e, it, card);
-    });
-    card.addEventListener('keydown', (e) => {
-      if (!desktopGalleryContextMenuAvailable()
-        || !(e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey))) return;
-      e.preventDefault();
-      openGallerySelectionContextMenu(e, it, card, { keyboard: true });
-    });
+    card.addEventListener('contextmenu', (e) => e.preventDefault());
     card.addEventListener('dragstart', (event) => event.preventDefault());
     card.addEventListener('click', () => {
       if (lpFired) { lpFired = false; return; }
@@ -23839,11 +21250,10 @@ function renderGrid() {
       else if (desktopWorkspaceActive() && ($('#lightbox').classList.contains('show') || state.view !== 'gallery')) handleDesktopGalleryTap(it, card, galleryGroup);
       else handleGalleryTap(it, card);
     });
-    fragment.appendChild(card);
+    grid.appendChild(card);
   }
-  grid.appendChild(fragment);
   resetGalleryPreviewObservation();
-  if (state.selectMode || state.selected.size || state.libraryQuery.trim()) syncSelectionVisuals();
+  syncSelectionVisuals();
   syncDesktopGallerySelection();
   syncGalleryDateScrubber();
   if (state.mediaPreferences.previewCache) schedulePreviewCacheWarmup(items);
@@ -23906,8 +21316,6 @@ let desktopGalleryDrag = null;
 const DESKTOP_GALLERY_DROP_SELECTOR = [
   '.lora-card[data-lora-name]',
   '#vidH3ReferenceList',
-  '#vidH3ReplaceVideoBtn', '#vidH3ReplaceVideoThumb',
-  '#vidH3ReplaceImageBtn', '#vidH3ReplaceImageThumb',
   '.ref-slot',
   '#createImageGuideToggle', '#createImageGuideAdd', '#createImageGuideFilled',
   '#regionRefBtn', '#regionRefPreview',
@@ -24071,12 +21479,6 @@ function desktopGalleryDropTargets(drag = desktopGalleryDrag) {
       return state.vidEngine === 'h3' && state.vidH3Mode === 'reference'
         && h3References()[kind].length < H3_REFERENCE_LIMITS[kind];
     }
-    if (target.matches('#vidH3ReplaceVideoBtn, #vidH3ReplaceVideoThumb')) {
-      return h3ReplaceModeActive() && !!drag.video;
-    }
-    if (target.matches('#vidH3ReplaceImageBtn, #vidH3ReplaceImageThumb')) {
-      return h3ReplaceModeActive() && !drag.video && !!drag.item?.file;
-    }
     if ((target.id === 'vidDriveBtn' || target.id === 'vidDriveThumb') && !drag.video) return false;
     if ((target.id === 'regionRefBtn' || target.id === 'regionRefPreview') && !selectedRegion()) return false;
     return true;
@@ -24180,16 +21582,6 @@ async function applyDesktopGalleryDrop(target, drag, event) {
     toast(`Gallery ${kind} added as an H3 reference`);
     return;
   }
-  if (target.matches('#vidH3ReplaceVideoBtn, #vidH3ReplaceVideoThumb')) {
-    setH3ReplacementAsset('video', await directorGalleryDropAsset(drag, 'video'));
-    toast('Gallery video set as the master plate');
-    return;
-  }
-  if (target.matches('#vidH3ReplaceImageBtn, #vidH3ReplaceImageThumb')) {
-    setH3ReplacementAsset('image', await directorGalleryDropAsset(drag, 'image'));
-    toast('Gallery image set as the replacement identity');
-    return;
-  }
   if (target.matches('.ref-slot')) {
     const index = Number(target.dataset.refIndex);
     if (!Number.isInteger(index)) return;
@@ -24221,10 +21613,8 @@ async function applyDesktopGalleryDrop(target, drag, event) {
   }
   if (target.matches('#vidFaceChip, #vidFaceThumb')) {
     const reference = await galleryItemEditReference(item);
-    const nextFace = Object.assign(reference, { label: 'from gallery' });
-    releaseAssetObjectUrl(state.vidFace, nextFace);
-    state.vidFace = nextFace;
-    setVideoFirstFrame(null, { matchH3Source: false });
+    state.vidFace = Object.assign(reference, { label: 'from gallery' });
+    state.vidRef = null;
     renderVidAttach();
     updateVideoPanels();
     saveForm();
@@ -24274,8 +21664,12 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('visibilitychange', () => {
+  const previews = $$('.gallery-card-video');
   if (document.hidden || !galleryPreviewMotionAllowed()) {
-    suspendGalleryPreviewPlayback();
+    previews.forEach((video) => {
+      video.pause();
+      try { video.currentTime = 0; } catch { /* noop */ }
+    });
   } else {
     resetGalleryPreviewObservation();
     reconcileGenerationAfterResume();
@@ -24850,13 +22244,6 @@ function handleGalleryTap(item, card) {
     openLightbox(item.id, media, { focusSource });
     return;
   }
-  const touchFirst = window.matchMedia?.('(hover: none), (pointer: coarse)').matches;
-  if (touchFirst) {
-    if (galleryTap) clearTimeout(galleryTap.timer);
-    galleryTap = null;
-    openLightbox(item.id, card.dataset.media || 'image');
-    return;
-  }
   const now = Date.now();
   if (galleryTap && galleryTap.itemId === item.id && now - galleryTap.time < 300) {
     clearTimeout(galleryTap.timer);
@@ -24989,100 +22376,6 @@ $('#gallerySearchSelectAll').addEventListener('click', () => {
 /* Multi-select                                                        */
 /* ------------------------------------------------------------------ */
 
-function desktopGalleryContextMenuAvailable() {
-  return !!desktopResolutionPickerQuery?.matches && !touchFirstGalleryDevice();
-}
-
-function runSelectionAction(actionId) {
-  const button = $('#' + actionId);
-  if (!button || button.hidden || button.disabled) return;
-  button.click();
-}
-
-function gallerySelectionContextItems() {
-  const selectedCount = state.selected.size;
-  const includedCount = expandedGallerySelection().length;
-  const ungroupAvailable = selectedUngroupableGenerationGroupIds().size > 0;
-  return [
-    {
-      label: 'Save',
-      detail: selectedCount === 1 ? 'Download the selected result' : `Download ${selectedCount} selected results as a ZIP`,
-      icon: 'save',
-      action: () => runSelectionAction('selSave'),
-    },
-    {
-      label: 'Group',
-      detail: selectedCount > 1 ? 'Stack related generations together' : 'Select at least two generations',
-      icon: 'group',
-      disabled: selectedCount < 2,
-      action: () => runSelectionAction('selGroup'),
-    },
-    {
-      label: 'Composite',
-      detail: selectedCount > 1 ? 'Build a contact sheet' : 'Select at least two generations',
-      icon: 'composite',
-      disabled: selectedCount < 2,
-      action: () => runSelectionAction('selComposite'),
-    },
-    {
-      label: 'Move',
-      detail: 'Choose a Library folder',
-      icon: 'result-move',
-      action: () => runSelectionAction('selMove'),
-    },
-    ungroupAvailable && {
-      label: 'Ungroup',
-      detail: 'Separate the saved generation group',
-      icon: 'ungroup',
-      action: () => runSelectionAction('selUngroup'),
-    },
-    {
-      label: 'Delete',
-      detail: `Move ${includedCount} generation${includedCount === 1 ? '' : 's'} to trash`,
-      icon: 'delete',
-      danger: true,
-      action: () => runSelectionAction('selDelete'),
-    },
-  ];
-}
-
-function openGallerySelectionContextMenu(event, item, card, options = {}) {
-  if (!desktopGalleryContextMenuAvailable() || !item || !card) return;
-  if (galleryTap) clearTimeout(galleryTap.timer);
-  galleryTap = null;
-  const additive = state.selectMode && state.selected.size > 0 && (event.ctrlKey || event.metaKey);
-  if (!state.selectMode || (!state.selected.has(item.id) && !additive)) {
-    enterSelectWith(item.id);
-  } else {
-    if (!state.selected.has(item.id)) state.selected.add(item.id);
-    state.selectMode = true;
-    updateSelectBar();
-  }
-  cancelContextualGuide('gallery-selection-actions');
-  const rect = card.getBoundingClientRect();
-  const eventX = Number(event.clientX);
-  const eventY = Number(event.clientY);
-  const pointerPoint = !options.keyboard && Number.isFinite(eventX) && Number.isFinite(eventY)
-    && (eventX !== 0 || eventY !== 0);
-  const anchorPoint = pointerPoint
-    ? { x: eventX, y: eventY }
-    : { x: rect.left + Math.min(rect.width * 0.62, 72), y: rect.top + Math.min(rect.height * 0.45, 64) };
-  const includedCount = expandedGallerySelection().length;
-  const menuTitle = includedCount > state.selected.size
-    ? `${state.selected.size} selected · ${includedCount} included`
-    : `${state.selected.size} selected`;
-  openActionMenu(card, gallerySelectionContextItems(), {
-    menuTitle,
-    tone: 'selection',
-    scope: 'gallery-selection',
-    anchorPoint,
-    nonModal: true,
-    dismissOnAnchorPointer: true,
-    focusFirst: options.keyboard === true,
-    restoreFocusOnEscape: true,
-  });
-}
-
 function enterSelectWith(id) {
   state.selectMode = true;
   state.selected = new Set([id]);
@@ -25171,7 +22464,6 @@ function setSelectionUiActive(active) {
 }
 function exitSelect() {
   cancelContextualGuide('gallery-selection-actions');
-  if (actionMenuEl?.dataset.scope === 'gallery-selection') closeActionMenu();
   if (!state.selectMode && !state.selected.size) { setSelectionUiActive(false); return; }
   state.selectMode = false;
   state.selected = new Set();
@@ -25704,7 +22996,6 @@ function preloadLightboxNeighbors(item) {
 function openLightbox(id, mediaSel, options = {}) {
   const it = state.items.find((x) => x.id === id);
   if (!it) return;
-  handoffGalleryPreviewsToFocusedMedia();
   clearLightboxTap();
   resetLightboxZoom();
   resetLightboxSwipeVisuals();
@@ -25895,7 +23186,6 @@ function openLightbox(id, mediaSel, options = {}) {
       meta.push(`<b>Attention:</b> ${info.attentionBackend === 'sageattention' ? 'SageAttention (verified)' : 'Standard PyTorch'}`);
     }
     if (hasDocumentationValue(info.steps)) meta.push(`<b>Steps:</b> ${escapeHtml(String(info.steps))}`);
-    if (info.h3TurboLora) meta.push(copyableMeta('Turbo adapter', prettyLora(String(info.h3TurboLora))));
     const recordedVideoWidth = Math.round(Number(info.width));
     const recordedVideoHeight = Math.round(Number(info.height));
     const fallbackVideoWidth = Math.round(Number(it.width));
@@ -25912,7 +23202,7 @@ function openLightbox(id, mediaSel, options = {}) {
     if (info.durationMs) meta.push(`<b>Generated in:</b> ${formatDuration(info.durationMs)}`);
     if (info.frames && info.fps) {
       const scailFlags = [info.scailMode && `SCAIL ${info.scailMode}`, info.scailFps && `${info.scailFps} fps generation`, info.scailMode === 'chunked' && info.scailStableTracking && 'stable', info.scailMode === 'chunked' && info.scailChunkFrames && `${info.scailChunkFrames}f chunks`, info.scailMode === 'chunked' && info.scailChunkOverlap && `${info.scailChunkOverlap}f overlap`].filter(Boolean).join(', ');
-      const flags = [info.composite && 'side-by-side', info.faceId && 'Face ID', info.processed === 'upscale' && `${info.upscaleEngine === 'seedvr2' ? 'SeedVR2' : 'RTX'} upscale`, info.processed === 'interpolate' && 'RIFE pass', info.processed === 'extend' && 'extended', info.h3LongContext && `${info.h3LongContextClips || 2}-clip Long context`, info.smooth && `RIFE ${info.smooth}×`, info.fourK && info.processed !== 'upscale' && 'RTX 4K', info.engine === 'wan' && info.fast && '4-step', info.sigmaPreset && `sigmas: ${info.sigmaPreset}`, scailFlags, info.drivenAudio && 'audio-driven', info.continuedAudio && 'continued sound', info.preservedAudio && 'audio kept', info.endFrame && 'end frame', info.motionVideo && !info.composite && 'motion transfer'].filter(Boolean).join(' · ');
+      const flags = [info.composite && 'side-by-side', info.faceId && 'Face ID', info.processed === 'upscale' && 'RTX upscale', info.processed === 'interpolate' && 'RIFE pass', info.processed === 'extend' && 'extended', info.smooth && `RIFE ${info.smooth}×`, info.fourK && 'RTX 4K', info.engine === 'wan' && info.fast && '4-step', info.sigmaPreset && `sigmas: ${info.sigmaPreset}`, scailFlags, info.drivenAudio && 'audio-driven', info.continuedAudio && 'continued sound', info.preservedAudio && 'audio kept', info.endFrame && 'end frame', info.motionVideo && !info.composite && 'motion transfer'].filter(Boolean).join(' · ');
       meta.push(`<b>Playback:</b> ${(info.frames / info.fps).toFixed(1)}s @ ${info.fps}fps${flags ? ' · ' + flags : ''} &nbsp; ${copyableMeta('Seed', info.seed)}`);
       if (info.loras && info.loras.length) meta.push('<b>Video LoRAs:</b> ' + info.loras.map((l) => `${prettyLora(l.name)} (${Number(l.strength).toFixed(2)})`).join(', '));
     } else if (info.seed != null) meta.push(copyableMeta('Seed', info.seed));
@@ -26209,8 +23499,7 @@ function openLightbox(id, mediaSel, options = {}) {
     if (videoUseItems.length) mkMenu('Use', '', videoUseItems, { icon: 'result-use', iconOnly: true, ariaLabel: 'Use video', menuTitle: 'Use video', tone: 'video' });
     const processItems = [];
     if (!vinfo.composite) {
-      processItems.push({ label: 'SeedVR2 upscale', detail: 'AI detail restoration · 2×', icon: 'process', action: () => processVideo(it, selVideo, 'upscale', 'seedvr2') });
-      processItems.push({ label: 'RTX upscale', detail: 'Fast video super resolution · 2×', icon: 'process', action: () => processVideo(it, selVideo, 'upscale', 'rtx') });
+      processItems.push({ label: 'Upscale video', detail: 'SeedVR2 finish', icon: 'process', action: () => processVideo(it, selVideo, 'upscale') });
       processItems.push({ label: 'Increase FPS', detail: 'RIFE interpolation', icon: 'process', action: () => processVideo(it, selVideo, 'interpolate') });
     }
     if (vinfo.engine === 'scail' && vinfo.driveVideoName && !vinfo.composite) {
@@ -26325,19 +23614,15 @@ function closeLightbox(fromPop) {
     try { history.back(); } catch { /* noop */ }
   }
   requestAnimationFrame(() => {
-    if (state.view === 'gallery') resetGalleryPreviewObservation();
     if (!returnFocus?.isConnected || returnFocus.closest('[inert]') || returnFocus.offsetParent === null) return;
     focusIconControlSilently(returnFocus);
   });
 }
 
-async function processVideo(it, video, kind, upscaleEngine = '') {
+async function processVideo(it, video, kind) {
   if (!it || !video) return;
   const route = kind === 'upscale' ? '/api/video/upscale' : '/api/video/interpolate';
-  const normalizedUpscaleEngine = upscaleEngine === 'seedvr2' ? 'seedvr2' : 'rtx';
-  const label = kind === 'upscale'
-    ? `${normalizedUpscaleEngine === 'seedvr2' ? 'SeedVR2' : 'RTX'} video upscale queued`
-    : 'Frame interpolation queued';
+  const label = kind === 'upscale' ? 'Video upscale queued' : 'Frame interpolation queued';
   const requestKey = `animate:${it.id}`;
   try {
     setGenerating(true, 'Queued…');
@@ -26350,7 +23635,6 @@ async function processVideo(it, video, kind, upscaleEngine = '') {
         id: it.id,
         videoId: video.id,
         scale: kind === 'upscale' ? 2 : undefined,
-        engine: kind === 'upscale' ? normalizedUpscaleEngine : undefined,
         multiplier: kind === 'interpolate' ? 2 : undefined,
       }),
     });
@@ -26377,7 +23661,6 @@ function openAnimateSheet(it, selVideo) {
   const src = (selVideo && selVideo.info) || ((it.videos || []).length ? it.videos[it.videos.length - 1].info : null);
   if (src && src.motionPrompt) $('#animPrompt').value = src.motionPrompt;
   // fresh attachments per open
-  releaseAssetObjectUrl(state.animEnd);
   state.animEnd = null;
   state.animAudio = null;
   stopPreview();
@@ -27067,11 +24350,10 @@ async function reuseItem(it, useEnhanced) {
 async function reuseVideo(it, v) {
   const options = arguments[2] || {};
   const info = v.info || {};
-  const engine = ['h3', 'wan', 'wan-animate2', 'eros', 'scail', 'ltx-edit'].includes(info.engine) ? info.engine : 'ltx';
+  const engine = ['h3', 'wan', 'eros', 'scail'].includes(info.engine) ? info.engine : 'ltx';
   const savedH3MatchSource = engine === 'h3' && typeof info.h3MatchSource === 'boolean'
     ? info.h3MatchSource
     : null;
-  const savedH3MatchReferenceVideo = engine === 'h3' && info.h3MatchReferenceVideo === true;
   if (state.directorOpen && !(info.workflow === 'director' && info.directorProject)) closeDirectorMode();
   if (!options.preserveLightbox) closeLightbox();
   setView('video');
@@ -27108,39 +24390,15 @@ async function reuseVideo(it, v) {
   }
 
   // Clear current attachments + their UI
-  releaseCurrentVideoAssetUrls();
   state.vidRef = null;
-  const reusableH3Mode = engine === 'h3' && ['reference', 'replace'].includes(info.h3Mode) ? info.h3Mode : 'frames';
-  state.vidH3Mode = reusableH3Mode === 'replace' && !h3ReplaceAvailable() ? 'frames' : reusableH3Mode;
+  state.vidH3Mode = engine === 'h3' && info.h3Mode === 'reference' ? 'reference' : 'frames';
   state.vidH3MatchSource = savedH3MatchSource === true;
-  state.vidH3MatchReferenceVideo = savedH3MatchReferenceVideo;
-  const reusedH3ResolutionSize = engine === 'h3'
-    ? H3Resolution.restoredGenerationSize(info, state.mp)
-    : state.mp;
-  state.vidH3Xl = engine === 'h3' && reusedH3ResolutionSize === H3Resolution.XL_SIZE;
+  state.vidH3Xl = engine === 'h3' && (Number(info.h3ResolutionSize) >= H3Resolution.XL_SIZE
+    || Math.max(Number(info.width) || 0, Number(info.height) || 0) > 1536);
   state.vidH3SageAttention = engine === 'h3' ? info.attentionBackend !== 'standard' : true;
-  state.vidH3Turbo = engine === 'h3' && info.h3Turbo === true;
-  state.vidH3LongContext = engine === 'h3'
-    && info.h3LongContext === true
-    && experimentalFeaturesEnabled()
-    && state.vidH3Mode !== 'replace';
-  state.vidH3TurboStrength = engine === 'h3' && Number.isFinite(Number(info.h3TurboStrength))
-    ? Math.max(0.8, Math.min(1.2, Number(info.h3TurboStrength))) : 1;
-  if (engine === 'h3' && info.h3Turbo) {
-    if (h3ReferenceBackedMode()) state.vidH3RefTurboSteps = normalizedH3TurboSteps(info.steps || 6);
-    else state.vidH3TurboSteps = normalizedH3TurboSteps(info.steps || 6);
-  }
   state.vidH3RefImageSize = info.h3RefImageSize === 'max' ? 'max' : 'match';
   state.vidH3RefSlots = 1;
   state.vidH3References = { images: [], videos: [], audios: [] };
-  state.vidH3ReplaceKind = info.h3ReplaceKind === 'character' ? 'character' : 'object';
-  state.vidH3ReplaceTarget = String(info.h3ReplaceTarget || '').slice(0, 240);
-  state.vidH3ReplaceVideo = null;
-  state.vidH3ReplaceImage = null;
-  state.vidWanAnimate2IdentityStrength = engine === 'wan-animate2'
-    ? Math.max(0, Math.min(2, Number(info.wanAnimate2IdentityStrength) || 1)) : 1;
-  state.vidWanAnimate2MotionStrength = engine === 'wan-animate2'
-    ? Math.max(0, Math.min(2, Number(info.wanAnimate2MotionStrength) || 1)) : 1;
   state.vidEnd = null;
   state.vidDrive = null;
   state.vidFace = null;
@@ -27153,7 +24411,7 @@ async function reuseVideo(it, v) {
   $('#vidDriveVideo').removeAttribute('src');
 
   if (engine === 'h3') {
-    state.mp = normalizeResolutionMegapixels(reusedH3ResolutionSize, state.mp);
+    state.mp = normalizeResolutionMegapixels(info.h3ResolutionSize, state.mp);
     const outputRatio = Number(info.h3AspectRatio)
       || (Number(info.width) / Math.max(1, Number(info.height)))
       || selectedAspectRatio();
@@ -27197,9 +24455,9 @@ async function reuseVideo(it, v) {
     cfg: 1,
     negativePrompt: info.negativePrompt || '',
   });
-  state.vidH3Steps = engine === 'h3' && !info.h3Turbo ? normalizedH3Steps(info.steps || 20) : state.vidH3Steps;
+  state.vidH3Steps = engine === 'h3' ? normalizedH3Steps(info.steps || 20) : state.vidH3Steps;
   $('#negativePromptInput').value = state.generationTuning.video.negativePrompt || '';
-  state.enhance = engine === 'wan-animate2' ? false : !!info.enhance;
+  state.enhance = !!info.enhance;
   renderEnhance();
   $('#vid4k').classList.toggle('active', !!info.fourK);
   $('#vidQuality').classList.toggle('active', engine === 'wan' && info.fast === false);
@@ -27223,7 +24481,7 @@ async function reuseVideo(it, v) {
   };
 
   // Source image
-  if (!info.t2v && !(engine === 'h3' && h3ReferenceBackedMode())) {
+  if (!info.t2v && !(engine === 'h3' && state.vidH3Mode === 'reference')) {
     try {
       if (it.mode !== 'video') {
         // grouped under a real image item -> reuse the item image (keeps grouping)
@@ -27262,36 +24520,26 @@ async function reuseVideo(it, v) {
     renderDims();
   }
 
-  if (engine === 'h3' && h3ReferenceBackedMode() && info.h3References) {
+  if (engine === 'h3' && state.vidH3Mode === 'reference' && info.h3References) {
     for (const kind of ['images', 'videos', 'audios']) {
       for (const asset of Array.isArray(info.h3References[kind]) ? info.h3References[kind] : []) {
         try {
           const blob = await inputBlob(asset.name);
           if (!reuseRequestCurrent(options)) return;
-          const restored = {
+          state.vidH3References[kind].push({
             kind: kind.slice(0, -1),
             name: asset.name,
             label: asset.label || `reused ${kind.slice(0, -1)} reference`,
             hasAudio: asset.hasAudio === true,
-            w: Math.max(0, Number(asset.w) || 0),
-            h: Math.max(0, Number(asset.h) || 0),
             url: URL.createObjectURL(blob),
-          };
-          if (state.vidH3Mode === 'replace') {
-            if (kind === 'images' && !state.vidH3ReplaceImage) state.vidH3ReplaceImage = restored;
-            if (kind === 'videos' && !state.vidH3ReplaceVideo) state.vidH3ReplaceVideo = restored;
-          } else {
-            state.vidH3References[kind].push(restored);
-          }
+          });
         } catch { missing.push(`H3 ${kind.slice(0, -1)} reference`); }
       }
     }
-    if (state.vidH3Mode === 'reference') state.vidH3RefSlots = Math.max(1, h3ReferenceCount());
+    state.vidH3RefSlots = Math.max(1, h3ReferenceCount());
     // The prompt is rendered before these async assets finish restoring.
     // Redraw it now so its H3 cards recover their image thumbnails.
-    renderH3References();
     renderPromptComposer();
-    refreshH3ReferenceResolution();
   }
 
   // Audio (already trimmed at original upload -> reused as-is, no re-upload)
@@ -27368,18 +24616,13 @@ async function reuseVideo(it, v) {
     } catch { missing.push('camera-motion clip'); }
   }
 
-  // Motion/performance video (SCAIL or Wan Animate 2)
-  if (['scail', 'wan-animate2'].includes(engine) && info.driveVideoName) {
+  // Motion video (SCAIL) + its trim window
+  if (engine === 'scail' && info.driveVideoName) {
     try {
       const blob = await inputBlob(info.driveVideoName);
       if (!reuseRequestCurrent(options)) return;
       const urlObj = URL.createObjectURL(blob);
-      const d = {
-        name: info.driveVideoName,
-        url: urlObj,
-        label: engine === 'wan-animate2' ? 'reused performance video' : 'reused motion video',
-        hasAudio: info.driveHasAudio === true,
-      };
+      const d = { name: info.driveVideoName, url: urlObj, label: 'reused motion video', hasAudio: info.driveHasAudio === true };
       state.vidDrive = d;
       $('#vidDriveLabel').textContent = d.label;
       const probe = document.createElement('video');
@@ -27391,7 +24634,7 @@ async function reuseVideo(it, v) {
           return;
         }
         d.dur = probe.duration || 0;
-        const s = engine === 'wan-animate2' ? 0 : Math.min(info.driveStartSeconds || 0, d.dur);
+        const s = Math.min(info.driveStartSeconds || 0, d.dur);
         d.trimStart = s;
         d.trimEnd = info.driveDurSeconds ? Math.min(d.dur, s + info.driveDurSeconds) : d.dur;
         renderVidDrive();
@@ -28128,7 +25371,7 @@ function documentationVideoInputSpecs(item, video) {
     return specs;
   }
 
-  if (engine === 'h3' && h3ReferenceBackedMode(info.h3Mode)) {
+  if (engine === 'h3' && info.h3Mode === 'reference') {
     h3GenerationReferenceDescriptors(info).forEach((reference) => {
       const label = reference.assetLabel && reference.assetLabel !== reference.inputLabel
         ? `${reference.inputLabel} · ${reference.assetLabel}` : reference.inputLabel;
@@ -28150,18 +25393,12 @@ function documentationVideoInputSpecs(item, video) {
   if (info.faceImageName) {
     addImage('Face Reference', info.faceImageName, '#a970ff');
   } else if (!info.t2v) {
-    const imageLabel = engine === 'wan-animate2'
-      ? 'Character Image'
-      : (engine === 'scail' ? 'Reference Image' : 'Start Frame');
-    addImage(imageLabel, info.imageName, ['scail', 'wan-animate2'].includes(engine) ? '#34a853' : '#4285f4', gallerySource);
+    addImage(engine === 'scail' ? 'Reference Image' : 'Start Frame', info.imageName, engine === 'scail' ? '#34a853' : '#4285f4', gallerySource);
   }
 
   if (info.endImageName) addImage('Last Frame', info.endImageName, '#fbbc04');
   if (info.driveVideoName) {
-    const driveLabel = engine === 'wan-animate2'
-      ? 'Performance Video'
-      : (engine === 'scail' ? 'Motion Video' : 'Source Video');
-    addVideo(driveLabel, info.driveVideoName, '#00bcd4', info.driveStartSeconds, info.driveDurSeconds);
+    addVideo(engine === 'scail' ? 'Motion Video' : 'Source Video', info.driveVideoName, '#00bcd4', info.driveStartSeconds, info.driveDurSeconds);
   }
   return specs;
 }
@@ -28246,21 +25483,17 @@ function documentationVideoDetails(item, video, inputMedia = [], resultMedia = n
     info.endFrame && 'Last-frame guidance',
     info.motionVideo && 'Motion transfer',
     info.smooth > 1 && `RIFE ${info.smooth}×`,
-    info.fourK && info.processed !== 'upscale' && 'RTX 4K',
+    info.fourK && 'RTX 4K',
     info.engine === 'wan' && info.fast && '4-step',
-    info.engine === 'h3' && info.h3Turbo && `${h3ReferenceBackedMode(info.h3Mode) ? 'Reference Turbo LoRA' : 'Turbo LoRA'} ${Number(info.h3TurboStrength || 1).toFixed(2)}`,
     info.sigmaPreset && `Sigmas: ${info.sigmaPreset}`,
     info.engine === 'scail' && info.scailMode && `SCAIL ${info.scailMode}`,
     info.engine === 'scail' && info.scailFps && `${info.scailFps} fps generation`,
-    info.engine === 'wan-animate2' && `Identity ${Number(info.wanAnimate2IdentityStrength || 1).toFixed(2)} · motion ${Number(info.wanAnimate2MotionStrength || 1).toFixed(2)}`,
-    info.engine === 'wan-animate2' && 'Source timing + audio',
-    info.processed === 'upscale' && `${info.upscaleEngine === 'seedvr2' ? 'SeedVR2' : 'RTX'} video upscale`,
+    info.processed === 'upscale' && 'Video upscale',
     info.processed === 'interpolate' && 'Frame interpolation',
     info.processed === 'extend' && 'Video extension',
   ].filter(Boolean).join(', ');
   const facts = [
     ['Model', videoEngineLabel(info.engine, info)],
-    ['Turbo adapter', info.h3TurboLora ? prettyLora(String(info.h3TurboLora)) : ''],
     ['Size', width && height ? `${width} × ${height}` : ''],
     ['Playback', seconds ? `${seconds.toFixed(1)}s${info.fps ? ` · ${info.fps} fps` : ''}` : ''],
     ['Inputs', inputSummary],
@@ -29252,121 +26485,8 @@ function mediaPreferenceControlValue(id) {
   return $('#' + id)?.getAttribute('aria-checked') === 'true';
 }
 
-function renderVideoPreviewQualityControls() {
-  const enabled = mediaPreferenceControlValue('setVideoPreviews');
-  const panel = $('#videoPreviewQuality');
-  const resolution = $('#setVideoPreviewResolution');
-  const frameRate = $('#setVideoPreviewFrameRate');
-  if (panel) panel.classList.toggle('is-disabled', !enabled);
-  if (resolution) resolution.disabled = !enabled;
-  if (frameRate) frameRate.disabled = !enabled;
-}
-
 let externalLlmKeyConfigured = { openai: false, gemini: false };
 let externalLlmKeyStored = { openai: false, gemini: false };
-let localPromptAiSettings = { clip: '', clipType: 'krea2', activeModel: '', activeType: 'krea2' };
-
-function localPromptAiTypeLabel(value) {
-  return {
-    krea2: 'Krea 2 / Qwen3-VL',
-    qwen_image: 'Qwen Image',
-    flux2: 'Flux 2',
-    minimax: 'MiniMax H3',
-  }[value] || value;
-}
-
-function localPromptAiModelLabel(value) {
-  const model = String(value || '');
-  const parts = model.split(/[\\/]/).filter(Boolean);
-  if (parts.length < 2) return model;
-  return `${parts.at(-1)} · ${parts.slice(0, -1).join('/')}`;
-}
-
-function ensureSelectChoice(select, value, label) {
-  if (!select || !value || [...select.options].some((option) => option.value === value)) return;
-  select.add(new Option(label || value, value));
-}
-
-function renderLocalPromptAiStatus(catalog = null) {
-  const status = $('#localPromptAiStatus');
-  const custom = $('#setLocalPromptAiClip').value;
-  status.className = '';
-  if (!catalog) {
-    status.textContent = custom
-      ? `Custom · ${localPromptAiModelLabel(custom)}`
-      : `Automatic · ${localPromptAiModelLabel(localPromptAiSettings.clip || localPromptAiSettings.activeModel) || 'Krea 2 prompt model'}`;
-    return;
-  }
-  if (custom && catalog.available === false && custom === catalog.configuredModel) {
-    status.className = 'bad';
-    status.textContent = 'Configured model is not listed by ComfyUI';
-    return;
-  }
-  status.className = 'ready';
-  status.textContent = custom
-    ? `Ready · ${localPromptAiModelLabel(custom)}`
-    : `Automatic · ${localPromptAiModelLabel(catalog.activeModel || localPromptAiSettings.clip) || 'Krea 2 prompt model'}`;
-}
-
-function syncLocalPromptAiTypeAvailability() {
-  const model = $('#setLocalPromptAiClip');
-  const type = $('#setLocalPromptAiClipType');
-  const readonly = !state.profileIsOwner;
-  type.disabled = readonly || !model.value;
-  $('#localPromptAiClipTypeField').classList.toggle('is-inherited', !model.value);
-}
-
-function applyLocalPromptAiSettings(settings = {}) {
-  localPromptAiSettings = {
-    clip: settings.clip || '',
-    clipType: settings.clipType || 'krea2',
-    activeModel: settings.localPromptAiClip || settings.clip || '',
-    activeType: settings.localPromptAiClip ? (settings.localPromptAiClipType || 'krea2') : (settings.clipType || 'krea2'),
-  };
-  const model = $('#setLocalPromptAiClip');
-  const type = $('#setLocalPromptAiClipType');
-  const configuredModel = settings.localPromptAiClip || '';
-  const configuredType = settings.localPromptAiClipType || 'krea2';
-  ensureSelectChoice(model, configuredModel, localPromptAiModelLabel(configuredModel));
-  ensureSelectChoice(type, configuredType, localPromptAiTypeLabel(configuredType));
-  model.value = configuredModel;
-  type.value = configuredType;
-  const readonly = !state.profileIsOwner;
-  $('#localPromptAiSettings').dataset.readonly = String(readonly);
-  [model, type, $('#refreshLocalPromptAiModels'), $('#testLocalPromptAiModel')]
-    .forEach((control) => { control.disabled = readonly; });
-  syncLocalPromptAiTypeAvailability();
-  renderLocalPromptAiStatus();
-}
-
-async function refreshLocalPromptAiModels(force = false) {
-  const model = $('#setLocalPromptAiClip');
-  const type = $('#setLocalPromptAiClipType');
-  const selectedModel = model.value;
-  const selectedType = type.value || 'krea2';
-  const status = $('#localPromptAiStatus');
-  status.className = '';
-  status.textContent = 'Reading installed ComfyUI models…';
-  try {
-    const catalog = await api(`/api/prompt/local-models${force ? '?refresh=1' : ''}`);
-    model.replaceChildren(new Option('Automatic · Krea 2 prompt model', ''));
-    catalog.models.forEach((name) => model.add(new Option(localPromptAiModelLabel(name), name)));
-    ensureSelectChoice(model, selectedModel, `${localPromptAiModelLabel(selectedModel)} · unavailable`);
-    type.replaceChildren();
-    catalog.types.forEach((value) => type.add(new Option(localPromptAiTypeLabel(value), value)));
-    ensureSelectChoice(type, selectedType, localPromptAiTypeLabel(selectedType));
-    model.value = selectedModel;
-    type.value = selectedType;
-    syncLocalPromptAiTypeAvailability();
-    renderLocalPromptAiStatus(Object.assign({}, catalog, {
-      available: !model.value || catalog.models.includes(model.value),
-      configuredModel: model.value,
-    }));
-  } catch (error) {
-    status.className = 'bad';
-    status.textContent = error.message || 'Could not read ComfyUI models';
-  }
-}
 
 function renderExternalLlmPreferences() {
   const provider = $('#setExternalLlmProvider').value || 'openai';
@@ -29415,7 +26535,6 @@ function applyExternalLlmSettings(settings = {}) {
 
 const SETTINGS_SERVER_CONTROL_IDS = new Set([
   'setComfy', 'setHfToken', 'setHfEndpoint', 'galleryPasswordInput', 'setVramProfile', 'setKrea2ModelVariant',
-  'setLocalPromptAiClip', 'setLocalPromptAiClipType',
   'setExternalLlmProvider', 'setExternalLlmOpenAiApiKey', 'setExternalLlmOpenAiModel',
   'setExternalLlmGeminiApiKey', 'setExternalLlmGeminiModel', 'setExternalLlmOllamaUrl', 'setExternalLlmOllamaModel',
   'setUnet', 'setKrea2RawUnet', 'setKrea2TurboLora', 'setKrea2DepthLora',
@@ -29426,14 +26545,11 @@ const SETTINGS_SERVER_CONTROL_IDS = new Set([
   'setDit', 'setSvVae', 'setSysPrompt', 'setLtxCkpt', 'setLtxLora',
   'setLtxCameraLora', 'setLtxEditLora', 'setLtxDirectorLora', 'setLtxTe',
   'setLtxGemmaLora', 'setLtxUps', 'setFaceIdLora', 'setFaceIdDistilled',
-  'setH3FrameModelVariant', 'setH3FramesTurboVariant', 'setH3ReferenceModelVariant',
-  'setH3Unet', 'setH3RefUnet', 'setH3Bf16Unet', 'setH3Bf16RefUnet', 'setH3DynTimeRefUnet', 'setH3DynTimeRefHqUnet',
-  'setH3TurboLora', 'setH3RefTurboLora', 'setH3Clip', 'setH3ClipVariant', 'setH3VideoVae', 'setH3AudioVae',
+  'setH3Unet', 'setH3RefUnet', 'setH3Clip', 'setH3ClipVariant', 'setH3VideoVae', 'setH3AudioVae',
   'setWanHigh', 'setWanLow', 'setWanClip', 'setWanVae', 'setWanHighLora',
   'setWanLowLora', 'setErosCkpt', 'setErosTe', 'setErosDmd', 'setErosSigF',
   'setErosSigU', 'setScailUnet', 'setScailLora', 'setScailPusaLora',
-  'setScailCv', 'setScailSam', 'setWanAnimate2Unet', 'setWanAnimate2Lora',
-  'setWanAnimate2Clip', 'setWanAnimate2Cv', 'setWanAnimate2Vae',
+  'setScailCv', 'setScailSam',
 ]);
 const SETTINGS_PREFERENCE_CONTROL_IDS = new Set([
   'defaultSeedValue', 'defaultCreateSteps', 'defaultCreateCfg', 'defaultCreateBatch',
@@ -29450,74 +26566,6 @@ let settingsSaveRevision = 0;
 let settingsAutosavePending = { server: false, preferences: false, media: false };
 let settingsAppRestartRequired = false;
 let settingsAppRestartRunning = false;
-let sparkAccessState = null;
-let sparkAccessBusy = false;
-
-function renderSparkAccess() {
-  const card = $('#sparkAccessCard');
-  if (!card) return;
-  card.hidden = !state.profileIsOwner;
-  if (card.hidden) return;
-  const access = sparkAccessState;
-  const ready = access?.enabled === true && access?.configured === true;
-  const enabled = access?.enabled === true;
-  const unavailable = access?.available === false;
-  const attention = unavailable || access?.conflict === true || (enabled && !ready);
-  card.dataset.state = ready ? 'ready' : (attention ? 'attention' : 'off');
-
-  let status = 'Private · not connected';
-  let badge = 'Off';
-  if (!access) {
-    status = 'Checking Tailscale Funnel…';
-    badge = 'Checking';
-  } else if (ready) {
-    status = 'Connected · image and video generation available';
-    badge = 'Connected';
-  } else if (access.conflict) {
-    status = access.reason || 'Tailscale port 8443 is already in use';
-    badge = 'Review';
-  } else if (unavailable) {
-    status = access.reason || 'Tailscale Funnel is unavailable';
-    badge = 'Unavailable';
-  } else if (enabled) {
-    status = access.reason || 'The Funnel route needs to be reconnected';
-    badge = 'Reconnect';
-  } else if (access.reason) {
-    status = access.reason;
-    badge = 'Off';
-  }
-  $('#sparkAccessStatus').textContent = status;
-  $('#sparkAccessBadge').textContent = badge;
-
-  const url = ready ? String(access.url || '') : '';
-  $('#sparkAccessUrl').hidden = !url;
-  $('#sparkAccessUrl code').textContent = url;
-  $('#sparkAccessCopy').dataset.url = url;
-  const enable = $('#sparkAccessEnable');
-  const disable = $('#sparkAccessDisable');
-  enable.hidden = ready;
-  enable.disabled = sparkAccessBusy || !access || unavailable || access?.conflict === true;
-  enable.textContent = sparkAccessBusy ? 'Connecting…' : (enabled ? 'Reconnect Spark' : 'Enable Spark connection');
-  disable.hidden = !enabled || (!ready && sparkAccessBusy);
-  disable.disabled = sparkAccessBusy;
-}
-
-async function refreshSparkAccess() {
-  if (!state.profileIsOwner) {
-    sparkAccessState = null;
-    renderSparkAccess();
-    return;
-  }
-  sparkAccessState = null;
-  renderSparkAccess();
-  try {
-    const result = await api('/api/spark-access');
-    sparkAccessState = result.sparkAccess || {};
-  } catch (error) {
-    sparkAccessState = { available: false, enabled: false, reason: error.message || 'Could not check Gemini Spark access.' };
-  }
-  renderSparkAccess();
-}
 
 function settingsPayload() {
   return {
@@ -29535,8 +26583,6 @@ function settingsPayload() {
     externalLlmImageEnhance: mediaPreferenceControlValue('externalLlmImageEnhance'),
     externalLlmVideoRevise: mediaPreferenceControlValue('externalLlmVideoRevise'),
     externalLlmVideoEnhance: mediaPreferenceControlValue('externalLlmVideoEnhance'),
-    localPromptAiClip: $('#setLocalPromptAiClip').value,
-    localPromptAiClipType: $('#setLocalPromptAiClipType').value,
     galleryPassword: $('#galleryPasswordInput').value.trim() || '1234',
     vramProfile: $('#setVramProfile').value,
     krea2ModelVariant: $('#setKrea2ModelVariant').value,
@@ -29585,19 +26631,11 @@ function settingsPayload() {
     ltxUpscaler: $('#setLtxUps').value,
     ltxFaceIdLora: $('#setFaceIdLora').value,
     ltxFaceIdDistilledLora: $('#setFaceIdDistilled').value,
-    h3FrameModelVariant: $('#setH3FrameModelVariant').value,
-    h3ReferenceModelVariant: $('#setH3ReferenceModelVariant').value,
     h3Unet: $('#setH3Unet').value,
     h3RefUnet: $('#setH3RefUnet').value,
-    h3Bf16Unet: $('#setH3Bf16Unet').value,
-    h3Bf16RefUnet: $('#setH3Bf16RefUnet').value,
-    h3DynTimeRefUnet: $('#setH3DynTimeRefUnet').value,
-    h3DynTimeRefHqUnet: $('#setH3DynTimeRefHqUnet').value,
-    h3TurboLora: $('#setH3TurboLora').value.trim() || H3_FRAMES_TURBO_LORAS.v4,
-    h3RefTurboLora: $('#setH3RefTurboLora').value,
-     h3Clip: $('#setH3Clip').value,
-     h3ClipVariant: $('#setH3ClipVariant').value,
-     h3VideoVae: $('#setH3VideoVae').value,
+    h3Clip: $('#setH3Clip').value,
+    h3ClipVariant: $('#setH3ClipVariant').value,
+    h3VideoVae: $('#setH3VideoVae').value,
     h3AudioVae: $('#setH3AudioVae').value,
     wanHighUnet: $('#setWanHigh').value,
     wanLowUnet: $('#setWanLow').value,
@@ -29615,11 +26653,6 @@ function settingsPayload() {
     scailPusaLora: $('#setScailPusaLora').value,
     scailClipVision: $('#setScailCv').value,
     scailSam: $('#setScailSam').value,
-    wanAnimate2Unet: $('#setWanAnimate2Unet').value,
-    wanAnimate2Lora: $('#setWanAnimate2Lora').value,
-    wanAnimate2Clip: $('#setWanAnimate2Clip').value,
-    wanAnimate2ClipVision: $('#setWanAnimate2Cv').value,
-    wanAnimate2Vae: $('#setWanAnimate2Vae').value,
     smartFilenames: mediaPreferenceControlValue('setSmartFilenames'),
   };
 }
@@ -29684,14 +26717,10 @@ function flushSettingsAutosave() {
     if (work.media) {
       saveMediaPreferences({
         videoPreviews: mediaPreferenceControlValue('setVideoPreviews'),
-        previewResolution: $('#setVideoPreviewResolution').value,
-        previewFrameRate: $('#setVideoPreviewFrameRate').value,
         previewCache: mediaPreferenceControlValue('setPreviewCache'),
-        experimentalFeatures: mediaPreferenceControlValue('experimentalFeaturesToggle'),
       });
     }
     if (savedSettings) {
-      applyLocalPromptAiSettings(savedSettings);
       applyExternalLlmSettings(savedSettings);
       settingsAppRestartRequired = savedSettings.appRestartRequired === true;
       renderSettingsRestartAction();
@@ -29731,170 +26760,6 @@ async function refreshTrashStatus() {
   }
 }
 
-let h3ModelInstallBusy = false;
-
-async function refreshH3ModelStatus() {
-  const status = $('#h3ModelCompatibility');
-  const frameButton = $('#h3InstallFrameModel');
-  const referenceButton = $('#h3InstallReferenceModel');
-  const restoreButton = $('#h3RestoreDynTimePatch');
-  if (!status || !frameButton || !referenceButton || !restoreButton) return;
-  frameButton.hidden = !state.profileIsOwner;
-  referenceButton.hidden = !state.profileIsOwner;
-  frameButton.disabled = h3ModelInstallBusy || !state.profileIsOwner;
-  referenceButton.disabled = h3ModelInstallBusy || !state.profileIsOwner;
-  restoreButton.disabled = h3ModelInstallBusy || !state.profileIsOwner;
-  restoreButton.hidden = true;
-  if (!state.profileIsOwner) {
-    status.dataset.state = 'idle';
-    status.textContent = 'Only the owner can change shared generation models.';
-    return;
-  }
-  status.dataset.state = 'checking';
-  status.textContent = 'Checking selected H3 models…';
-  try {
-    const result = await api('/api/h3/models/status');
-    const reference = result.reference || {};
-    const patch = result.dynTimePatch || {};
-    restoreButton.hidden = !(patch.ready && patch.restoreAvailable);
-    if (reference.requiresPatch) {
-      status.dataset.state = patch.ready ? 'ready' : 'attention';
-      status.textContent = patch.ready
-        ? 'DynTime compatibility is ready. Turbo is disabled for DynTime because its split Q/K/V layout does not match the current Turbo adapters.'
-        : 'DynTime setup is required. Setup checks the pinned patch first, backs up all three affected ComfyUI files, and leaves the current install untouched if compatibility checks fail.';
-      referenceButton.textContent = patch.ready ? 'Install selected DynTime model' : 'Set up DynTime safely';
-    } else if (reference.id === 'bf16' || result.frame?.id === 'bf16') {
-      status.dataset.state = 'attention';
-      status.textContent = 'Full BF16 supports H3 Turbo, but each selected model is 66.3 GB and real generation may need roughly 116 GB of available GPU or unified memory.';
-      referenceButton.textContent = 'Install selected Reference model';
-    } else {
-      status.dataset.state = 'ready';
-      status.textContent = 'Standard H3 is selected. Turbo remains available for both Frames and Reference modes.';
-      referenceButton.textContent = 'Install selected Reference model';
-    }
-  } catch (error) {
-    status.dataset.state = 'error';
-    status.textContent = error.message || 'Could not check H3 model setup.';
-  }
-}
-
-async function restoreDynTimePatchFromSettings() {
-  const typed = await askText({
-    title: 'Restore pre-DynTime ComfyUI files?',
-    message: 'Mix Studio will restore only its verified three-file backup. It refuses if ComfyUI changed after setup. Type RESTORE COMFYUI to continue.',
-    confirmLabel: 'Restore files',
-    danger: true,
-    input: { label: 'Type RESTORE COMFYUI', expected: 'RESTORE COMFYUI', expectedMessage: 'Type RESTORE COMFYUI exactly.' },
-  });
-  if (typed == null) return;
-  h3ModelInstallBusy = true;
-  try {
-    const result = await api('/api/h3/dyntime/restore', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: typed }),
-    });
-    toast(result.restartRequired ? 'Pre-DynTime files restored — restart ComfyUI before generating' : 'Pre-DynTime files restored');
-  } catch (error) {
-    toast(error.message, true);
-  } finally {
-    h3ModelInstallBusy = false;
-    refreshH3ModelStatus().catch(() => {});
-  }
-}
-
-async function installSelectedH3Model(kind) {
-  if (h3ModelInstallBusy || !state.profileIsOwner) return;
-  try {
-    await flushSettingsAutosave();
-    const selectedVariant = kind === 'frames'
-      ? $('#setH3FrameModelVariant').value
-      : $('#setH3ReferenceModelVariant').value;
-    if (selectedVariant === 'bf16' && !await askConfirm({
-      title: 'Install the full BF16 H3 model?',
-      message: 'This download is 66.3 GB. Generation may need roughly 116 GB of available GPU or unified memory. Your Standard model remains installed unless you later delete it from Model cleanup.',
-      confirmLabel: 'Install 66.3 GB model',
-    })) return;
-    if (selectedVariant.startsWith('dyntime') && !await askConfirm({
-      title: 'Set up experimental DynTime?',
-      message: 'Mix Studio will first verify a pinned compatibility patch, back up the three affected ComfyUI files, then install the selected model. If the patch does not fit your ComfyUI version, setup stops before changing it.',
-      confirmLabel: 'Continue safely',
-    })) return;
-    h3ModelInstallBusy = true;
-    await refreshH3ModelStatus();
-    const referenceVariant = $('#setH3ReferenceModelVariant').value;
-    const component = kind === 'frames'
-      ? 'h3'
-      : (referenceVariant.startsWith('dyntime') ? 'h3dyntime' : 'h3r2v');
-    const result = await api('/api/dependencies/install', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ components: [component] }),
-    });
-    setupDependencyState = result.install || setupDependencyState;
-    toast('H3 setup started — progress is available in Queue → Downloads');
-    queueRefreshSoon();
-  } catch (error) {
-    toast(error.message, true);
-  } finally {
-    h3ModelInstallBusy = false;
-    refreshH3ModelStatus().catch(() => {});
-  }
-}
-
-async function refreshModelCleanup() {
-  const section = $('#modelCleanup');
-  const summary = $('#modelCleanupSummary');
-  const list = $('#modelCleanupList');
-  if (!section || !summary || !list) return;
-  section.hidden = !state.profileIsOwner;
-  if (!state.profileIsOwner) return;
-  summary.textContent = 'Checking managed models…';
-  list.innerHTML = '';
-  try {
-    const result = await api('/api/models/cleanup');
-    const candidates = result.candidates || [];
-    summary.textContent = candidates.length
-      ? `${candidates.length} inactive managed model${candidates.length === 1 ? '' : 's'} · ${formatSelectionBytes(result.bytes)}`
-      : 'No inactive Mix Studio-managed models found.';
-    for (const candidate of candidates) {
-      const row = document.createElement('div');
-      row.className = 'model-cleanup-row';
-      row.innerHTML = `<span><strong>${escapeHtml(candidate.filename)}</strong><small>${escapeHtml(candidate.folder)} · ${formatSelectionBytes(candidate.bytes)}</small></span>`;
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.textContent = 'Delete';
-      remove.addEventListener('click', async () => {
-        const typed = await askText({
-          title: 'Permanently delete this model?',
-          message: `This permanently deletes ${candidate.filename}. Type the complete filename to continue.`,
-          confirmLabel: 'Delete model',
-          danger: true,
-          input: { label: 'Model filename', expected: candidate.filename, expectedMessage: 'Type the complete filename exactly.' },
-        });
-        if (typed == null) return;
-        remove.disabled = true;
-        try {
-          await api('/api/models/cleanup', {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: candidate.id, confirmName: typed }),
-          });
-          toast(`Deleted ${candidate.filename}`);
-          await refreshModelCleanup();
-        } catch (error) {
-          remove.disabled = false;
-          toast(error.message, true);
-        }
-      });
-      row.appendChild(remove);
-      list.appendChild(row);
-    }
-  } catch (error) {
-    summary.textContent = error.message || 'Could not inspect managed models.';
-  }
-}
-
 async function emptyTrashFromSettings() {
   const typed = await askText({
     title: 'Permanently empty trash?',
@@ -29920,25 +26785,12 @@ async function emptyTrashFromSettings() {
   await refreshTrashStatus();
 }
 
-['experimentalFeaturesToggle', 'setVideoPreviews', 'setPreviewCache', 'setSmartFilenames'].forEach((id) => {
+['setVideoPreviews', 'setPreviewCache', 'setSmartFilenames'].forEach((id) => {
   $('#' + id).addEventListener('click', () => {
     const button = $('#' + id);
-    const enabled = !mediaPreferenceControlValue(id);
-    button.setAttribute('aria-checked', String(enabled));
-    if (id === 'experimentalFeaturesToggle') {
-      state.mediaPreferences.experimentalFeatures = enabled;
-      if (!enabled && state.vidH3Mode === 'replace') state.vidH3Mode = 'frames';
-      if (!enabled) state.vidH3LongContext = false;
-      updateVideoPanels();
-      renderPromptComposer();
-      saveForm();
-    }
-    if (id === 'setVideoPreviews') renderVideoPreviewQualityControls();
+    button.setAttribute('aria-checked', String(!mediaPreferenceControlValue(id)));
     scheduleSettingsAutosave(id === 'setSmartFilenames' ? 'server' : 'media', 0);
   });
-});
-['setVideoPreviewResolution', 'setVideoPreviewFrameRate'].forEach((id) => {
-  $('#' + id).addEventListener('change', () => scheduleSettingsAutosave('media', 0));
 });
 $('#previewCacheClear').addEventListener('click', clearPreviewCache);
 $('#trashEmpty').addEventListener('click', emptyTrashFromSettings);
@@ -30256,6 +27108,7 @@ let iconTooltipButton = null;
 let iconTooltipShowTimer = null;
 let iconTooltipHideTimer = null;
 let iconTooltipFrame = null;
+let iconTooltipScanFrame = null;
 let iconTooltipPreviousDescription = '';
 const iconTooltipSilentFocusTargets = new WeakSet();
 
@@ -30303,8 +27156,6 @@ function buttonIsIconOnly(button) {
 }
 
 function iconTooltipLabel(button) {
-  const detail = String(button.dataset.iconTooltipDetail || '').trim();
-  if (detail) return detail.slice(0, 500);
   const explicit = button.dataset.iconTooltip;
   const configured = ICON_TOOLTIP_OVERRIDES[button.id];
   const override = typeof configured === 'function' ? configured(button) : configured;
@@ -30347,6 +27198,14 @@ function scanIconTooltips(root = document) {
   if (root instanceof HTMLButtonElement) markIconTooltip(root);
   if (root.querySelectorAll) root.querySelectorAll('button').forEach(markIconTooltip);
   if (root.parentElement instanceof HTMLButtonElement) markIconTooltip(root.parentElement);
+}
+
+function requestIconTooltipScan() {
+  if (iconTooltipScanFrame) return;
+  iconTooltipScanFrame = requestAnimationFrame(() => {
+    iconTooltipScanFrame = null;
+    scanIconTooltips();
+  });
 }
 
 function restoreIconTooltipDescription(button) {
@@ -30463,21 +27322,14 @@ function initIconTooltips() {
     if (button) hideIconTooltip(button);
   });
   document.addEventListener('pointerdown', () => hideIconTooltip(), true);
-  document.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-icon-tooltip]');
-    if (button && !button.disabled) {
-      if (iconTooltipButton === button && !$('#iconTooltip')?.hidden) hideIconTooltip(button);
-      else showIconTooltip(button, true);
-      return;
-    }
-    hideIconTooltip();
-  }, true);
+  document.addEventListener('click', () => hideIconTooltip(), true);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') hideIconTooltip();
   });
   window.addEventListener('scroll', () => hideIconTooltip(), { passive: true, capture: true });
   window.addEventListener('resize', () => {
     hideIconTooltip();
+    requestIconTooltipScan();
   }, { passive: true });
   new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
@@ -31499,7 +28351,7 @@ function currentPromptIntent() {
     if (promptRequestsOutpaint(prompt) && OUTPAINT_EDIT_ENGINES.has(state.editEngine) && !state.editOutpaint) id = 'outpaint-intent';
     else if (promptRequestsLocalEdit(prompt) && supportsCurrentEditMask() && !hasEditMask()) id = 'inpaint-intent';
   } else if (state.view === 'video') {
-    if (prompt && promptRequestsMotionTransfer(prompt) && !['h3', 'scail'].includes(state.vidEngine)) {
+    if (prompt && promptRequestsMotionTransfer(prompt) && state.vidEngine !== 'scail') {
       id = $('#vidModelHeader').getAttribute('aria-expanded') === 'true' ? 'video-scail-model' : 'video-scail-intent';
     } else if (state.vidEngine === 'scail' && !state.vidRef) id = 'scail-source-upload';
     else if (state.vidEngine === 'scail' && !state.vidDrive) id = 'scail-motion-upload';
@@ -33147,31 +29999,6 @@ $('#setExternalLlmProvider').addEventListener('change', () => {
   renderExternalLlmPreferences();
 });
 
-$('#setLocalPromptAiClip').addEventListener('change', () => {
-  syncLocalPromptAiTypeAvailability();
-  renderLocalPromptAiStatus();
-});
-$('#refreshLocalPromptAiModels').addEventListener('click', () => refreshLocalPromptAiModels(true));
-$('#testLocalPromptAiModel').addEventListener('click', async () => {
-  if (!state.profileIsOwner) return;
-  const button = $('#testLocalPromptAiModel');
-  const status = $('#localPromptAiStatus');
-  button.disabled = true;
-  status.className = '';
-  status.textContent = 'Saving and testing…';
-  try {
-    await flushSettingsAutosave();
-    const result = await api('/api/prompt/local-model/test', { method: 'POST' });
-    status.className = 'ready';
-    status.textContent = `Ready · ${localPromptAiModelLabel(result.model)}`;
-  } catch (error) {
-    status.className = 'bad';
-    status.textContent = error.message || 'Local model test failed';
-  } finally {
-    button.disabled = !state.profileIsOwner;
-  }
-});
-
 ['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance'].forEach((id) => {
   $('#' + id).addEventListener('click', () => {
     if (!state.profileIsOwner) return;
@@ -33243,8 +30070,6 @@ $('#settingsBtn').addEventListener('click', async () => {
       : 'Paste an hf_ read token';
     $('#setHfEndpoint').value = s.hfEndpoint || '';
     applyExternalLlmSettings(s);
-    applyLocalPromptAiSettings(s);
-    refreshLocalPromptAiModels().catch(() => {});
     $('#galleryPasswordInput').value = s.galleryPassword || '1234';
     $('#setVramProfile').value = s.vramProfile || 'auto';
     $('#setKrea2ModelVariant').value = s.krea2ModelVariant || (/int8.*convrot|convrot.*int8/i.test(s.unet || '') ? 'int8-convrot' : 'fp8');
@@ -33292,34 +30117,25 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setLtxUps').value = s.ltxUpscaler || '';
     $('#setFaceIdLora').value = s.ltxFaceIdLora || '';
     $('#setFaceIdDistilled').value = s.ltxFaceIdDistilledLora || '';
-    $('#setH3FrameModelVariant').value = s.h3FrameModelVariant || 'standard';
-    $('#setH3ReferenceModelVariant').value = s.h3ReferenceModelVariant || 'standard';
     $('#setH3Unet').value = s.h3Unet || '';
     $('#setH3RefUnet').value = s.h3RefUnet || '';
-    $('#setH3Bf16Unet').value = s.h3Bf16Unet || '';
-    $('#setH3Bf16RefUnet').value = s.h3Bf16RefUnet || '';
-    $('#setH3DynTimeRefUnet').value = s.h3DynTimeRefUnet || '';
-    $('#setH3DynTimeRefHqUnet').value = s.h3DynTimeRefHqUnet || '';
-    $('#setH3TurboLora').value = s.h3TurboLora || H3_FRAMES_TURBO_LORAS.v4;
-    setConfiguredH3FramesTurboLora($('#setH3TurboLora').value);
-    $('#setH3RefTurboLora').value = s.h3RefTurboLora || '';
-     $('#setH3Clip').value = s.h3Clip || '';
-     if ($('#setH3ClipVariant')) {
-       const configured = s.h3Clip || '';
-       const variant = s.h3ClipVariant || '';
-       if (variant) {
-         $('#setH3ClipVariant').value = variant;
-       } else if (configured) {
-         const name = configured.toLowerCase();
-         if (name.includes('heretic') || name.includes('uncensored')) $('#setH3ClipVariant').value = 'int8-convrot-uncensored';
-         else if (name.includes('nvfp4') || name.includes('awq')) $('#setH3ClipVariant').value = 'nvfp4-awq';
-         else if (name.includes('int8') || name.includes('convrot')) $('#setH3ClipVariant').value = 'int8-convrot';
-         else $('#setH3ClipVariant').value = 'auto';
-       } else {
-         $('#setH3ClipVariant').value = 'auto';
-       }
-     }
-     $('#setH3VideoVae').value = s.h3VideoVae || '';
+    $('#setH3Clip').value = s.h3Clip || '';
+    if ($('#setH3ClipVariant')) {
+      const configured = s.h3Clip || '';
+      const variant = s.h3ClipVariant || '';
+      if (variant) {
+        $('#setH3ClipVariant').value = variant;
+      } else if (configured) {
+        const name = configured.toLowerCase();
+        if (name.includes('heretic') || name.includes('uncensored')) $('#setH3ClipVariant').value = 'int8-convrot-uncensored';
+        else if (name.includes('nvfp4') || name.includes('awq')) $('#setH3ClipVariant').value = 'nvfp4-awq';
+        else if (name.includes('int8') || name.includes('convrot')) $('#setH3ClipVariant').value = 'int8-convrot';
+        else $('#setH3ClipVariant').value = 'auto';
+      } else {
+        $('#setH3ClipVariant').value = 'auto';
+      }
+    }
+    $('#setH3VideoVae').value = s.h3VideoVae || '';
     $('#setH3AudioVae').value = s.h3AudioVae || '';
     $('#setWanHigh').value = s.wanHighUnet || '';
     $('#setWanLow').value = s.wanLowUnet || '';
@@ -33337,11 +30153,6 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setScailPusaLora').value = s.scailPusaLora || '';
     $('#setScailCv').value = s.scailClipVision || '';
     $('#setScailSam').value = s.scailSam || '';
-    $('#setWanAnimate2Unet').value = s.wanAnimate2Unet || '';
-    $('#setWanAnimate2Lora').value = s.wanAnimate2Lora || '';
-    $('#setWanAnimate2Clip').value = s.wanAnimate2Clip || '';
-    $('#setWanAnimate2Cv').value = s.wanAnimate2ClipVision || '';
-    $('#setWanAnimate2Vae').value = s.wanAnimate2Vae || '';
     setMediaPreferenceControl('setSmartFilenames', s.smartFilenames !== false);
     renderExportLocation(s.exportDir || '');
     settingsAppRestartRequired = s.appRestartRequired === true;
@@ -33351,16 +30162,9 @@ $('#settingsBtn').addEventListener('click', async () => {
     renderSettingsRestartAction();
   }
   setMediaPreferenceControl('setVideoPreviews', state.mediaPreferences.videoPreviews);
-  $('#setVideoPreviewResolution').value = String(state.mediaPreferences.previewResolution);
-  $('#setVideoPreviewFrameRate').value = String(state.mediaPreferences.previewFrameRate);
   setMediaPreferenceControl('setPreviewCache', state.mediaPreferences.previewCache);
-  setMediaPreferenceControl('experimentalFeaturesToggle', state.mediaPreferences.experimentalFeatures);
-  renderVideoPreviewQualityControls();
   refreshPreviewCacheStatus();
   refreshTrashStatus().catch(() => {});
-  refreshH3ModelStatus().catch(() => {});
-  refreshModelCleanup().catch(() => {});
-  refreshSparkAccess().catch(() => {});
   setSettingsTab(settingsActiveTab);
   $('#settingsSheet').classList.add('show');
   renderHealth();
@@ -33376,30 +30180,6 @@ $('#setKrea2ModelVariant').addEventListener('change', () => {
     : 'krea2_raw_fp8_scaled.safetensors';
 });
 
-['setH3FrameModelVariant', 'setH3ReferenceModelVariant'].forEach((id) => {
-  $('#' + id).addEventListener('change', async () => {
-    try { await flushSettingsAutosave(); } catch { return; }
-    refreshH3ModelStatus().catch(() => {});
-    refreshModelCleanup().catch(() => {});
-  });
-});
-$('#setH3FramesTurboVariant').addEventListener('change', () => {
-  const variant = $('#setH3FramesTurboVariant').value;
-  const filename = H3_FRAMES_TURBO_LORAS[variant];
-  if (!filename) return;
-  $('#setH3TurboLora').value = filename;
-  setConfiguredH3FramesTurboLora(filename);
-  state.vidH3TurboSteps = variant === 'legacy-4step' ? 4 : 6;
-  renderH3TurboMode();
-  renderVideoStepControl();
-  updateVideoPanels();
-  saveForm();
-});
-$('#setH3TurboLora').addEventListener('input', (event) => {
-  setConfiguredH3FramesTurboLora(event.target.value);
-  renderH3TurboMode();
-  renderVideoStepControl();
-});
 if ($('#setH3ClipVariant')) {
   $('#setH3ClipVariant').addEventListener('change', () => {
     const variant = $('#setH3ClipVariant').value;
@@ -33423,13 +30203,8 @@ if ($('#setH3ClipVariant')) {
     } else if (variant === 'nvfp4-awq') {
       clipInput.value = 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors';
     }
-    saveForm();
   });
 }
-$('#h3InstallFrameModel').addEventListener('click', () => installSelectedH3Model('frames'));
-$('#h3InstallReferenceModel').addEventListener('click', () => installSelectedH3Model('reference'));
-$('#h3RestoreDynTimePatch').addEventListener('click', restoreDynTimePatchFromSettings);
-$('#modelCleanupRefresh').addEventListener('click', () => refreshModelCleanup());
 
 $('#settingsRestartApply').addEventListener('click', async () => {
   if (settingsAppRestartRunning || !settingsAppRestartRequired) return;
@@ -33545,6 +30320,7 @@ let setupPollTimer = null;
 let setupAutoRestart = false;
 let setupActiveStep = 'connect';
 let setupStepTouched = false;
+let setupKrea2VariantOverride = '';
 let setupOperationDiagnostic = '';
 let setupDiscoveredMatches = [];
 let setupFirstRun = false;
@@ -33559,10 +30335,11 @@ const KREA2_MODEL_COMPONENTS = new Set(['image', 'krea2raw', 'regional', 'krea2r
 const SETUP_COMPONENT_CATEGORIES = [
   { id: 'image', label: 'Image', description: 'Generation, regional control, guides, and upscaling', components: ['image', 'krea2raw', 'regional', 'krea2depth', 'krea2style', 'upscale', 'ultimateupscale'] },
   { id: 'edit', label: 'Edit', description: 'Klein, Qwen, Krea editing, masks, and outpainting', components: ['klein4', 'klein9', 'qwen', 'krea2ref', 'krea2remix', 'krea2outpaint', 'editoutpaint', 'smartmask'] },
-  { id: 'video', label: 'Video', description: 'MiniMax H3, LTX, Wan, SCAIL, Director, Face ID, and video tools', components: ['h3', 'h3turbo', 'h3turbor2v', 'h3context', 'h3sage', 'h3r2v', 'video', 'ltxdirector', 'ltxcamera', 'videoedit', 'faceid', 'eros', 'wan', 'wananimate2', 'scail', 'scailinfinity', 'video4k'] },
+  { id: 'video', label: 'Video', description: 'MiniMax H3, LTX, Wan, SCAIL, Director, Face ID, and video tools', components: ['h3', 'h3sage', 'h3r2v', 'video', 'ltxdirector', 'ltxcamera', 'videoedit', 'faceid', 'eros', 'wan', 'scail', 'scailinfinity', 'video4k'] },
 ];
 
 function setupSelectedKrea2Variant() {
+  if (setupKrea2VariantOverride) return setupKrea2VariantOverride;
   return setupViewStatus?.modelVariants?.krea2
     || setupViewStatus?.modelRecommendations?.krea2
     || 'fp8';
@@ -33588,20 +30365,8 @@ function setupKrea2CoreBlocked(components) {
 
 function setupH3CoreBlocked(components) {
   const requested = (components || []).filter(Boolean);
-  return requested.some((id) => id === 'h3' || id === 'h3r2v' || id === 'h3turbo' || id === 'h3turbor2v' || id === 'h3context')
+  return requested.some((id) => id === 'h3' || id === 'h3r2v')
     && setupViewStatus?.comfy?.minimaxH3?.supported !== true;
-}
-
-function setupWanAnimate2CoreBlocked(components) {
-  const requested = (components || []).filter(Boolean);
-  return setupViewStatus?.comfy?.connected === true
-    && requested.includes('wananimate2')
-    && setupViewStatus?.comfy?.wanAnimate2?.supported !== true;
-}
-
-function setupWanAnimate2CoreMessage() {
-  return setupViewStatus?.comfy?.wanAnimate2?.reason
-    || 'Update ComfyUI to a current build with native Wan Animate 2 support, restart it, then press Check again.';
 }
 
 function setupH3CoreMessage() {
@@ -33631,23 +30396,20 @@ function setupNativeInt8Message() {
 function generationSetupComponents() {
   const components = new Set();
   if (state.view === 'video') {
-    const byEngine = { ltx: 'video', h3: 'h3', 'ltx-edit': 'videoedit', eros: 'eros', wan: 'wan', 'wan-animate2': 'wananimate2', scail: 'scail' };
+    const byEngine = { ltx: 'video', h3: 'h3', 'ltx-edit': 'videoedit', eros: 'eros', wan: 'wan', scail: 'scail' };
     components.add(byEngine[state.vidEngine] || 'video');
-    if (h3TurboActive()) components.add(h3ReferenceBackedMode() ? 'h3turbor2v' : 'h3turbo');
-    if (h3LongContextActive()) components.add('h3context');
     if (state.vidEngine === 'h3'
         && state.vidH3SageAttention !== false
         && lastMeta?.dependencies?.sageAttention?.installable !== false) {
       components.add('h3sage');
     }
-    if (state.vidEngine === 'h3' && h3ReferenceBackedMode()) components.add('h3r2v');
+    if (state.vidEngine === 'h3' && state.vidH3Mode === 'reference') components.add('h3r2v');
     if (state.directorOpen) components.add('ltxdirector');
     if (state.vidEngine === 'ltx-edit') components.add('video');
     if (state.vidEngine === 'ltx' && state.vidFace && !state.vidRef) components.add('faceid');
     if (cameraMotionReferenceSelected()) components.add('ltxcamera');
     if (state.vidEngine === 'scail' && state.vidScailMode === 'infinity') components.add('scailinfinity');
-    if (state.vidEngine !== 'wan-animate2'
-      && (state.directorOpen ? state.directorProject?.output?.fourK : $('#vid4k').classList.contains('active'))) components.add('video4k');
+    if (state.directorOpen ? state.directorProject?.output?.fourK : $('#vid4k').classList.contains('active')) components.add('video4k');
     return [...components];
   }
   if (state.view === 'edit') {
@@ -33682,24 +30444,18 @@ function imageGenerationReady() {
     || lastMeta?.krea2?.nativeInt8?.supported === true;
 }
 
-function setupActionForComponents(required) {
+function currentGenerationSetupAction() {
   if (!lastMeta) return '';
-  const components = [...new Set((required || []).filter(Boolean))];
+  const required = generationSetupComponents();
   if (!lastMeta.ok) return 'connect';
-  const requiresKrea2 = components.some((id) => KREA2_MODEL_COMPONENTS.has(id));
-  const requiresH3 = components.some((id) => id === 'h3' || id === 'h3r2v' || id === 'h3turbo' || id === 'h3turbor2v' || id === 'h3context');
-  const requiresWanAnimate2 = components.includes('wananimate2');
+  const requiresKrea2 = required.some((id) => KREA2_MODEL_COMPONENTS.has(id));
+  const requiresH3 = required.some((id) => id === 'h3' || id === 'h3r2v');
   if (requiresH3 && lastMeta?.minimaxH3?.supported !== true) return 'update';
-  if (requiresWanAnimate2 && lastMeta?.wanAnimate2?.supported !== true) return 'update';
   if (requiresKrea2 && lastMeta?.models?.krea2?.clipType?.ok !== true) return 'update';
   if (requiresKrea2
     && lastMeta?.krea2?.modelVariant === 'int8-convrot'
     && lastMeta?.krea2?.nativeInt8?.supported !== true) return 'update';
-  return missingSetupComponents(components).length ? 'install' : '';
-}
-
-function currentGenerationSetupAction() {
-  return setupActionForComponents(generationSetupComponents());
+  return missingSetupComponents(required).length ? 'install' : '';
 }
 
 async function ensureGenerationSetup() {
@@ -33711,27 +30467,21 @@ async function ensureGenerationSetup() {
     && required.some((id) => KREA2_MODEL_COMPONENTS.has(id));
   const krea2CoreBlocked = required.some((id) => KREA2_MODEL_COMPONENTS.has(id))
     && lastMeta?.models?.krea2?.clipType?.ok !== true;
-  const h3CoreBlocked = required.some((id) => id === 'h3' || id === 'h3r2v' || id === 'h3turbo' || id === 'h3turbor2v' || id === 'h3context')
+  const h3CoreBlocked = required.some((id) => id === 'h3' || id === 'h3r2v')
     && lastMeta?.minimaxH3?.supported !== true;
-  const wanAnimate2CoreBlocked = required.includes('wananimate2')
-    && lastMeta?.wanAnimate2?.supported !== true;
-  if (lastMeta?.ok && !missing.length && !nativeInt8Blocked && !krea2CoreBlocked && !h3CoreBlocked && !wanAnimate2CoreBlocked) return true;
-  const setupAction = setupActionForComponents(required);
+  if (lastMeta?.ok && !missing.length && !nativeInt8Blocked && !krea2CoreBlocked && !h3CoreBlocked) return true;
   saveForm();
   await openInitialSetup({
     components: missing.length ? missing : required,
-    initialStep: setupAction === 'install' ? 'install' : 'connect',
     message: h3CoreBlocked
       ? 'Update ComfyUI to 0.30.0 or newer before using MiniMax H3.'
-      : (wanAnimate2CoreBlocked
-      ? 'Update ComfyUI to a current build with native Wan Animate 2 support.'
       : (krea2CoreBlocked
       ? 'Update ComfyUI to 0.26.0 or newer before using Krea 2.'
       : (nativeInt8Blocked
       ? 'Update ComfyUI for Krea 2 INT8 ConvRot, or choose the compatible FP8 route.'
       : (lastMeta?.ok
       ? 'This workflow needs a few desktop tools before it can run.'
-      : 'Connect ComfyUI, then install what this workflow needs.')))),
+      : 'Connect ComfyUI, then install what this workflow needs.'))),
   });
   return false;
 }
@@ -33799,7 +30549,6 @@ function setupGenerationReady() {
   const compatibilityComponents = setupContextComponents.length ? setupContextComponents : (setupViewStatus.quickComponents || []);
   if (setupKrea2CoreBlocked(compatibilityComponents)) return false;
   if (setupH3CoreBlocked(compatibilityComponents)) return false;
-  if (setupWanAnimate2CoreBlocked(compatibilityComponents)) return false;
   if (setupNativeInt8Blocked(compatibilityComponents)) return false;
   const missing = missingSetupComponents(compatibilityComponents);
   return !missing.length;
@@ -33811,7 +30560,6 @@ function renderSetupFooter() {
   const compatibilityComponents = setupContextComponents.length ? setupContextComponents : (setupViewStatus.quickComponents || []);
   const krea2CoreBlocked = setupKrea2CoreBlocked(compatibilityComponents);
   const h3CoreBlocked = setupH3CoreBlocked(compatibilityComponents);
-  const wanAnimate2CoreBlocked = setupWanAnimate2CoreBlocked(compatibilityComponents);
   const officialBusy = ['running', 'cancelling'].includes(comfy.install?.state);
   const startBusy = !!comfy.start?.running || comfy.start?.state === 'running';
   const dependencyBusy = ['running', 'cancelling', 'restarting'].includes(setupDependencyState?.state);
@@ -33826,8 +30574,8 @@ function renderSetupFooter() {
   cancel.disabled = comfy.install?.state === 'cancelling' || setupDependencyState?.state === 'cancelling';
   const next = $('#setupNext');
   if (setupActiveStep === 'connect') {
-    next.textContent = krea2CoreBlocked || h3CoreBlocked || wanAnimate2CoreBlocked ? 'Update ComfyUI first' : 'Continue';
-    next.disabled = busy || !comfy.connected || krea2CoreBlocked || h3CoreBlocked || wanAnimate2CoreBlocked;
+    next.textContent = krea2CoreBlocked || h3CoreBlocked ? 'Update ComfyUI first' : 'Continue';
+    next.disabled = busy || !comfy.connected || krea2CoreBlocked || h3CoreBlocked;
   } else if (setupActiveStep === 'install') {
     next.textContent = 'Review';
     next.disabled = busy || (!workflowReady && !restartRequired);
@@ -33842,6 +30590,7 @@ async function openInitialSetup(options = {}) {
   setupReturnToSettings = options.returnToSettings === true;
   $('#setupReturnSettings').hidden = !setupReturnToSettings;
   setupContextComponents = [...new Set((options.components || []).filter(Boolean))];
+  setupKrea2VariantOverride = '';
   setupDiscoveredMatches = [];
   setupFirstRun = options.firstRun === true;
   setupLowVramStarterSelected = false;
@@ -33849,11 +30598,7 @@ async function openInitialSetup(options = {}) {
   setupSelectedComponents = new Set();
   setupKnownMissingComponents = null;
   setupStepTouched = false;
-  const inferredStep = setupActionForComponents(setupContextComponents) === 'install' ? 'install' : 'connect';
-  const initialStep = SETUP_STEPS.includes(options.initialStep)
-    ? options.initialStep
-    : (SETUP_STEPS.includes(options.step) ? options.step : inferredStep);
-  setupActiveStep = initialStep;
+  setupActiveStep = 'connect';
   setSetupGuideExpanded(false);
   setSetupCustomExpanded(false);
   setPhoneAccessExpanded(false);
@@ -33861,7 +30606,7 @@ async function openInitialSetup(options = {}) {
   $('#setupIntro').textContent = options.message
     || 'Connect ComfyUI, install a workflow, and check that it is ready.';
   $('#initialSetupSheet').classList.add('show');
-  setSetupStep(initialStep, { resetScroll: true });
+  setSetupStep('connect', { resetScroll: true });
   syncSheetScrollLock();
   await refreshSetupStatus();
   if (!setupViewStatus?.comfy?.connected) await discoverComfyFromSetup({ silent: true });
@@ -34116,9 +30861,8 @@ function renderInitialSetup() {
   const compatibilityComponents = setupContextComponents.length ? setupContextComponents : (setupViewStatus.quickComponents || []);
   const krea2CoreBlocked = setupKrea2CoreBlocked(compatibilityComponents);
   const h3CoreBlocked = setupH3CoreBlocked(compatibilityComponents);
-  const wanAnimate2CoreBlocked = setupWanAnimate2CoreBlocked(compatibilityComponents);
   const int8Blocked = setupNativeInt8Blocked(compatibilityComponents);
-  const comfyCompatibilityBlocked = krea2CoreBlocked || h3CoreBlocked || wanAnimate2CoreBlocked || int8Blocked;
+  const comfyCompatibilityBlocked = krea2CoreBlocked || h3CoreBlocked || int8Blocked;
   const incompleteComfy = !!comfy.partialPath && !comfy.detectedPath;
   const comfyCard = $('#setupComfyStatus');
   comfyCard.classList.toggle('ready', !!comfy.connected && !comfyCompatibilityBlocked);
@@ -34126,11 +30870,9 @@ function renderInitialSetup() {
   $('#setupComfyStatusCopy').textContent = comfy.connected
     ? (h3CoreBlocked
       ? `Update to ${comfy.minimaxH3?.minimumVersion || '0.30.0'}+ for MiniMax H3`
-      : (wanAnimate2CoreBlocked
-      ? 'Update for native Wan Animate 2 support'
       : (krea2CoreBlocked
       ? `Update to ${comfy.krea2?.minimumVersion || '0.26.0'}+ for Krea 2`
-      : (int8Blocked ? `Update to ${comfy.nativeInt8?.minimumVersion || '0.27.0'}+ for Krea INT8` : `Connected${comfy.version ? ` · ${comfy.version}` : ''}`))))
+      : (int8Blocked ? `Update to ${comfy.nativeInt8?.minimumVersion || '0.27.0'}+ for Krea INT8` : `Connected${comfy.version ? ` · ${comfy.version}` : ''}`)))
     : (incompleteComfy ? 'Incomplete · finish in Comfy Desktop'
       : ((comfy.configuredPath || comfy.detectedPath) ? 'Found · start ComfyUI' : 'Connection needed'));
 
@@ -34152,8 +30894,6 @@ function renderInitialSetup() {
   $('#setupWorkflowStatus strong').textContent = setupContextComponents.length ? 'Current workflow' : 'Image generation';
   $('#setupWorkflowStatusCopy').textContent = h3CoreBlocked
     ? 'ComfyUI update needed for MiniMax H3'
-    : (wanAnimate2CoreBlocked
-    ? 'ComfyUI update needed for Wan Animate 2'
     : (krea2CoreBlocked
     ? 'ComfyUI update needed for Krea 2'
     : (int8Blocked
@@ -34162,11 +30902,11 @@ function renderInitialSetup() {
       ? (workflowReady ? 'Ready' : `${contextMissing.length || setupContextComponents.length} group${(contextMissing.length || setupContextComponents.length) === 1 ? '' : 's'} needed`)
       : (comfy.connected ? (workflowReady
         ? (additionalMissing.length ? `Ready · ${additionalMissing.length} more workflows available` : 'Ready')
-        : `${contextMissing.length || activeWorkflowComponents.length || 1} starter needed`) : 'Waiting for ComfyUI')))));
+        : `${contextMissing.length || activeWorkflowComponents.length || 1} starter needed`) : 'Waiting for ComfyUI'))));
 
-  const connectReady = !!comfy.connected && !krea2CoreBlocked && !h3CoreBlocked && !wanAnimate2CoreBlocked;
+  const connectReady = !!comfy.connected && !krea2CoreBlocked && !h3CoreBlocked;
   const installReady = workflowReady || restartRequired;
-  $('#setupTabConnectStatus').textContent = krea2CoreBlocked || h3CoreBlocked || wanAnimate2CoreBlocked ? 'Update core'
+  $('#setupTabConnectStatus').textContent = krea2CoreBlocked || h3CoreBlocked ? 'Update core'
     : (connectReady ? 'Connected'
     : (incompleteComfy ? 'Incomplete' : ((comfy.detectedPath || comfy.configuredPath) ? 'Found' : 'Needed')));
   $('#setupTabInstallStatus').textContent = dependencyBusy ? 'In progress' : (installReady ? 'Ready' : `${contextMissing.length || activeWorkflowComponents.length || 1} needed`);
@@ -34184,9 +30924,7 @@ function renderInitialSetup() {
     : 'No compatible GPU detected';
   $('#setupHardwareFit').textContent = krea2CoreBlocked
     ? 'Update ComfyUI for Krea 2'
-    : (wanAnimate2CoreBlocked
-      ? 'Update ComfyUI for Wan Animate 2'
-      : (int8Blocked ? 'Update ComfyUI for native Krea INT8' : (quickFit.label || 'Compatibility not yet available')));
+    : (int8Blocked ? 'Update ComfyUI for native Krea INT8' : (quickFit.label || 'Compatibility not yet available'));
   $('#setupHardwareSummary').title = quickFit.detail || 'Recommendations match the generation computer.';
   $('#setupHardwareSummary').dataset.fit = quickFit.level || 'unknown';
   const recommendedKrea2 = setupViewStatus.modelRecommendations?.krea2;
@@ -34196,7 +30934,25 @@ function renderInitialSetup() {
   }
   if (int8Blocked) $('#setupHardwareSummary').title += ` ${setupNativeInt8Message()}`;
   if (krea2CoreBlocked) $('#setupHardwareSummary').title += ` ${setupKrea2CoreMessage()}`;
-  if (wanAnimate2CoreBlocked) $('#setupHardwareSummary').title += ` ${setupWanAnimate2CoreMessage()}`;
+  const vramProfile = setupViewStatus.vramProfile || {};
+  if (document.activeElement !== $('#setupVramProfile')) {
+    $('#setupVramProfile').value = vramProfile.configured || 'auto';
+  }
+  const effectiveVramProfile = vramProfile.effective || vramProfile.recommended || 'standard';
+  $('#setupVramProfileCopy').textContent = effectiveVramProfile === 'low'
+    ? 'Uses the 4–12 GB guided route and asks before applying safer generation settings.'
+    : 'Uses standard image limits for GPUs with more memory.';
+  $('#setupVramProfile').disabled = busy || !state.profileIsOwner;
+  if (document.activeElement !== $('#setupKrea2Variant')) $('#setupKrea2Variant').value = selectedKrea2;
+  $('#setupKrea2VariantCopy').textContent = krea2CoreBlocked
+    ? setupKrea2CoreMessage()
+    : (selectedKrea2 === 'int8-convrot'
+    ? (int8Blocked ? setupNativeInt8Message() : 'Selected native INT8; FP8 remains available.')
+    : (recommendedKrea2 === 'int8-convrot'
+      ? 'FP8 is selected. Native INT8 is recommended for this GPU and remains available.'
+      : 'Selected the standard FP8 route.'));
+  $('#setupKrea2Variant').disabled = busy || !state.profileIsOwner;
+
   const pathValue = comfy.configuredPath || comfy.detectedPath || '';
   const modelsValue = comfy.modelsPath || setupLocalPath(pathValue, 'models');
   $('#setupComfyPath').placeholder = setupViewStatus.platform === 'darwin' ? '/Users/you/ComfyUI' : 'C:\\ComfyUI';
@@ -34219,15 +30975,12 @@ function renderInitialSetup() {
   $('#setupStartComfy').textContent = desktopStart ? 'Open Comfy Desktop' : 'Start ComfyUI';
   $('#setupStartComfy').disabled = busy || !start.canStart || !state.profileIsOwner;
   $('#setupFindComfy').disabled = officialBusy || dependencyBusy || !state.profileIsOwner;
-  $('#setupCoreUpdate').hidden = !(krea2CoreBlocked || h3CoreBlocked || wanAnimate2CoreBlocked);
-  const coreUpdateMessage = wanAnimate2CoreBlocked
-    ? setupWanAnimate2CoreMessage()
-    : (h3CoreBlocked ? setupH3CoreMessage() : setupKrea2CoreMessage());
+  $('#setupCoreUpdate').hidden = !krea2CoreBlocked;
   $('#setupCoreUpdateCopy').textContent = start.kind === 'desktop'
-    ? `${coreUpdateMessage} On the generation computer, use Comfy Desktop → Menu → Help → Check for Updates.`
+    ? `${setupKrea2CoreMessage()} On the generation computer, use Comfy Desktop → Menu → Help → Check for Updates.`
     : (setupViewStatus.platform === 'darwin'
-      ? `${coreUpdateMessage} Update the source checkout from Terminal, then restart ComfyUI.`
-      : `${coreUpdateMessage} For Portable, run update\\update_comfyui.bat from the portable folder.`);
+      ? `${setupKrea2CoreMessage()} Update the source checkout from Terminal, then restart ComfyUI.`
+      : `${setupKrea2CoreMessage()} For Portable, run update\\update_comfyui.bat from the portable folder.`);
   $('#setupCoreUpdateCheck').disabled = busy;
   const endpointMatches = setupDiscoveredMatches.length ? setupDiscoveredMatches : (start.matches || []);
   renderSetupEndpointChoices(endpointMatches);
@@ -34242,10 +30995,10 @@ function renderInitialSetup() {
   $('#setupConnectionChoices').hidden = connectionChoicesHidden;
   $('#setupConnectionChoices').classList.toggle('start-offered', canOfferStart);
   $('#setupUseDetected').hidden = canOfferStart;
-  $('#setupConnectHeading').textContent = krea2CoreBlocked || h3CoreBlocked || wanAnimate2CoreBlocked ? 'ComfyUI update needed'
+  $('#setupConnectHeading').textContent = krea2CoreBlocked ? 'ComfyUI update needed'
     : (comfy.connected ? 'ComfyUI connected' : (nodeSetupActive ? 'Connection saved' : 'Connect ComfyUI'));
-  $('#setupConnectCopy').textContent = krea2CoreBlocked || h3CoreBlocked || wanAnimate2CoreBlocked
-    ? `Mix Studio reached ComfyUI, but this core is missing ${wanAnimate2CoreBlocked ? 'native Wan Animate 2 support' : (h3CoreBlocked ? 'MiniMax H3 support' : 'the required Krea 2 support')}.`
+  $('#setupConnectCopy').textContent = krea2CoreBlocked
+    ? 'Mix Studio reached ComfyUI, but this core is too old for Krea 2.'
     : (comfy.connected
     ? 'Connection details are available below if a path changes.'
     : (nodeSetupActive ? 'Resolve the install issue from the Install step. Paths remain available below.' : 'Start a detected installation or choose another location. Mix Studio finds the port automatically.'));
@@ -34296,7 +31049,7 @@ function renderInitialSetup() {
       const readinessLabel = repairNeeded ? 'Reviewed custom-node update required' : (coreUpdate ? 'ComfyUI 0.26.0+ required' : (fit?.label || (unavailable ? 'Manual installation required' : 'Check requirements')));
       const isNvidiaOnly = ['video4k'].includes(entry.id);
       const nvidiaBadge = isNvidiaOnly ? '<span class="gpu-badge nvidia">NVIDIA only</span>' : '';
-      return `<label class="setup-component-option${checked ? ' selected' : ''}${installed ? ' installed' : ''}${repairNeeded ? ' repair-needed' : ''}${unavailable ? ' unavailable' : ''}" data-fit="${escapeHtml(fit?.level || 'unknown')}" title="${escapeHtml(detail)}"><input type="checkbox" data-component="${escapeHtml(entry.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}><span class="setup-component-check" aria-hidden="true"></span><span class="setup-component-copy"><strong>${escapeHtml(entry.label)}${nvidiaBadge}</strong><small>${escapeHtml(readinessLabel)}</small></span><span class="setup-component-state">${status}</span></label>'
+      return `<label class="setup-component-option${checked ? ' selected' : ''}${installed ? ' installed' : ''}${repairNeeded ? ' repair-needed' : ''}${unavailable ? ' unavailable' : ''}" data-fit="${escapeHtml(fit?.level || 'unknown')}" title="${escapeHtml(detail)}"><input type="checkbox" data-component="${escapeHtml(entry.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}><span class="setup-component-check" aria-hidden="true"></span><span class="setup-component-copy"><strong>${escapeHtml(entry.label)}${nvidiaBadge}</strong><small>${escapeHtml(readinessLabel)}</small></span><span class="setup-component-state">${status}</span></label>`;
     }).join('');
     const count = readinessKnown ? `${installedCount} of ${entries.length} installed` : `${entries.length} workflows`;
     const action = selectableEntries.length
@@ -34577,11 +31330,6 @@ async function startSetupDependencies(components) {
     toast(setupH3CoreMessage(), true);
     return false;
   }
-  if (setupWanAnimate2CoreBlocked(requested)) {
-    setSetupStep('connect', { user: true });
-    toast(setupWanAnimate2CoreMessage(), true);
-    return false;
-  }
   if (setupNativeInt8Blocked(requested)) {
     setSetupStep('connect', { user: true });
     toast(setupNativeInt8Message(), true);
@@ -34606,6 +31354,38 @@ async function startSetupDependencies(components) {
   scheduleSetupPoll();
   return true;
 }
+
+$('#setupVramProfile').addEventListener('change', async () => {
+  try {
+    setupViewStatus = await api('/api/setup/vram-profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vramProfile: $('#setupVramProfile').value }),
+    });
+    renderInitialSetup();
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+
+$('#setupKrea2Variant').addEventListener('change', async () => {
+  const choice = $('#setupKrea2Variant').value;
+  setupKrea2VariantOverride = choice === 'int8-convrot' ? 'int8-convrot' : 'fp8';
+  const selected = setupSelectedKrea2Variant();
+  try {
+    setupViewStatus = await api('/api/setup/krea2-variant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ krea2ModelVariant: selected }),
+    });
+    if ($('#setKrea2ModelVariant')) $('#setKrea2ModelVariant').value = selected;
+    await loadMeta(true);
+    renderInitialSetup();
+  } catch (error) {
+    toast(error.message, true);
+    await refreshSetupStatus(true);
+  }
+});
 
 $('#setupGuideToggle').addEventListener('click', () => {
   setSetupGuideExpanded($('#setupGuideToggle').getAttribute('aria-expanded') !== 'true');
@@ -34847,50 +31627,6 @@ $('#phoneAccessOpen').addEventListener('click', () => {
     returnToSettings: true,
     message: 'Review private phone access or update the generation computer.',
   });
-});
-$('#sparkAccessEnable').addEventListener('click', async () => {
-  if (sparkAccessBusy || !state.profileIsOwner) return;
-  sparkAccessBusy = true;
-  renderSparkAccess();
-  try {
-    const result = await api('/api/spark-access/enable', { method: 'POST' });
-    sparkAccessState = result.sparkAccess || {};
-    toast('Gemini Spark connection is ready');
-  } catch (error) {
-    const approvalUrl = String(error?.details?.approvalUrl || '');
-    if (approvalUrl) {
-      window.open(approvalUrl, '_blank', 'noopener,noreferrer');
-      toast('Approve Tailscale Funnel, then press Enable again');
-    } else {
-      toast(error.message || 'Could not enable Gemini Spark access', true);
-    }
-    await refreshSparkAccess().catch(() => {});
-  } finally {
-    sparkAccessBusy = false;
-    renderSparkAccess();
-  }
-});
-$('#sparkAccessDisable').addEventListener('click', async () => {
-  if (sparkAccessBusy || !state.profileIsOwner) return;
-  sparkAccessBusy = true;
-  renderSparkAccess();
-  try {
-    const result = await api('/api/spark-access/disable', { method: 'POST' });
-    sparkAccessState = result.sparkAccess || {};
-    toast('Gemini Spark connection disconnected');
-  } catch (error) {
-    toast(error.message || 'Could not fully remove the Tailscale Funnel route', true);
-    await refreshSparkAccess().catch(() => {});
-  } finally {
-    sparkAccessBusy = false;
-    renderSparkAccess();
-  }
-});
-$('#sparkAccessCopy').addEventListener('click', async () => {
-  const url = $('#sparkAccessCopy').dataset.url;
-  if (!url) return;
-  try { await copyTextToClipboard(url); toast('Gemini Spark MCP URL copied'); }
-  catch { toast('Could not copy the MCP URL', true); }
 });
 $('#setupReturnSettings').addEventListener('click', () => {
   if (!setupReturnToSettings) return;
@@ -35173,17 +31909,12 @@ async function loadMeta(refresh, afterRestart = false) {
     state.loraThumbs = lastMeta.loraThumbs || {};
     state.features = lastMeta.features || {};
     state.videoCapabilities = lastMeta.capabilities?.video || {};
-    if (lastMeta.models?.h3Turbo?.lora?.name) {
-      setConfiguredH3FramesTurboLora(lastMeta.models.h3Turbo.lora.name);
-    }
     renderFeatureVisibility();
     $('#connDot').className = 'conn-dot ' + (lastMeta.ok ? 'ok' : 'bad');
     renderKrea2Mode();
     renderLoras();
     renderSam3Dependency();
     renderDependencyManager();
-    renderH3LongContext();
-    renderH3TurboMode();
     renderH3SageAttention();
     $('#genLbl').textContent = genLabel();
     scheduleDependencyPoll();
@@ -35320,7 +32051,7 @@ function renderHealth() {
     return;
   }
   const rows = [`<span class="ok">● Connected</span> — ${state.metaLoras.length} LoRAs found`];
-  const labels = { core: 'Core nodes', enhance: 'Prompt enhance (TextGenerate)', klein: 'Edit (Flux 2 Klein) nodes', qwenedit: 'Edit (Qwen Image Edit) nodes', regional: 'Krea2 regional prompting nodes', krea2inpaint: 'Krea2 Fill nodes', krea2ref: 'Krea 2 Identity Edit nodes', krea2remix: 'Krea 2 Remix (Rebalance) nodes', krea2outpaint: 'Krea 2 Expand nodes', editoutpaint: 'Klein / Qwen Expand nodes', smartmask: 'Smart Mask (SAM3) nodes', upscale: 'SeedVR2 nodes', ultimateupscale: 'Ultimate SD Upscale nodes', video: 'LTX 2.3 video nodes', h3: 'MiniMax H3 native nodes', h3turbo: 'MiniMax H3 Turbo creator nodes', h3turbor2v: 'MiniMax H3 Reference Turbo sampler', h3context: 'MiniMax H3 Motion Context nodes', h3r2v: 'MiniMax H3 reference-input nodes', h3sage: 'MiniMax H3 SageAttention patch', ltxdirector: 'LTX Director nodes', videoedit: 'LTX Edit guide-video nodes', video4k: 'RTX 4K pass (optional)', rife: 'RIFE frame interpolation nodes', wan: 'Wan 2.2 nodes', wananimate2: 'Wan Animate 2 native nodes', eros: '10Eros DMD nodes', scail: 'SCAIL 2 motion transfer nodes', scailinfinity: 'SCAIL 2 Infinity node', faceid: 'LTX Face ID (BFS) nodes' };
+  const labels = { core: 'Core nodes', enhance: 'Prompt enhance (TextGenerate)', klein: 'Edit (Flux 2 Klein) nodes', qwenedit: 'Edit (Qwen Image Edit) nodes', regional: 'Krea2 regional prompting nodes', krea2inpaint: 'Krea2 Fill nodes', krea2ref: 'Krea 2 Identity Edit nodes', krea2remix: 'Krea 2 Remix (Rebalance) nodes', krea2outpaint: 'Krea 2 Expand nodes', editoutpaint: 'Klein / Qwen Expand nodes', smartmask: 'Smart Mask (SAM3) nodes', upscale: 'SeedVR2 nodes', ultimateupscale: 'Ultimate SD Upscale nodes', video: 'LTX 2.3 video nodes', h3: 'MiniMax H3 native nodes', h3r2v: 'MiniMax H3 reference-input nodes', h3sage: 'MiniMax H3 SageAttention patch', ltxdirector: 'LTX Director nodes', videoedit: 'LTX Edit guide-video nodes', video4k: 'RTX 4K pass (optional)', rife: 'RIFE frame interpolation nodes', wan: 'Wan 2.2 nodes', eros: '10Eros DMD nodes', scail: 'SCAIL 2 motion transfer nodes', scailinfinity: 'SCAIL 2 Infinity node', faceid: 'LTX Face ID (BFS) nodes' };
   for (const [group, missing] of Object.entries(lastMeta.missing || {})) {
     if (group === 'smartmask') continue; // The actionable installer card above owns this status.
     const label = labels[group] || group.replace(/([a-z])([A-Z])/g, '$1 $2');
@@ -35353,11 +32084,6 @@ $$('.sheet').forEach((sheet) => {
   sheet.addEventListener('click', (e) => {
     if (e.target === sheet && sheet.id !== 'initialSetupSheet') closeSheet();
   });
-  sheet.addEventListener('touchmove', (event) => {
-    if (state.view === 'gallery' && touchFirstGalleryDevice() && event.target === sheet && event.cancelable) {
-      event.preventDefault();
-    }
-  }, { passive: false });
   sheet.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', closeSheet));
   new MutationObserver(syncSheetScrollLock).observe(sheet, { attributes: true, attributeFilter: ['class'] });
 });
@@ -35372,15 +32098,14 @@ desktopWorkspaceQuery.addEventListener('change', (event) => {
   applyDesktopPanelLayout();
   syncNavigation();
   if (!$('#lightbox')?.classList.contains('show')) renderDesktopStage();
-  syncDesktopGallerySelection();
 });
 
 initIconTooltips();
-loadMediaPreferences();
 loadForm();
 syncGallerySortControl();
 setPromptDraft(state.prompts[state.view] || '');
 applySavedEngineOrders();
+loadMediaPreferences();
 restoreGenerationTuning(generationTuningMode(state.view));
 restoreDesktopPanelLayout();
 restoreGalleryZoom();
@@ -35407,10 +32132,6 @@ if (Analytics) Analytics.init();
 if (SupportPrompt) SupportPrompt.init();
 loadMeta();
 refreshGallery(true);
-setInterval(() => {
-  if (!document.hidden) loadMeta();
-}, 30000);
+setInterval(() => loadMeta(), 30000);
 refreshQueue().catch(() => { /* noop */ });
-setInterval(() => {
-  if (!document.hidden) refreshQueue().catch(() => { /* noop */ });
-}, 15000);
+setInterval(() => { refreshQueue().catch(() => { /* noop */ }); }, 15000);

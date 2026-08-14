@@ -190,14 +190,17 @@ test('applyOffloadToGraph preserves UNETLoader class and sets device for Intel',
   assert.equal(result.model.inputs.device, 'xpu:0');
 });
 
-test('applyOffloadToGraph omits offload_device for UNETLoader on Intel', () => {
+test('applyOffloadToGraph sets offload_device cpu for UNETLoader on Intel sequential', () => {
   const graph = {
     model: { class_type: 'UNETLoader', inputs: { unet_name: 'test.safetensors' } },
   };
   const config = getOffloadConfig('intel');
   const result = applyOffloadToGraph(graph, config);
 
-  assert.equal(result.model.inputs.offload_device, undefined);
+  // The heavy DiT (e.g. H3 ref2va ~14GB) must be CPU-offloaded under
+  // sequential mode or it stays pinned in VRAM and OOMs on 32GB Intel Arc.
+  assert.equal(result.model.inputs.offload_device, 'cpu');
+  assert.equal(result.model.inputs.device, 'xpu:0');
 });
 
 test('applyOffloadToGraph converts CheckpointLoaderSimple to LowVRAM for Intel', () => {
@@ -223,15 +226,17 @@ test('applyOffloadToGraph omits device for ModelSamplingFlux and Flux2Scheduler'
   assert.equal(result.sched.inputs.device, undefined);
 });
 
-test('getOffloadConfig returns disabled offload for Intel with high VRAM (32GB)', () => {
+test('getOffloadConfig returns sequential offload for Intel with high VRAM (32GB)', () => {
+  // H3 R2V loads ~14GB ref2va model + text encoder + VAE + reference assets,
+  // which exceeds 32GB VRAM. Sequential offload is required even on large GPUs.
   const config = getOffloadConfig('intel', 32);
   assert.equal(config.device, 'xpu:0');
   assert.equal(config.attention, 'sdpa');
-  assert.equal(config.offloadMode, 'disabled');
-  assert.equal(config.unetOffload, 'none');
-  assert.equal(config.textEncoderOffload, 'none');
-  assert.equal(config.vaeOffload, 'none');
-  assert.equal(config.maxVramUsage, 0.95);
+  assert.equal(config.offloadMode, 'sequential');
+  assert.equal(config.unetOffload, 'model');
+  assert.equal(config.textEncoderOffload, 'model');
+  assert.equal(config.vaeOffload, 'model');
+  assert.equal(config.maxVramUsage, 0.90);
 });
 
 test('getOffloadConfig returns sequential offload for Intel with low VRAM (16GB)', () => {
@@ -246,14 +251,15 @@ test('getOffloadConfig returns sequential offload for Intel with low VRAM (16GB)
 });
 
 test('getOffloadConfig returns sequential offload for Intel with medium VRAM (28GB)', () => {
+  // All Intel GPUs use sequential offload regardless of VRAM to avoid OOM on large models.
   const config = getOffloadConfig('intel', 28);
   assert.equal(config.device, 'xpu:0');
   assert.equal(config.attention, 'sdpa');
-  assert.equal(config.offloadMode, 'disabled');
-  assert.equal(config.unetOffload, 'none');
-  assert.equal(config.textEncoderOffload, 'none');
-  assert.equal(config.vaeOffload, 'none');
-  assert.equal(config.maxVramUsage, 0.95);
+  assert.equal(config.offloadMode, 'sequential');
+  assert.equal(config.unetOffload, 'model');
+  assert.equal(config.textEncoderOffload, 'model');
+  assert.equal(config.vaeOffload, 'model');
+  assert.equal(config.maxVramUsage, 0.90);
 });
 
 test('getOffloadConfig defaults to sequential offload for Intel with no VRAM param', () => {
@@ -262,13 +268,15 @@ test('getOffloadConfig defaults to sequential offload for Intel with no VRAM par
   assert.equal(config.maxVramUsage, 0.90);
 });
 
-test('applyOffloadToGraph leaves graph unchanged for Intel high VRAM (disabled offload)', () => {
+test('applyOffloadToGraph converts CheckpointLoaderSimple to LowVRAM for Intel high VRAM (32GB)', () => {
+  // Even with 32GB VRAM, Intel uses sequential offload to avoid OOM on large models like H3 R2V.
   const graph = {
     model: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'test.safetensors' } },
   };
   const config = getOffloadConfig('intel', 32);
   const result = applyOffloadToGraph(graph, config);
 
-  assert.equal(result.model.class_type, 'CheckpointLoaderSimple');
-  assert.equal(result.model.inputs.offload_device, undefined);
+  assert.equal(result.model.class_type, 'LowVRAMCheckpointLoader');
+  assert.equal(result.model.inputs.offload_device, 'cpu');
+  assert.equal(result.model.inputs.device, 'xpu:0');
 });

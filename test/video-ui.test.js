@@ -388,6 +388,11 @@ test('Video prompt tools stay hidden and structured audio labels survive state c
   assert.match(css, /#vidDriveTools\[hidden\]/);
   assert.match(html, /data-audio-title/);
   assert.match(app, /function setAudioChipVisual\(chip, active\)/);
+  assert.match(html, /id="vidAudioX"[^>]*aria-label="Remove audio track"[^>]*>✕/);
+  assert.match(html, /id="animAudioX"[^>]*aria-label="Remove audio track"[^>]*>✕/);
+  assert.match(app, /\$\('#vidAudioX'\)\.addEventListener\('click'[\s\S]*event\.stopPropagation\(\)/);
+  assert.match(app, /\$\('#animAudioX'\)\.addEventListener\('click'[\s\S]*event\.stopPropagation\(\)/);
+  assert.match(app, /\.querySelector\('\.attach-x'\)/);
 });
 
 test('SCAIL accepts a driving video without a typed motion prompt', () => {
@@ -434,7 +439,11 @@ test('automatic motion prompting keeps each queued frame and video submission at
   assert.match(app, /autoMotionPrompt,\s*preparedMotionPrompt: false/);
   assert.match(app, /state\.motionPromptRequestsPending \+= 1/);
   assert.match(app, /Reading frame, then queueing video/);
-  assert.match(app, /Promise\.allSettled\(requests\.map/);
+  // Batch submissions are strictly sequential: the server serializes all
+  // ComfyUI work, so firing N animate requests at once would stack N
+  // reference-upload buffers before the first job reaches the queue.
+  assert.match(app, /for \(const request of requests\) \{/);
+  assert.doesNotMatch(app, /Promise\.allSettled\(requests\.map/);
   assert.match(app, /preparedMotionPromptCache/);
   assert.match(app, /motionPromptRequest && motionPromptRequest\.key === key/);
   assert.doesNotMatch(app, /function maybeCreateAutomaticMotionPrompt\(\)/);

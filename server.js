@@ -13,11 +13,19 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { execFile, spawn } = require('child_process');
-const { readAppRelease, updateFromGit } = require('./lib/app-update');
+const { pipeline } = require('stream/promises');
+const { gitCommand, readAppRelease, updateFromGit } = require('./lib/app-update');
+const {
+  inspectCriticalPublicAssets,
+  isCriticalPublicAsset,
+  isUsableCriticalPublicAsset,
+  loadCriticalPublicAssetCache,
+} = require('./lib/app-assets');
 const { createGithubReleaseChecker } = require('./lib/github-releases');
 const { resolveRuntimeConfig, publicAnalyticsConfig } = require('./lib/runtime-config');
 const { sam3InstallStatus } = require('./lib/sam3-installer');
 const { probeSageAttention } = require('./lib/sage-attention');
+const { h3PerformanceReport } = require('./lib/h3-performance');
 const {
   krea2ClipCompatibility,
   krea2ClipCompatibilityError,
@@ -31,6 +39,7 @@ const {
   COMPONENTS: DEPENDENCY_COMPONENTS,
   NODE_PACKS: DEPENDENCY_NODE_PACKS,
   availableComponents,
+  inspectPinnedNodeRevisions,
   installComponents,
   normalizeHuggingFaceEndpoint,
 } = require('./lib/dependency-installer');
@@ -72,6 +81,12 @@ const {
   ULTIMATE_SD_UPSCALE_MODEL,
   buildUltimateSdUpscaleGraph,
 } = require('./lib/upscale-workflows');
+const {
+  applyOffloadToGraph,
+  getOffloadConfig,
+  maybeAddSuperResolution,
+  seedVR2UpscaleNode,
+} = require('./lib/offload-config');
 const { IMAGE_RECREATION_INSTRUCTION, imagePromptRevisionParts } = require('./lib/image-prompt');
 const {
   ENHANCE_TAIL,
@@ -80,8 +95,17 @@ const {
   motionPromptEnhanceParts,
   promptEnhanceParts,
   regionPromptEnhanceParts,
+  videoPromptEnhanceParts,
   videoPromptRevisionParts,
 } = require('./lib/prompt-enhance');
+const {
+  DEFAULTS: EXTERNAL_LLM_DEFAULTS,
+  externalLlmEnabled,
+  externalLlmProviderConfig,
+  externalLlmRequest,
+  normalizeExternalLlmSettings,
+  normalizeOllamaUrl,
+} = require('./lib/external-llm');
 const { combineNegativePrompts, normalizeNegativePrompt } = require('./lib/negative-prompt');
 const {
   buildDepthMapNodes,
@@ -139,6 +163,7 @@ const {
   maskInfluence,
   maskInfluenceDenoise,
 } = require('./lib/edit-mask');
+const { supportsImageInput, imageInputNotAcceptedMessage, isComfyImageInputError, nodeErrorsHasImageInput, matchesImageInputPattern } = require('./lib/edit-image-input');
 const {
   H3_FPS,
   LTX_MAX_SECONDS,
@@ -173,6 +198,7 @@ const {
   joinVideoExtension,
   probeVideoFile,
   resolveFfmpegExecutable,
+  transcodeVideoFileToMp4,
 } = require('./lib/video-extension-join');
 const {
   DIRECTOR_FPS,
@@ -218,8 +244,6 @@ const {
   tailscaleHttpsStatus,
 } = require('./lib/mobile-access');
 const { hardwareInfo, detectGpuDevice } = require('./lib/hardware-info');
-const { applyOffloadToGraph, getOffloadConfig } = require('./lib/offload-config');
-const { supportsImageInput, imageInputNotAcceptedMessage, isComfyImageInputError, nodeErrorsHasImageInput, matchesImageInputPattern } = require('./lib/edit-image-input');
 const { isWidgetSpec } = require('./lib/comfy-widget-spec');
 const { browseGenerationFolder } = require('./lib/folder-picker');
 const {
@@ -301,6 +325,8 @@ const {
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
+const CRITICAL_PUBLIC_STARTUP_CACHE = loadCriticalPublicAssetCache(ROOT);
+const CRITICAL_PUBLIC_GIT_CACHE = new Map();
 const officialReleaseChecker = createGithubReleaseChecker();
 const SETUP_FEATURE_MANIFEST = loadJson(path.join(ROOT, 'installer', 'feature-manifest.json'), { features: [] });
 let RUNTIME = resolveRuntimeConfig(ROOT);
@@ -312,6 +338,8 @@ const INPUTS = path.join(DATA, 'inputs');
 const TRASH_ROOT = path.join(DATA, 'trash');
 const PROMPT_PACKS = path.join(DATA, 'addons', 'prompt-packs');
 const PORT = Number(process.env.PORT || 3300);
+const MAX_DOCUMENTATION_VIDEO_BYTES = 256 * 1024 * 1024;
+const H3_R2V_MIN_DISK_GB = 5;
 
 fs.mkdirSync(IMAGES, { recursive: true });
 fs.mkdirSync(VIDEOS, { recursive: true });
@@ -374,6 +402,7 @@ User's Input:`;
 
 const DEFAULT_SETTINGS = {
   comfyUrl: RUNTIME.comfy.url || 'http://127.0.0.1:8188',
+  scratchDiskDir: '',
   hfToken: '',
   hfEndpoint: '',
   unet: 'krea2_turbo_fp8_scaled.safetensors',
@@ -408,6 +437,14 @@ const DEFAULT_SETTINGS = {
   ltxCkpt: 'ltx-2.3-22b-dev-fp8.safetensors',
   ltxDistilledLora: 'ltx-2.3-22b-distilled-lora-384.safetensors',
   ltxCameramanLora: 'LTX2.3-22B_IC-LoRA-Cameraman_v2_14000.safetensors',
+  ltxMotionEnhancerLora: '',
+  ltxMotionTrackLora: '',
+  ltxCinemagraphLora: '',
+  ltxMsrLora: '',
+  ltxPixelUpscale2xLora: '',
+  ltxPixelUpscale4xLora: '',
+  ltxTextProjection: '',
+  ltxStoryboardLora: '',
   ltxEditLora: 'edit_anything_v1.1_r256.safetensors',
   ltxDirectorIcLora: 'ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors',
   ltxTextEncoder: 'gemma_3_12B_it_fp4_mixed.safetensors',
@@ -415,7 +452,7 @@ const DEFAULT_SETTINGS = {
   ltxUpscaler: 'ltx-2.3-spatial-upscaler-x2-1.1.safetensors',
   h3Unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
   h3RefUnet: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
-  h3Clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+  h3Clip: 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors',
   h3VideoVae: 'minimax_h3_video_vae_fp16.safetensors',
   h3AudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
   wanHighUnet: 'wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors',
@@ -437,6 +474,17 @@ const DEFAULT_SETTINGS = {
   scailClipVision: 'clip_vision_h.safetensors',
   scailSam: 'sam3.1_multiplex_fp16.safetensors',
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  externalLlmProvider: EXTERNAL_LLM_DEFAULTS.externalLlmProvider,
+  externalLlmOpenAiApiKey: '',
+  externalLlmOpenAiModel: EXTERNAL_LLM_DEFAULTS.externalLlmOpenAiModel,
+  externalLlmGeminiApiKey: '',
+  externalLlmGeminiModel: EXTERNAL_LLM_DEFAULTS.externalLlmGeminiModel,
+  externalLlmOllamaUrl: EXTERNAL_LLM_DEFAULTS.externalLlmOllamaUrl,
+  externalLlmOllamaModel: EXTERNAL_LLM_DEFAULTS.externalLlmOllamaModel,
+  externalLlmImageRevise: false,
+  externalLlmImageEnhance: false,
+  externalLlmVideoRevise: false,
+  externalLlmVideoEnhance: false,
   galleryPassword: DEFAULT_PRIVATE_PASSWORD,
   exportDir: '',
   smartFilenames: true,
@@ -471,6 +519,7 @@ function normalizeSettings(s) {
   s.galleryPassword = galleryPassword(s);
   try { s.exportDir = normalizeExportDirectory(s.exportDir); } catch { s.exportDir = ''; }
   s.smartFilenames = s.smartFilenames !== false;
+  Object.assign(s, normalizeExternalLlmSettings(s));
   s.features = normalizeFeatures(s.features);
   return s;
 }
@@ -485,10 +534,16 @@ function settingsRequireAppRestart() {
 function settingsResponse() {
   const response = Object.assign({}, settings, {
     hfTokenConfigured: !!String(settings.hfToken || process.env.HF_TOKEN || '').trim(),
+    externalLlmOpenAiApiKeyConfigured: !!String(settings.externalLlmOpenAiApiKey || process.env.OPENAI_API_KEY || '').trim(),
+    externalLlmGeminiApiKeyConfigured: !!String(settings.externalLlmGeminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim(),
+    externalLlmOpenAiApiKeyStored: !!String(settings.externalLlmOpenAiApiKey || '').trim(),
+    externalLlmGeminiApiKeyStored: !!String(settings.externalLlmGeminiApiKey || '').trim(),
     appRestartRequired: settingsRequireAppRestart(),
     gpuVendor: setupHardwareProfile(setupHardwareSnapshot || {}).gpuVendor || '',
   });
   delete response.hfToken;
+  delete response.externalLlmOpenAiApiKey;
+  delete response.externalLlmGeminiApiKey;
   return response;
 }
 
@@ -846,6 +901,7 @@ let dependencyInstallState = {
   nodeFailures: [],
   updatedAt: Date.now(),
 };
+let pinnedNodeRevisionCache = { key: '', at: 0, nodes: [], components: [] };
 
 const EMPTY_DEPENDENCY_FAILURE = Object.freeze({
   errorCode: null,
@@ -880,6 +936,30 @@ function dependencyFailureState(error) {
 function updateDependencyInstallState(patch) {
   dependencyInstallState = Object.assign({}, dependencyInstallState, patch, { updatedAt: Date.now() });
   broadcast('dependencyInstall', dependencyInstallState);
+}
+
+function invalidatePinnedNodeRevisionCache() {
+  pinnedNodeRevisionCache = { key: '', at: 0, nodes: [], components: [] };
+}
+
+async function pinnedNodeRevisionStatus(status, force = false) {
+  const customNodesPath = String(status?.customNodesPath || '');
+  const pins = Object.entries(DEPENDENCY_NODE_PACKS)
+    .map(([id, pack]) => `${id}:${pack.ref || ''}`)
+    .join('|');
+  const key = `${customNodesPath}::${pins}`;
+  if (!force && pinnedNodeRevisionCache.key === key && Date.now() - pinnedNodeRevisionCache.at < 60_000) {
+    return pinnedNodeRevisionCache;
+  }
+  let nodes = [];
+  try {
+    nodes = await inspectPinnedNodeRevisions(status, {
+      gitExecutable: RUNTIME?.update?.gitExecutable,
+    });
+  } catch { /* node classes remain the fallback when revision inspection is unavailable */ }
+  const components = [...new Set(nodes.flatMap((entry) => entry.componentIds || []))];
+  pinnedNodeRevisionCache = { key, at: Date.now(), nodes, components };
+  return pinnedNodeRevisionCache;
 }
 
 function updateComfySetupState(patch) {
@@ -1195,11 +1275,61 @@ function readGpuStats() {
           'rocm-smi',
           ['--showuse', '--showmeminfo', 'vram', '--json'],
           { timeout: 4000 },
-          (rocmError, rocmStdout) => resolve(rocmError ? null : parseRocmSmiUseJson(rocmStdout))
+          (rocmError, rocmStdout) => {
+            const rocm = rocmError ? null : parseRocmSmiUseJson(rocmStdout);
+            if (rocm) return resolve(rocm);
+            execFile(
+              'xpu-smi',
+              ['-d', '0', '--showutilization', '--showmem', '--showpower'],
+              { timeout: 4000 },
+              (xpuError, xpuStdout) => resolve(xpuError ? null : parseIntelXpuSmi(xpuStdout))
+            );
+          }
         );
       }
     );
   });
+}
+
+const DEVICE_LOST_PATTERN = /level_zero.*?UR_RESULT_ERROR_DEVICE_LOST|device.*?lost|GPU.*?reset/i;
+let comfyLogWatcherActive = false;
+let comfyLogWatchTimer = null;
+
+async function watchComfyLogForDeviceLost() {
+  if (comfyLogWatcherActive) return;
+  comfyLogWatcherActive = true;
+  try {
+    const response = await comfyFetch('/history?max_items=0', { signal: AbortSignal.timeout(5000) });
+    const data = await response.json();
+    if (data && data.status && data.status.messages) {
+      const recentErrors = data.status.messages.filter((msg) => DEVICE_LOST_PATTERN.test(String(msg)));
+      if (recentErrors.length > 0) {
+        console.error(`[Mix Studio] Detected ${recentErrors.length} device-lost error(s) in ComfyUI log. Restarting ComfyUI...`);
+        await restartComfy(RUNTIME, (phase, message) => {
+          console.log(`[Mix Studio] ComfyUI restart: ${phase} - ${message}`);
+        }, { scratchDiskDir: settings.scratchDiskDir });
+        const reconnected = await waitForComfyReconnect(120_000);
+        if (reconnected) {
+          console.log('[Mix Studio] ComfyUI restarted successfully after device-lost error.');
+        } else {
+          console.error('[Mix Studio] ComfyUI did not reconnect after device-lost restart.');
+        }
+      }
+    }
+  } catch (e) {
+    // ComfyUI may be offline or unresponsive; retry on next cycle.
+  } finally {
+    comfyLogWatcherActive = false;
+  }
+}
+
+function startComfyLogWatcher() {
+  if (comfyLogWatchTimer) return;
+  comfyLogWatchTimer = setInterval(() => {
+    if (jobs.size > 0 && !comfyLogWatcherActive) {
+      watchComfyLogForDeviceLost().catch(() => {});
+    }
+  }, 30_000);
 }
 
 async function queueHealth(running, pending) {
@@ -1446,6 +1576,26 @@ function configuredModelsStatus(info) {
     ltxCamera: {
       label: 'LTX Camera Motion',
       lora: modelStatus(info, 'LTXICLoRALoaderModelOnly', 'lora_name', settings.ltxCameramanLora, loraList),
+      motionEnhancer: modelStatus(info, 'LoraLoaderModelOnly', 'lora_name', settings.ltxMotionEnhancerLora, loraList),
+      motionTrack: modelStatus(info, 'LTXICLoRALoaderModelOnly', 'lora_name', settings.ltxMotionTrackLora, loraList),
+      cinemagraph: modelStatus(info, 'LTXICLoRALoaderModelOnly', 'lora_name', settings.ltxCinemagraphLora, loraList),
+    },
+    ltxMultipleSubject: {
+      label: 'LTX Multiple Subject Reference',
+      lora: modelStatus(info, 'LoraLoaderModelOnly', 'lora_name', settings.ltxMsrLora, loraList),
+    },
+    ltxPixelUpscale: {
+      label: 'LTX Pixel Spatial Upscaler',
+      upscale2x: modelStatus(info, 'LTXICLoRALoaderModelOnly', 'lora_name', settings.ltxPixelUpscale2xLora, loraList),
+      upscale4x: modelStatus(info, 'LTXICLoRALoaderModelOnly', 'lora_name', settings.ltxPixelUpscale4xLora, loraList),
+    },
+    ltxTextProjection: {
+      label: 'LTX Text Projection',
+      encoder: modelStatusAny(info, settings.ltxTextProjection, [['LTXAVTextEncoderLoader', 'text_encoder']]),
+    },
+    ltxStoryboard: {
+      label: 'LTX Multi-ref Character Storyboard',
+      lora: modelStatus(info, 'LoraLoaderModelOnly', 'lora_name', settings.ltxStoryboardLora, loraList),
     },
     ltxEdit: {
       label: 'LTX Edit',
@@ -1520,13 +1670,22 @@ function missingDependencyComponentIds(missing, models, capabilities = {}) {
   const krea2CoreChecks = ['turbo', 'clip', 'vae'].map((key) => krea2[key]).filter(Boolean);
   if (krea2CoreChecks.some((check) => !check.ok)) ids.add('image');
   if (krea2.raw && !krea2.raw.ok) ids.add('krea2raw');
-  const modelToComponent = { krea2Depth: 'krea2depth', krea2IdentityEdit: 'krea2ref', klein4: 'klein4', klein9: 'klein9', qwen: 'qwen', upscale: 'upscale', ltx: 'video', h3: 'h3', h3Ref: 'h3r2v', ltxDirector: 'ltxdirector', ltxCamera: 'ltxcamera', ltxEdit: 'videoedit', faceid: 'faceid', wan: 'wan', eros: 'eros', scail: 'scail', scailInfinity: 'scailinfinity' };
+  const modelToComponent = { krea2Depth: 'krea2depth', krea2IdentityEdit: 'krea2ref', klein4: 'klein4', klein9: 'klein9', qwen: 'qwen', upscale: 'upscale', ltx: 'video', h3: 'h3', h3Ref: 'h3r2v', ltxDirector: 'ltxdirector', ltxCamera: 'ltxcamera', ltxMultipleSubject: 'ltxmultiref', ltxPixelUpscale: 'ltxpixelupscale', ltxTextProjection: 'ltxproject', ltxStoryboard: 'ltxstoryboard', ltxEdit: 'videoedit', faceid: 'faceid', wan: 'wan', eros: 'eros', scail: 'scail', scailInfinity: 'scailinfinity' };
   for (const [model, value] of Object.entries(models || {})) {
     const checks = Object.values(value || {}).filter((check) => check && typeof check === 'object' && Object.prototype.hasOwnProperty.call(check, 'ok'));
     if (checks.some((check) => !check.ok) && modelToComponent[model]) ids.add(modelToComponent[model]);
   }
   if (Object.prototype.hasOwnProperty.call(capabilities, 'sageAttention')
-    && capabilities.sageAttention?.ready !== true) ids.add('h3sage');
+    && capabilities.sageAttention?.ready !== true
+    && capabilities.sageAttention?.installable !== true) {
+    // SageAttention is not ready and cannot be installed on this GPU
+    // (e.g., Intel Arc XPU, Apple Silicon). The H3 graph builder falls back
+    // to standard PyTorch attention (SDPA), so don't require h3sage.
+  } else if (Object.prototype.hasOwnProperty.call(capabilities, 'sageAttention')
+     && capabilities.sageAttention?.ready !== true) {
+    ids.add('h3sage');
+  }
+  for (const component of capabilities.repairComponents || []) ids.add(component);
   return [...ids];
 }
 
@@ -1675,7 +1834,87 @@ async function filterInputs(graph) {
   return graph;
 }
 
+/* ------------------------------------------------------------------ */
+/* Serialized pipeline gate                                            */
+/* ------------------------------------------------------------------ */
+/* Every ComfyUI submission (and every reference upload) funnels      */
+/* through this FIFO gate. It guarantees that the "preparing          */
+/* references" phase never overlaps itself: only one upload or one    */
+/* prompt submission runs at a time, and a new generation is never    */
+/* admitted while ComfyUI is still executing the previous one.        */
+/* This bounds peak RAM/VRAM to a single workflow step and keeps the  */
+/* whole pipeline strictly sequential.                                */
+/* ------------------------------------------------------------------ */
+
+let submissionWaiters = [];
+let submissionActive = false;
+
+function runSerialized(task, { priority = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const entry = { task, resolve, reject, priority };
+    if (priority) {
+      // Priority entries (front:true text jobs) jump ahead of any waiting
+      // non-priority generation, but never overtake another priority entry.
+      const firstNonPriority = submissionWaiters.findIndex((w) => !w.priority);
+      submissionWaiters.splice(
+        firstNonPriority === -1 ? submissionWaiters.length : firstNonPriority,
+        0,
+        entry,
+      );
+    } else {
+      submissionWaiters.push(entry);
+    }
+    pumpSubmissions();
+  });
+}
+
+function pumpSubmissions() {
+  if (submissionActive || !submissionWaiters.length) return;
+  submissionActive = true;
+  const { task, resolve, reject } = submissionWaiters.shift();
+  Promise.resolve()
+    .then(task)
+    .then(resolve, reject)
+    .finally(() => {
+      submissionActive = false;
+      pumpSubmissions();
+    });
+}
+
+/**
+ * Wait until ComfyUI has neither a running nor a pending prompt.
+ * This is what enforces strict sequential execution: the next job's
+ * upload/graph-prep does not start until the previous job has fully
+ * executed so model loads and reference buffers never stack.
+ */
+async function waitForComfyIdle({ timeoutMs = 20 * 60 * 1000, pollMs = 1500 } = {}) {
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0;
+  for (;;) {
+    let running = 0;
+    let pending = 0;
+    try {
+      const queueRes = await comfyFetch('/queue');
+      const q = await queueRes.json();
+      running = (q.queue_running || []).length;
+      pending = (q.queue_pending || []).length;
+    } catch { /* ComfyUI unreachable: let the actual submit surface the error */ }
+    if (running === 0 && pending === 0) return;
+    if (deadline && Date.now() >= deadline) {
+      const error = new Error('Timed out waiting for ComfyUI to become idle before queuing the next job.');
+      error.code = 'comfy_busy_timeout';
+      throw error;
+    }
+    await pause(pollMs);
+  }
+}
+
 async function uploadToComfy(buffer, filename) {
+  // Serialize every upload so reference preparation never runs in
+  // parallel (one Buffer.concat/file stream in memory at a time).
+  return runSerialized(() => uploadToComfyRaw(buffer, filename));
+}
+
+async function uploadToComfyRaw(buffer, filename) {
   const boundary = '----kreastudio' + crypto.randomBytes(8).toString('hex');
   const head = Buffer.from(
     `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="${filename}"\r\n` +
@@ -1720,6 +1959,12 @@ async function uploadCameraMotionGuides(value) {
 }
 
 async function uploadFileToComfy(file, filename) {
+  // Serialize file uploads too: only one reference upload runs at a time,
+  // bounding peak RAM to a single file's multipart stream.
+  return runSerialized(() => uploadFileToComfyRaw(file, filename));
+}
+
+async function uploadFileToComfyRaw(file, filename) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const upload = await multipartFileUpload(file, filename);
     try {
@@ -1745,19 +1990,50 @@ async function uploadFileToComfy(file, filename) {
   throw new Error(`Could not upload ${filename} to ComfyUI.`);
 }
 
+/**
+ * Serialized prompt submission. Every ComfyUI prompt funnels through the
+ * FIFO gate and waits for ComfyUI to be idle before being admitted. This
+ * is the core of strict sequential execution: the next job's reference
+ * preparation and graph build never overlap the previous job's execution,
+ * so model loads, reference buffers, and output downloads never stack.
+ *
+ * `front: true` text jobs (prompt enhance / motion prompt) jump ahead of
+ * waiting generations but still wait for ComfyUI idle — they are short and
+ * lightweight, so this only delays them by the running job's remaining time.
+ */
 async function queuePrompt(graph, options = {}) {
+  return runSerialized(async () => {
+    await waitForComfyIdle();
+    return queuePromptRaw(graph, options);
+  }, { priority: options.front === true });
+}
+
+async function queuePromptRaw(graph, options = {}) {
   if (options.profileId) {
     const outputProfile = db.profiles.find((profile) => profile.id === options.profileId);
     if (outputProfile) applyProfileOutputPrefix(graph, outputProfile);
   }
   const body = { prompt: graph, client_id: CLIENT_ID };
   if (options.front === true) body.front = true;
-  const res = await comfyFetch('/prompt', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json();
+  const promptUrl = settings.comfyUrl.replace(/\/$/, '') + '/prompt';
+  let res;
+  try {
+    res = await fetch(promptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    const detail = String(error?.cause?.message || error?.message || error || 'connection failed');
+    const wrapped = new Error(
+      `Could not reach ComfyUI for POST /prompt: ${detail}. `
+      + `Check that ComfyUI is running at ${settings.comfyUrl}.`
+    );
+    wrapped.code = 'comfy_connection_failed';
+    wrapped.cause = error;
+    throw wrapped;
+  }
+  const json = await res.json().catch(() => ({}));
   if (json.node_errors && Object.keys(json.node_errors).length) {
     const nodeErrorsStr = JSON.stringify(json.node_errors);
     const validationError = new Error('ComfyUI validation: ' + nodeErrorsStr.slice(0, 500));
@@ -1765,6 +2041,15 @@ async function queuePrompt(graph, options = {}) {
       validationError.code = 'comfy_image_input_not_supported';
     }
     throw validationError;
+  }
+  if (!res.ok) {
+    const text = JSON.stringify(json).slice(0, 500);
+    if (isComfyImageInputError({ message: `ComfyUI /prompt -> ${res.status} ${text}` })) {
+      const imgErr = new Error(`ComfyUI /prompt -> ${res.status} ${text}`);
+      imgErr.code = 'comfy_image_input_not_supported';
+      throw imgErr;
+    }
+    throw new Error(`ComfyUI /prompt -> ${res.status} ${text}`);
   }
   return json.prompt_id;
 }
@@ -2184,12 +2469,16 @@ async function completeJob(pid) {
     const files = findOutputFiles(hist.outputs || {}, /\.(png|jpg|jpeg|webp)$/i);
     if (!files.length) return failJob(pid, 'SAM3 finished without a mask image. Check the ComfyUI console for the SAM3 node error.');
     broadcast('status', { jobId: pid, kind: 'smartMask', profileId: job.profileId, text: 'Reading selected mask…', itemId: null });
-    const dataUrls = await Promise.all(files.map(async (entry) => {
+    // Download masks one at a time to keep peak RAM bounded to a single
+    // mask buffer. SAM3 usually returns one mask, but downloading in a
+    // loop avoids stacking multiple full masks in memory regardless.
+    const dataUrls = [];
+    for (const entry of files) {
       const buf = await downloadOutput(entry);
       const ext = path.extname(entry.filename).toLowerCase();
       const mime = ext === '.webp' ? 'image/webp' : (ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png');
-      return `data:${mime};base64,${buf.toString('base64')}`;
-    }));
+      dataUrls.push(`data:${mime};base64,${buf.toString('base64')}`);
+    }
     jobs.delete(pid);
     broadcast('status', { jobId: pid, kind: 'smartMask', profileId: job.profileId, text: 'Mask ready', itemId: null });
     job.resolve({ dataUrl: dataUrls[0], dataUrls });
@@ -2566,17 +2855,17 @@ setInterval(async () => {
   for (const pid of [...jobs.keys()]) {
     try {
       const hist = (await (await comfyFetch(`/history/${pid}`)).json())[pid];
-      if (hist && hist.status && hist.status.completed) await completeJob(pid);
-      else if (hist && hist.status && hist.status.status_str === 'error') {
-        const job = jobs.get(pid);
-        const refNames = (job && job.refImageNames) || [];
-        const histError = JSON.stringify(hist.status.error || hist.status || '');
-        if (refNames.length && matchesImageInputPattern(histError)) {
-          failJob(pid, imageInputNotAcceptedMessage(refNames[0]));
-        } else {
-          failJob(pid, 'Execution error (see ComfyUI console)');
-        }
-      }
+       if (hist && hist.status && hist.status.completed) await completeJob(pid);
+       else if (hist && hist.status && hist.status.status_str === 'error') {
+         const job = jobs.get(pid);
+         const refNames = (job && job.refImageNames) || [];
+         const histError = JSON.stringify(hist.status.error || hist.status || '');
+         if (refNames.length && matchesImageInputPattern(histError)) {
+           failJob(pid, imageInputNotAcceptedMessage(refNames[0]));
+         } else {
+           failJob(pid, 'Execution error (see ComfyUI console)');
+         }
+       }
     } catch (error) {
       if (jobs.get(pid)?.completing) failJob(pid, error.message || 'Could not finalize ComfyUI output');
       // Otherwise ComfyUI is temporarily offline; retry on the next poll.
@@ -2591,6 +2880,76 @@ setInterval(async () => {
 
 function cleanEnhancedText(raw, fallback) {
   return cleanGeneratedPrompt(raw, fallback);
+}
+
+const MAX_EXTERNAL_LLM_IMAGE_BYTES = 20 * 1024 * 1024;
+
+function configuredExternalLlm() {
+  return externalLlmProviderConfig(Object.assign({}, settings, {
+    externalLlmOpenAiApiKey: settings.externalLlmOpenAiApiKey || process.env.OPENAI_API_KEY || '',
+    externalLlmGeminiApiKey: settings.externalLlmGeminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '',
+  }));
+}
+
+function externalPromptStatus(action, provider) {
+  const verb = action === 'revise' ? 'Revising' : 'Enhancing';
+  return `${verb} prompt with ${provider.label}...`;
+}
+
+async function externalPromptImage(imageName, profileId) {
+  const name = String(imageName || '').trim();
+  if (!name) return null;
+  const catalogedAsset = db.uploadedAssets.find((asset) => asset.name === name);
+  if (catalogedAsset && (catalogedAsset.profileId !== profileId || catalogedAsset.deletedAt)) {
+    throw new Error('The selected reference image is unavailable');
+  }
+  const ext = path.extname(name.split('/').pop()).toLowerCase();
+  const mimeType = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp', '.gif': 'image/gif',
+  }[ext];
+  if (!mimeType) throw new Error('External prompt vision supports PNG, JPEG, WebP, or GIF references');
+  const local = inputAssetPath(INPUTS, name);
+  try {
+    const stat = await fsp.stat(local);
+    if (stat.size > MAX_EXTERNAL_LLM_IMAGE_BYTES) throw new Error('The reference image is larger than the 20 MB external prompt limit');
+    return { data: await fsp.readFile(local), mimeType };
+  } catch (error) {
+    if (/20 MB external prompt limit/.test(String(error?.message || ''))) throw error;
+  }
+  const parts = name.split('/');
+  const filename = parts.pop();
+  const subfolder = parts.join('/');
+  const response = await comfyFetch(`/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=input`);
+  const data = Buffer.from(await response.arrayBuffer());
+  if (data.length > MAX_EXTERNAL_LLM_IMAGE_BYTES) throw new Error('The reference image is larger than the 20 MB external prompt limit');
+  return { data, mimeType };
+}
+
+async function runConfiguredExternalPrompt(parts, maxTokens, options = {}) {
+  const provider = configuredExternalLlm();
+  const image = options.imageName ? await externalPromptImage(options.imageName, options.profileId) : null;
+  if (options.statusText !== false) {
+    broadcast('status', {
+      jobId: 'external-prompt',
+      profileId: options.profileId,
+      text: options.statusText || externalPromptStatus(options.action, provider),
+    });
+  }
+  return externalLlmRequest({
+    provider: provider.provider,
+    model: provider.model,
+    apiKey: provider.apiKey,
+    baseUrl: provider.baseUrl,
+    instruction: parts.instruction,
+    userInput: parts.userInput,
+    image,
+    maxTokens,
+  });
+}
+
+function shouldUseExternalPrompt(domain, action) {
+  return externalLlmEnabled(settings, domain, action);
 }
 
 function textGenInputs(seed, maxLength) {
@@ -2641,6 +3000,14 @@ const h3PromptFlights = new Map();
 
 /** Vision pass: Qwen3-VL looks at the image and suggests a motion prompt. */
 function suggestMotionPrompt(comfyImageName, seed, profileId, userPrompt = '', options = {}) {
+  if (shouldUseExternalPrompt('video', 'enhance')) {
+    const parts = motionPromptEnhanceParts(userPrompt, options);
+    return runConfiguredExternalPrompt(parts, String(options.engine || '').toLowerCase() === 'h3' ? 640 : 384, {
+      action: 'enhance',
+      imageName: comfyImageName,
+      profileId,
+    });
+  }
   return new Promise((resolve, reject) => {
     (async () => {
       const graph = {};
@@ -2758,8 +3125,12 @@ function queueTextEnhancement(parts, seed, statusText, maxTokens = 512, options 
 }
 
 function enhancePrompt(p, profileId) {
+  const parts = promptEnhanceParts(settings.systemPrompt, p.prompt);
+  if (shouldUseExternalPrompt('image', 'enhance')) {
+    return runConfiguredExternalPrompt(parts, 512, { action: 'enhance', profileId });
+  }
   return queueTextEnhancement(
-    promptEnhanceParts(settings.systemPrompt, p.prompt),
+    parts,
     p.seed,
     'Enhancing global prompt...',
     512,
@@ -2770,6 +3141,9 @@ function enhancePrompt(p, profileId) {
 function reviseImagePrompt(currentPrompt, changeRequest, seed, options = {}) {
   const parts = imagePromptRevisionParts(currentPrompt, changeRequest, { hasImage: !!options.imageName });
   parts.userInput += ENHANCE_TAIL;
+  if (shouldUseExternalPrompt('image', 'revise')) {
+    return runConfiguredExternalPrompt(parts, 384, Object.assign({ action: 'revise' }, options));
+  }
   return queueTextEnhancement(
     parts,
     seed,
@@ -2787,6 +3161,9 @@ function reviseVideoPrompt(currentPrompt, changeRequest, seed, options = {}) {
     hasImage: !!options.imageName,
   });
   parts.userInput += ENHANCE_TAIL;
+  if (shouldUseExternalPrompt('video', 'revise')) {
+    return runConfiguredExternalPrompt(parts, options.engine === 'h3' ? 640 : 384, Object.assign({ action: 'revise' }, options));
+  }
   return queueTextEnhancement(
     parts,
     seed,
@@ -2797,12 +3174,16 @@ function reviseVideoPrompt(currentPrompt, changeRequest, seed, options = {}) {
 }
 
 function enhanceH3Prompt(userPrompt, seed, options = {}) {
+  const parts = h3PromptEnhanceParts(userPrompt, {
+    seconds: options.seconds,
+    mode: options.mode,
+    hasImage: !!options.imageName,
+  });
+  if (shouldUseExternalPrompt('video', 'enhance')) {
+    return runConfiguredExternalPrompt(parts, 640, Object.assign({ action: 'enhance' }, options));
+  }
   return queueTextEnhancement(
-    h3PromptEnhanceParts(userPrompt, {
-      seconds: options.seconds,
-      mode: options.mode,
-      hasImage: !!options.imageName,
-    }),
+    parts,
     seed,
     'Enhancing MiniMax H3 prompt...',
     640,
@@ -2829,10 +3210,14 @@ function sharedH3PromptEnhancement(userPrompt, seed, options = {}) {
 }
 
 function enhanceRegionPrompt(description, globalPrompt, seed, options = {}) {
+  const parts = regionPromptEnhanceParts(settings.systemPrompt, globalPrompt, description, {
+    hasReference: !!options.imageName,
+  });
+  if (shouldUseExternalPrompt('image', 'enhance')) {
+    return runConfiguredExternalPrompt(parts, 384, Object.assign({ action: 'enhance' }, options));
+  }
   return queueTextEnhancement(
-    regionPromptEnhanceParts(settings.systemPrompt, globalPrompt, description, {
-      hasReference: !!options.imageName,
-    }),
+    parts,
     seed,
     options.statusText || '',
     384,
@@ -2842,7 +3227,13 @@ function enhanceRegionPrompt(description, globalPrompt, seed, options = {}) {
 
 /** Wan 2.2 enhance: Qwen3-VL sees the image + user's idea, writes the video prompt. */
 function wanEnhance(comfyImageName, userPrompt, seed, profileId) {
-  const instruction = `Look at the provided image. Rewrite the user's motion idea into one vivid video-generation prompt paragraph (under 90 words) for an image-to-video model: describe subject actions, secondary motion, camera behavior and atmosphere, staying faithful to what is actually in the image and to the user's intent. Use present-progressive verbs.\n\nUser's motion idea: ${userPrompt}`;
+  const instruction = "Look at the provided image. Rewrite the user's motion idea into one vivid video-generation prompt paragraph (under 90 words) for an image-to-video model: describe subject actions, secondary motion, camera behavior and atmosphere, staying faithful to what is actually in the image and to the user's intent. Use present-progressive verbs.";
+  const promptInput = `User's motion idea: ${userPrompt}`;
+  if (shouldUseExternalPrompt('video', 'enhance')) {
+    return runConfiguredExternalPrompt({ instruction, userInput: promptInput + ENHANCE_TAIL }, 384, {
+      action: 'enhance', imageName: comfyImageName, profileId,
+    });
+  }
   return new Promise((resolve, reject) => {
     (async () => {
       const graph = {};
@@ -2851,7 +3242,7 @@ function wanEnhance(comfyImageName, userPrompt, seed, profileId) {
       graph.gen = {
         class_type: 'TextGenerate',
         inputs: Object.assign(
-          { clip: ['clip', 0], image: ['img', 0], prompt: instruction + ENHANCE_TAIL },
+          { clip: ['clip', 0], image: ['img', 0], prompt: `${instruction}\n\n${promptInput}${ENHANCE_TAIL}` },
           textGenInputs(seed, 300)
         ),
       };
@@ -3777,6 +4168,7 @@ const LTX_SIGMAS_BASE = '1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 
 const LTX_SIGMAS_REFINE = '0.85, 0.7250, 0.4219, 0.0';
 
 function videoDims(w, h) {
+  // Rounds to 64px (even) to satisfy libx264 requirements for SaveVideo
   const long = 1280;
   const s = long / Math.max(w || 1024, h || 1024);
   const W = Math.max(256, Math.round((w * s) / 64) * 64);
@@ -3787,6 +4179,7 @@ function videoDims(w, h) {
 function cameraMotionDims(w, h) {
   // Cameraman v2 is trained around a ~960x512 first pass. LTX refines at
   // 2x, so a 1920px long edge keeps the control signal in its useful range.
+  // All dimensions rounded to 64px (even) for libx264 SaveVideo compatibility.
   const long = 1920;
   const sourceW = Math.max(1, Number(w) || 1024);
   const sourceH = Math.max(1, Number(h) || 1024);
@@ -3817,7 +4210,7 @@ async function buildAnimate(imageName, opts) {
     };
     ltxBaseModel = ['edit_anything_lora', 0];
   }
-  if (opts.cameraMotionGuideNames?.length) {
+if (opts.cameraMotionGuideNames?.length) {
     graph.camera_motion_lora = await nodeFromOrdered(
       'LTXICLoRALoaderModelOnly',
       [settings.ltxCameramanLora, 1],
@@ -3826,7 +4219,7 @@ async function buildAnimate(imageName, opts) {
     );
     ltxBaseModel = ['camera_motion_lora', 0];
   }
-  const ltxModel = chainModelLoras(graph, ltxBaseModel, opts.loras, 'ulora');
+const ltxModel = chainModelLoras(graph, ltxBaseModel, opts.loras, 'ulora');
   const ltxDevice = detectGpuDevice((await hardwareInfo({ exportPath: settings.exportDir || DATA })).gpu?.devices) || null;
   const ltxIsCuda = ltxDevice && ltxDevice.startsWith('cuda');
   const ltxHasXpu = ltxDevice && ltxDevice.startsWith('xpu');
@@ -3835,6 +4228,8 @@ async function buildAnimate(imageName, opts) {
     ckpt_name: settings.ltxCkpt,
     force_keep_on_gpu: true,
   };
+  // LTXAVTextEncoderLoader on XPU backends only accepts 'default' or 'cpu', not 'xpu:0'
+  // ClipLoader similarly should use 'default' on XPU to avoid validation errors.
   if (ltxIsCuda || ltxHasXpu) {
     ltxTeInputs.device = 'default';
   }
@@ -4122,10 +4517,7 @@ async function buildAnimate(imageName, opts) {
 
   let frameSource = ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
-    graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-    frameSource = ['vsr', 0];
-  }
+  frameSource = maybeAddSuperResolution(graph, frameSource, opts, { rtxVideoSuperResolutionNode, seedVR2UpscaleNode });
   graph.video = {
     class_type: 'CreateVideo',
     inputs: { images: frameSource, audio: ['audio_dec', 0], fps: opts.fps * (opts.smooth > 1 ? opts.smooth : 1) },
@@ -4187,6 +4579,7 @@ async function buildAnimateFaceId(faceName, opts) {
     ckpt_name: settings.ltxCkpt,
     force_keep_on_gpu: true,
   };
+  // LTXAVTextEncoderLoader on XPU backends only accepts 'default' or 'cpu', not 'xpu:0'
   if (ltxIsCuda || ltxHasXpu) {
     ltxTeInputs.device = 'default';
   }
@@ -4300,10 +4693,7 @@ async function buildAnimateFaceId(faceName, opts) {
 
   let frameSource = ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
-    graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-    frameSource = ['vsr', 0];
-  }
+  frameSource = maybeAddSuperResolution(graph, frameSource, opts, { rtxVideoSuperResolutionNode, seedVR2UpscaleNode });
   graph.video = {
     class_type: 'CreateVideo',
     inputs: { images: frameSource, audio: ['audio_dec', 0], fps: opts.fps * (opts.smooth > 1 ? opts.smooth : 1) },
@@ -4337,6 +4727,14 @@ function erosSigmas(preset) {
     return { first: settings.erosSigmasFirst.trim(), up: settings.erosSigmasUpscale.trim() };
   }
   return EROS_SIGMA_PRESETS[preset] || EROS_SIGMA_PRESETS.dmd;
+}
+
+function manualSigmaStepCount(value) {
+  const sigmas = String(value || '')
+    .split(',')
+    .map((entry) => Number(entry.trim()))
+    .filter(Number.isFinite);
+  return Math.max(0, sigmas.length - 1);
 }
 
 /** Chain user LoRAs (model-only) onto a video model path. */
@@ -4383,7 +4781,6 @@ async function buildAnimateEros(imageName, opts) {
     force_keep_on_gpu: true,
   };
   // LTXAVTextEncoderLoader on XPU backends only accepts 'default' or 'cpu', not 'xpu:0'
-  // ClipLoader similarly should use 'default' on XPU to avoid validation errors.
   if (ltxIsCuda || ltxHasXpu) {
     ltxTeInputs.device = 'default';
   }
@@ -4570,10 +4967,7 @@ async function buildAnimateEros(imageName, opts) {
   };
 
   let frameSource = ['decode', 0];
-  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
-    graph.vsr = rtxVideoSuperResolutionNode(['decode', 0]);
-    frameSource = ['vsr', 0];
-  }
+  frameSource = maybeAddSuperResolution(graph, frameSource, opts, { rtxVideoSuperResolutionNode, seedVR2UpscaleNode });
   if (opts.makePoster) {
     const info = await getObjectInfo();
     if (info.ImageFromBatch) {
@@ -4663,10 +5057,7 @@ async function buildAnimateWan(imageName, opts) {
 
   let frameSource = ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
-    graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-    frameSource = ['vsr', 0];
-  }
+  frameSource = maybeAddSuperResolution(graph, frameSource, opts, { rtxVideoSuperResolutionNode, seedVR2UpscaleNode });
   if (opts.makePoster) {
     const info = await getObjectInfo();
     if (info.ImageFromBatch) {
@@ -4819,10 +5210,7 @@ async function buildAnimateScail(imageName, opts) {
 
     let frameSource = ['scail_infinity', 0];
     frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-    if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
-      graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-      frameSource = ['vsr', 0];
-    }
+    frameSource = maybeAddSuperResolution(graph, frameSource, opts, { rtxVideoSuperResolutionNode, seedVR2UpscaleNode });
     if (opts.makePoster) {
       const info = await getObjectInfo();
       if (info.ImageFromBatch) {
@@ -4939,10 +5327,7 @@ async function buildAnimateScail(imageName, opts) {
 
   let frameSource = imageBatchChain(graph, frameRanges, 'join') || ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
-  if (opts.fourK && /^nvidia$/i.test(opts.gpuVendor || '')) {
-    graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-    frameSource = ['vsr', 0];
-  }
+  frameSource = maybeAddSuperResolution(graph, frameSource, opts, { rtxVideoSuperResolutionNode, seedVR2UpscaleNode });
   if (opts.makePoster) {
     const info = await getObjectInfo();
     if (info.ImageFromBatch) {
@@ -4990,39 +5375,14 @@ async function buildExistingVideoUpscale(videoName, opts) {
     select_every_nth: 1,
     format: 'None',
   });
-  const engine = opts.engine === 'seedvr2' ? 'seedvr2' : 'rtx';
-  let frameSource;
-  if (engine === 'seedvr2') {
-    const gpuVendor = opts.gpuVendor || setupHardwareProfile(await getSetupHardwareInfo()).gpuVendor;
-    const availableModels = installedSeedVr2Models(seedVr2ModelDirs());
-    const seedVr2 = seedVr2UpscaleNodes(['src', 0], {
-      settings,
-      availableModels,
-      gpuVendor,
-      profile: opts.profile || 'sharp',
-      noise: opts.noise || 'low',
-      resolution: opts.resolution || 1080,
-      batchSize: 5,
-      uniformBatchSize: true,
-      temporalOverlap: 2,
-    });
-    Object.assign(graph, seedVr2.nodes);
-    frameSource = seedVr2.output;
-  } else {
-    const isNvidia = /^nvidia$/i.test(opts.gpuVendor || '');
-    if (isNvidia) {
-      graph.vsr = rtxVideoSuperResolutionNode(['src', 0], opts.scale || 2);
-      frameSource = ['vsr', 0];
-    } else {
-      frameSource = ['src', 0];
-    }
-  }
+  let frameSource = ['src', 0];
+  frameSource = maybeAddSuperResolution(graph, frameSource, { ...opts, fourK: opts.scale > 1 ? opts.fourK : false }, { rtxVideoSuperResolutionNode, seedVR2UpscaleNode });
   const videoInputs = { images: frameSource, fps: opts.fps || 16 };
   if (opts.hasAudio) videoInputs.audio = ['src', 2];
   graph.video = { class_type: 'CreateVideo', inputs: videoInputs };
   graph.save = {
     class_type: 'SaveVideo',
-    inputs: { video: ['video', 0], filename_prefix: `KreaStudio/video_upscale_${engine}`, format: 'auto', codec: 'auto' },
+    inputs: { video: ['video', 0], filename_prefix: 'KreaStudio/video_upscale', format: 'auto', codec: 'auto' },
   };
   return filterInputs(graph);
 }
@@ -5131,6 +5491,56 @@ function serveFile(res, file, range) {
     });
     fs.createReadStream(file).pipe(res);
   });
+}
+
+function sendPublicAssetBuffer(res, name, buffer, recoveredFrom = '') {
+  const mime = MIME[path.extname(name).toLowerCase()] || 'application/octet-stream';
+  const headers = {
+    'Content-Type': mime,
+    'Content-Length': buffer.length,
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-cache',
+  };
+  if (recoveredFrom) headers['X-Mix-Studio-Asset-Recovery'] = recoveredFrom;
+  res.writeHead(200, headers);
+  res.end(buffer);
+}
+
+async function trackedCriticalPublicAsset(name) {
+  if (!isCriticalPublicAsset(name)) return null;
+  if (CRITICAL_PUBLIC_GIT_CACHE.has(name)) return CRITICAL_PUBLIC_GIT_CACHE.get(name);
+  try {
+    const text = await gitCommand(ROOT, ['show', `HEAD:public/${name}`], {
+      gitExecutable: RUNTIME.update.gitExecutable,
+    });
+    const data = Buffer.from(text, 'utf8');
+    if (!isUsableCriticalPublicAsset(name, data)) return null;
+    CRITICAL_PUBLIC_GIT_CACHE.set(name, data);
+    return data;
+  } catch (error) {
+    console.error(`[static] Could not recover public/${name} from Git:`, error.message);
+    return null;
+  }
+}
+
+async function serveCriticalPublicAsset(res, file, name) {
+  try {
+    const data = await fsp.readFile(file);
+    if (isUsableCriticalPublicAsset(name, data)) return sendPublicAssetBuffer(res, name, data);
+  } catch { /* Use the startup or Git fallback below. */ }
+
+  const startup = CRITICAL_PUBLIC_STARTUP_CACHE.get(name);
+  if (startup) {
+    console.warn(`[static] Recovered missing public/${name} from the startup cache.`);
+    return sendPublicAssetBuffer(res, name, startup, 'startup-cache');
+  }
+  const tracked = await trackedCriticalPublicAsset(name);
+  if (tracked) {
+    console.warn(`[static] Recovered missing public/${name} from Git HEAD.`);
+    return sendPublicAssetBuffer(res, name, tracked, 'git-head');
+  }
+  res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+  return res.end(`Mix Studio cannot load public/${name}. Repair or reinstall the app.`);
 }
 
 function safeMediaPath(root, encodedName) {
@@ -5791,6 +6201,7 @@ async function handleApi(req, res, url) {
       const update = await updateFromGit(ROOT, {
         channel: RUNTIME.update.channel,
         gitExecutable: RUNTIME.update.gitExecutable,
+        inspectAssets: () => inspectCriticalPublicAssets(ROOT),
       });
       // ComfyUI can receive work outside Mix Studio. Check it again directly
       // before scheduling a process restart. If that race occurs after Git has
@@ -5832,6 +6243,7 @@ async function handleApi(req, res, url) {
         payload.dirtyFiles = e.dirtyFiles;
         payload.dirtyFileCount = Number.isFinite(e.dirtyFileCount) ? e.dirtyFileCount : e.dirtyFiles.length;
       }
+      if (e.code === 'update_assets_missing' && Array.isArray(e.missingFiles)) payload.missingFiles = e.missingFiles;
       return json(res, status, payload);
     } finally {
       if (!keepMaintenanceUntilRestart) appUpdateRunning = false;
@@ -5840,6 +6252,14 @@ async function handleApi(req, res, url) {
 
   if (route === '/api/app/restart' && req.method === 'POST') {
     if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can restart Mix Studio' });
+    const assets = inspectCriticalPublicAssets(ROOT);
+    if (!assets.ok) {
+      return json(res, 409, {
+        error: `Mix Studio cannot restart because critical app files are missing: ${assets.missing.join(', ')}.`,
+        code: 'app_assets_missing',
+        missingFiles: assets.missing,
+      });
+    }
     try {
       await assertDesktopIsIdle();
     } catch (error) {
@@ -5984,7 +6404,24 @@ async function handleApi(req, res, url) {
   }
   if (route === '/api/hardware' && req.method === 'GET') {
     try {
-      return json(res, 200, await getSetupHardwareInfo(true));
+      const force = url.searchParams.get('refresh') === '1';
+      const hardware = await getSetupHardwareInfo(force);
+      const installStatus = sam3InstallStatus(RUNTIME);
+      const sageRuntime = await probeSageAttention(RUNTIME, { status: installStatus, force });
+      let sageNodeReady = false;
+      try {
+        const info = await getObjectInfo(force);
+        sageNodeReady = !!info.PathchSageAttentionKJ;
+      } catch { /* Python runtime details remain useful while ComfyUI is offline. */ }
+      const performanceRuntime = Object.assign({}, sageRuntime, {
+        ready: sageRuntime.ready === true && sageNodeReady,
+        reason: sageRuntime.ready === true && !sageNodeReady
+          ? 'ComfyUI-KJNodes is needed for the H3 SageAttention graph patch.'
+          : sageRuntime.reason,
+      });
+      return json(res, 200, Object.assign({}, hardware, {
+        performance: h3PerformanceReport({ hardware, runtime: performanceRuntime, models: settings }),
+      }));
     } catch (error) {
       return json(res, 500, { error: String(error.message || error) });
     }
@@ -6005,6 +6442,20 @@ async function handleApi(req, res, url) {
   }
   if (route === '/api/settings' && req.method === 'POST') {
     const body = await readJsonBody(req);
+    if (typeof body.externalLlmOllamaUrl === 'string' && body.externalLlmOllamaUrl.trim()) {
+      try { body.externalLlmOllamaUrl = normalizeOllamaUrl(body.externalLlmOllamaUrl); }
+      catch (error) { return json(res, 400, { error: String(error.message || error) }); }
+    }
+    const changesExternalLlm = body.clearExternalLlmOpenAiApiKey === true
+      || body.clearExternalLlmGeminiApiKey === true
+      || ['externalLlmOpenAiApiKey', 'externalLlmGeminiApiKey'].some((key) => typeof body[key] === 'string' && body[key].trim())
+      || ['externalLlmProvider', 'externalLlmOpenAiModel', 'externalLlmGeminiModel', 'externalLlmOllamaUrl', 'externalLlmOllamaModel']
+        .some((key) => typeof body[key] === 'string' && body[key].trim() && body[key].trim() !== String(settings[key] || ''))
+      || ['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance']
+        .some((key) => typeof body[key] === 'boolean' && body[key] !== settings[key]);
+    if (changesExternalLlm && !isAdmin()) {
+      return json(res, 403, { error: 'Only the owner profile can change the shared external prompt provider' });
+    }
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       if (key === 'exportDir') continue;
       if (typeof body[key] === 'string' && body[key].trim()) settings[key] = body[key].trim();
@@ -6015,6 +6466,11 @@ async function handleApi(req, res, url) {
     if (typeof body.hfEndpoint === 'string') settings.hfEndpoint = body.hfEndpoint.trim();
     if (typeof body.smartFilenames === 'boolean') settings.smartFilenames = body.smartFilenames;
     if (body.clearHfToken === true) settings.hfToken = '';
+    if (body.clearExternalLlmOpenAiApiKey === true) settings.externalLlmOpenAiApiKey = '';
+    if (body.clearExternalLlmGeminiApiKey === true) settings.externalLlmGeminiApiKey = '';
+    for (const key of ['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance']) {
+      if (typeof body[key] === 'boolean') settings[key] = body[key];
+    }
     if (body.features && typeof body.features === 'object') settings.features = normalizeFeatures(body.features);
     settings = normalizeSettings(settings);
     const hardwareProfile = setupHardwareProfile(await getSetupHardwareInfo().catch(() => ({})));
@@ -6056,7 +6512,17 @@ async function handleApi(req, res, url) {
       if (sageRuntime.ready === true && !sageAttention.nodeReady) {
         sageAttention.reason = 'ComfyUI-KJNodes is needed for the H3 SageAttention graph patch.';
       }
-      const missingComponents = missingDependencyComponentIds(missing, models, { sageAttention });
+      const nodeRevisions = await pinnedNodeRevisionStatus(installStatus, url.searchParams.has('refresh'));
+      const missingComponents = missingDependencyComponentIds(missing, models, {
+        sageAttention,
+        repairComponents: nodeRevisions.components,
+      });
+      const hardwareBlockedComponents = new Set(
+        Object.entries(hardwareGuidance).filter(([, g]) => g?.blocked).map(([id]) => id)
+      );
+      const availableMissingComponents = missingComponents.filter(
+        (id) => !hardwareBlockedComponents.has(id)
+      );
       if (url.searchParams.has('afterRestart') && dependencyInstallState.restartRequired) {
         const checkedComponents = Array.isArray(dependencyInstallState.components)
           ? dependencyInstallState.components.filter(Boolean)
@@ -6098,7 +6564,9 @@ async function handleApi(req, res, url) {
             h3Core,
             sageAttention,
           )),
-          missingComponents,
+          missingComponents: availableMissingComponents,
+          repairComponents: nodeRevisions.components,
+          outdatedNodes: nodeRevisions.nodes,
           install: dependencyInstallState,
           sam3: { canInstall: installStatus.canInstall, downloaded: installStatus.downloaded, reason: installStatus.reason },
           sageAttention,
@@ -6270,7 +6738,7 @@ async function handleApi(req, res, url) {
         error: null,
         matches: [],
       });
-      await startComfy(RUNTIME, (phase, message) => updateComfyStartState({ state: 'running', phase, message, error: null }));
+      await startComfy(RUNTIME, (phase, message) => updateComfyStartState({ state: 'running', phase, message, error: null }), { scratchDiskDir: settings.scratchDiskDir });
       if (launch.kind === 'desktop') {
         updateComfyStartState({
           state: 'running', phase: 'desktop',
@@ -6330,7 +6798,7 @@ async function handleApi(req, res, url) {
     updateDependencyInstallState({ state: 'restarting', phase: 'stopping', message: 'Stopping ComfyUI…', error: null, ...EMPTY_DEPENDENCY_FAILURE });
     (async () => {
       try {
-        await restartComfy(RUNTIME, (phase, message) => updateDependencyInstallState({ state: 'restarting', phase, message, error: null }));
+         await restartComfy(RUNTIME, (phase, message) => updateDependencyInstallState({ state: 'restarting', phase, message, error: null }), { scratchDiskDir: settings.scratchDiskDir });
         const reconnected = await waitForComfyReconnect();
         objectInfoCache = null;
         comfyCompatibilitySnapshot = null;
@@ -6492,6 +6960,7 @@ async function handleApi(req, res, url) {
           saveJsonSync(SETTINGS_FILE, settings);
         }
         objectInfoCache = null;
+        invalidatePinnedNodeRevisionCache();
         if (result.failures?.length) {
           const firstFailure = result.failures[0];
           updateDependencyInstallState({
@@ -6779,7 +7248,7 @@ async function handleApi(req, res, url) {
       : (p.imageName ? [p.imageName] : []);
     if (p.mode !== 'edit') p.editSequence = undefined;
     if (p.mode === 'edit') {
-       if (settings.features[EDIT_FEATURES[p.editEngine]] === false) {
+      if (settings.features[EDIT_FEATURES[p.editEngine]] === false) {
         return json(res, 400, { error: 'This edit model was not installed on this machine.' });
       }
       if (refNames.length && !supportsImageInput(p.editEngine) && !p.editOutpaint && !p.maskImageName && !hasActiveRegions(p.regions)) {
@@ -6894,18 +7363,28 @@ async function handleApi(req, res, url) {
       p.batch = 1;
       p.postUpscale = undefined;
     }
-    const queued = huntCount
-      ? await queueStrengthHuntJob(p, req.profile.id, refNames, refined)
-      : await queueGenerationJob(p, req.profile.id, refNames, refined);
-    return json(res, 200, {
-      jobId: queued.pid,
-      seed: p.seed,
-      refinedPrompt: refined,
-      sequenceId: p.editSequence ? p.editSequence.id : undefined,
-      strengthHunt: huntCount || undefined,
-      vramProfile,
-      adjustments: vramAdjustments.length ? vramAdjustments : undefined,
-    });
+    try {
+      const queued = huntCount
+        ? await queueStrengthHuntJob(p, req.profile.id, refNames, refined)
+        : await queueGenerationJob(p, req.profile.id, refNames, refined);
+      return json(res, 200, {
+        jobId: queued.pid,
+        seed: p.seed,
+        refinedPrompt: refined,
+        sequenceId: p.editSequence ? p.editSequence.id : undefined,
+        strengthHunt: huntCount || undefined,
+        vramProfile,
+        adjustments: vramAdjustments.length ? vramAdjustments : undefined,
+      });
+     } catch (error) {
+      if (refNames.length && (error.code === 'comfy_image_input_not_supported' || isComfyImageInputError(error))) {
+        return json(res, 400, {
+          error: imageInputNotAcceptedMessage(refNames[0]),
+          code: 'comfy_image_input_not_supported',
+        });
+      }
+      throw error;
+    }
   }
 
   if (route === '/api/upscale' && req.method === 'POST') {
@@ -7229,7 +7708,6 @@ async function handleApi(req, res, url) {
     const body = await readJsonBody(req);
     const engine = ['h3', 'wan', 'eros', 'scail', 'ltx-edit'].includes(body.engine) ? body.engine : 'ltx';
     const h3Mode = engine === 'h3' && body.h3Mode === 'reference' ? 'reference' : 'frames';
-    const h3SageAttention = engine === 'h3' && body.sageAttention !== false;
     const h3References = normalizeH3References(body.h3References);
     // Every video route except Wan Full Quality is fixed at CFG 1 (or
     // explicitly zeroes negative conditioning), so a negative prompt cannot
@@ -7242,7 +7720,35 @@ async function handleApi(req, res, url) {
     }
     const generationHardwareProfile = setupHardwareProfile(await getSetupHardwareInfo());
     adoptDeviceCompatibleModelSettings(generationHardwareProfile);
+    const gpuVendor = generationHardwareProfile.gpuVendor || '';
+    const vramProfile = resolveVramProfile(settings.vramProfile, generationHardwareProfile);
+    const h3SageAttention = engine === 'h3' && body.sageAttention !== false
+      && /^nvidia$/i.test(gpuVendor);
+    // H3 is a large DiT; auto-enable memory optimizations on constrained VRAM.
+    // The H3 memory-efficient attention patch is a lighter-weight alternative to
+    // SageAttention, so only enable it when SageAttention is not already active.
+    // R2V mode loads 4 models simultaneously (ref2va DiT + qwen3vl 32B CLIP + video VAE + audio VAE),
+    // so it needs a higher VRAM threshold (~48GB) before relaxing memory constraints.
+    // Frames mode also benefits from optimizations on cards under ~36GB to avoid OOM during sampling.
+    const h3VramThreshold = h3Mode === 'reference' ? 48 : 36;
+    const h3ConstrainedVram = engine === 'h3' && (
+      vramProfile === 'low' ||
+      (generationHardwareProfile.vramGb > 0 && generationHardwareProfile.vramGb <= h3VramThreshold)
+    );
+    const h3MemoryEfficientAttention = h3ConstrainedVram && !h3SageAttention;
+    // Pre-flight VRAM note for H3 R2V. The reference-preparation node
+    // (MiniMaxH3ReferenceToVideo) loads the ref2va DiT (~14GB) + qwen3vl 32B
+    // CLIP + video VAE + audio VAE. Sequential CPU offload (now applied to the
+    // UNETLoader too) keeps this feasible on 32GB Intel Arc; the warning is
+    // informational so the user understands why reference preparation is slow.
+    if (engine === 'h3' && h3Mode === 'reference'
+      && /^intel$/i.test(gpuVendor)
+      && generationHardwareProfile.vramGb > 0
+      && generationHardwareProfile.vramGb <= 40) {
+      console.warn(`[Mix Studio] H3 Reference mode on ${generationHardwareProfile.vramGb.toFixed(0)} GB Intel Arc — sequential CPU offload is active; reference preparation will be slower but should avoid OOM.`);
+    }
     const engineCapability = configuredVideoEngineCapability(engine, generationHardwareProfile, settings);
+
     if (!engineCapability.supported) {
       return json(res, 409, {
         error: engineCapability.reason,
@@ -7284,6 +7790,24 @@ async function handleApi(req, res, url) {
         && !h3References.videos.length
         && !h3References.audios.length) {
         return json(res, 400, { error: 'MiniMax H3 Reference mode needs at least one image, video, or audio reference.' });
+      }
+      if (h3Mode === 'reference' && process.platform === 'win32') {
+        const tempDir = String(process.env.TEMP || process.env.TMP || os.tmpdir()).replace(/"/g, '');
+        if (tempDir) {
+          try {
+            const stat = fs.statSync(path.parse(tempDir).root);
+            const freeBytes = stat && typeof stat.free === 'number' ? stat.free : 0;
+            const freeGb = freeBytes / (1024 ** 3);
+            if (freeGb < H3_R2V_MIN_DISK_GB) {
+              return json(res, 409, {
+                error: `H3 Reference mode preparation needs at least ${H3_R2V_MIN_DISK_GB} GB free on the scratch disk (${tempDir}). Free space: ${freeGb.toFixed(1)} GB. Redirect the scratch disk to a drive with more space, or reduce the reference content length.`,
+                code: 'h3_r2v_insufficient_disk_space',
+              });
+            }
+          } catch {
+            // Non-fatal: skip the pre-flight check if the temp dir cannot be inspected.
+          }
+        }
       }
     }
     const requestedCameraMotions = normalizeCameraMotions(body.cameraMotions);
@@ -7401,7 +7925,7 @@ async function handleApi(req, res, url) {
             ? ltxCameraDurationSeconds(seconds, cameraGuideVideoName ? cameraGuideSourceDuration : 0, cameraGuideStart)
             : ltxDurationSeconds(seconds)
           : Math.max(1, Math.min(15, seconds));
-    let frames; let fps; let W; let H;
+    let frames; let fps; let W; let H; let h3OutputAspectRatio;
     if (engine === 'h3') {
       fps = H3_FPS;
       frames = h3FramesForSeconds(seconds);
@@ -7416,6 +7940,7 @@ async function handleApi(req, res, url) {
         4,
         requestedWidth / Math.max(1, requestedHeight)
       );
+      h3OutputAspectRatio = requestedAspectRatio;
       ({ W, H } = h3Dimensions(requestedAspectRatio, 1, body.h3ResolutionSize));
     } else if (engine === 'scail') {
       fps = selectedScailFps;
@@ -7477,18 +8002,41 @@ async function handleApi(req, res, url) {
     let prompt = motionPrompt;
     let refinedMotionPrompt = null;
     const frameAwareEnhance = !bypass && !faceImageName && !isLtxEdit && engine !== 'h3';
-    if (engine === 'h3' && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
+    if (shouldUseExternalPrompt('video', 'enhance') && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
+      const externalImageName = engine === 'h3' && h3Mode === 'reference'
+        ? h3References.images[0]?.name
+        : (faceImageName || (!bypass ? comfyName : undefined));
+      const parts = videoPromptEnhanceParts(motionPrompt, {
+        engine,
+        seconds,
+        mode: h3Mode,
+        hasImage: !!externalImageName,
+      });
+      const raw = await runConfiguredExternalPrompt(parts, engine === 'h3' ? 640 : 384, {
+        action: 'enhance',
+        imageName: externalImageName,
+        profileId: req.profile.id,
+      });
+      refinedMotionPrompt = cleanEnhancedText(raw, motionPrompt);
+      refinedMotionPrompt = ensureCameraMotionPrompt(refinedMotionPrompt, cameraMotions);
+      prompt = refinedMotionPrompt;
+    } else if (engine === 'h3' && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
       const h3EnhanceImageName = h3Mode === 'reference'
         ? h3References.images[0]?.name
         : (!bypass ? comfyName : undefined);
-      const raw = await sharedH3PromptEnhancement(motionPrompt, seed, {
-        profileId: req.profile.id,
-        imageName: h3EnhanceImageName,
-        mode: h3Mode,
-        seconds,
-      });
-      refinedMotionPrompt = cleanEnhancedText(raw, motionPrompt);
-      prompt = refinedMotionPrompt;
+       const raw = await sharedH3PromptEnhancement(motionPrompt, seed, {
+         profileId: req.profile.id,
+         imageName: h3EnhanceImageName,
+         mode: h3Mode,
+         seconds,
+       }).catch((enhanceError) => {
+         console.warn('H3 prompt enhancement failed, falling back to original motion prompt:', enhanceError && enhanceError.message ? enhanceError.message : enhanceError);
+         return null;
+       });
+       if (raw != null) {
+         refinedMotionPrompt = cleanEnhancedText(raw, motionPrompt);
+         prompt = refinedMotionPrompt;
+       }
     } else if (frameAwareEnhance && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
       // Every image-to-video enhancer sees both the actual first frame and
       // the user's initial motion idea before the generation graph is built.
@@ -7510,6 +8058,17 @@ async function handleApi(req, res, url) {
 
     const sigmaPreset = ['dmd', 'card', 'v5', 'custom'].includes(body.sigmaPreset) ? body.sigmaPreset : 'dmd';
     const sig = erosSigmas(sigmaPreset);
+    const videoSteps = engine === 'h3'
+      ? clampInt(body.steps, 1, 100, 20)
+      : engine === 'wan'
+        ? (body.fast !== false ? 4 : 20)
+        : engine === 'scail'
+          ? 6
+          : engine === 'eros'
+            ? manualSigmaStepCount(sig.first) + manualSigmaStepCount(sig.up)
+            : faceImageName
+              ? manualSigmaStepCount(LTX_SIGMAS_BASE)
+              : manualSigmaStepCount(LTX_SIGMAS_BASE) + manualSigmaStepCount(LTX_SIGMAS_REFINE);
     // RIFE frame interpolation for LTX, Wan, and SCAIL video outputs.
     const smooth = (engine === 'ltx' || isLtxEdit || engine === 'wan' || engine === 'scail') && [2, 3].includes(Number(body.smooth))
       ? Number(body.smooth) : 1;
@@ -7531,9 +8090,10 @@ async function handleApi(req, res, url) {
       // retain their specialized in-graph prompt enhancement.
       enhance: isLtxLike ? enhance && !refinedMotionPrompt : false,
       frames, fps,
+      steps: videoSteps,
       fourK: !!body.fourK,
-       gpuVendor: generationHardwareProfile.gpuVendor,
-       vramGb: generationHardwareProfile.vramGb,
+      gpuVendor: generationHardwareProfile.gpuVendor,
+      vramGb: generationHardwareProfile.vramGb,
       seed,
       W, H, bypass,
       makePoster: !item,
@@ -7560,10 +8120,13 @@ async function handleApi(req, res, url) {
       loras: engine === 'h3' ? [] : (Array.isArray(body.loras) ? body.loras.filter((l) => l && l.on && l.name) : []),
       mode: h3Mode,
       sageAttention: h3SageAttention,
+      unloadModel: h3ConstrainedVram,
+      h3MemoryEfficientAttention,
       firstImageName: engine === 'h3' && !bypass && h3Mode === 'frames' ? comfyName : null,
       references: h3References,
       refImageSize: body.h3RefImageSize === 'max' ? 'max' : 'match',
     };
+
     const graph = engine === 'h3' ? await buildMiniMaxH3Graph(opts, settings, {
       nodeFromOrdered, filterInputs, rtxVideoSuperResolutionNode,
     })
@@ -7572,7 +8135,9 @@ async function handleApi(req, res, url) {
         : engine === 'eros' ? await buildAnimateEros(comfyName, opts)
           : faceImageName ? await buildAnimateFaceId(faceImageName, opts)
             : await buildAnimate(comfyName, opts);
-    applyOffloadToGraph(graph, getOffloadConfig(opts.gpuVendor, opts.vramGb));
+    applyOffloadToGraph(graph, getOffloadConfig(opts.gpuVendor, opts.vramGb, {
+      h3R2V: engine === 'h3' && h3Mode === 'reference',
+    }));
     const pid = await queuePrompt(graph, { profileId: req.profile.id });
     trackJob(pid, {
       kind: 'video', profileId: req.profile.id, itemId: item ? item.id : null, createItem: !item, graph,
@@ -7589,7 +8154,7 @@ async function handleApi(req, res, url) {
         exactFrameCount: true,
         smooth: smooth > 1 ? smooth : undefined,
         fourK: opts.fourK, width: opts.fourK ? W * 2 : W, height: opts.fourK ? H * 2 : H,
-        seed: opts.seed, t2v: engine === 'h3' ? h3Mode === 'frames' && bypass : bypass,
+        seed: opts.seed, steps: opts.steps, t2v: engine === 'h3' ? h3Mode === 'frames' && bypass : bypass,
         motionFreedom: isLtxLike ? opts.imgCompression : undefined,
         fast: engine === 'wan' ? opts.fast : undefined,
         sigmaPreset: engine === 'eros' ? sigmaPreset : undefined,
@@ -7608,6 +8173,9 @@ async function handleApi(req, res, url) {
         scailChunkFrames: engine === 'scail' ? selectedScailChunkOptions.chunkFrames : undefined,
         scailChunkOverlap: engine === 'scail' ? selectedScailChunkOptions.overlapFrames : undefined,
         h3Mode: engine === 'h3' ? h3Mode : undefined,
+        h3AspectRatio: engine === 'h3' ? h3OutputAspectRatio : undefined,
+        h3ResolutionSize: engine === 'h3' ? Number(body.h3ResolutionSize) || 1 : undefined,
+        h3MatchSource: engine === 'h3' && h3Mode === 'frames' ? body.h3MatchSource === true : undefined,
         attentionBackend: engine === 'h3' ? (opts.sageAttention ? 'sageattention' : 'standard') : undefined,
         h3RefImageSize: engine === 'h3' && h3Mode === 'reference' ? opts.refImageSize : undefined,
         h3References: engine === 'h3' && h3Mode === 'reference' ? h3References : undefined,
@@ -7657,7 +8225,7 @@ async function handleApi(req, res, url) {
       ? `ks_vup_${entry.id}.mp4`
       : `ks_vfi_${entry.id}.mp4`);
 
-     const fps = clampNum(baseInfo.fps, 1, 120, 16);
+const fps = clampNum(baseInfo.fps, 1, 120, 16);
     const frames = clampInt(baseInfo.frames, 0, 1000000, 0);
     const hwProfile = setupHardwareProfile(await getSetupHardwareInfo().catch(() => ({})));
     const vGpuVendor = hwProfile.gpuVendor || '';
@@ -7666,32 +8234,9 @@ async function handleApi(req, res, url) {
     let videoInfo;
     if (route === '/api/video/upscale') {
       const scale = clampNum(body.scale, 1, 4, 2);
-      const upscaleEngine = body.engine === 'seedvr2' ? 'seedvr2' : 'rtx';
-      const objectInfo = await getObjectInfo();
-      if (upscaleEngine === 'seedvr2') {
-        const readiness = outpaintRefineReadiness(objectInfo);
-        if (!readiness.ready) {
-          return json(res, 409, {
-            error: 'SeedVR2 video upscale needs the SeedVR2 nodes and configured DiT/VAE models. Install the Upscale component in Generation setup.',
-            code: 'seedvr2_setup_required',
-          });
-        }
-      } else if (!objectInfo.RTXVideoSuperResolution) {
-        return json(res, 409, {
-          error: 'RTX video upscale needs the RTX Video Super Resolution node. Install the optional RTX 4K component in Generation setup.',
-          code: 'rtx_video_upscale_setup_required',
-        });
-      }
-      const sourceShortEdge = Math.min(
-        Number(baseInfo.width) || Number(dims.w) || 0,
-        Number(baseInfo.height) || Number(dims.h) || 0,
-      );
-      const resolution = sourceShortEdge > 0
-        ? clampInt(sourceShortEdge * scale, 512, 8192, 1080)
-        : 1080;
-      graph = await buildExistingVideoUpscale(comfyName, { fps, frames, scale, hasAudio, fourK: !!body.fourK, engine: upscaleEngine, resolution, gpuVendor: vGpuVendor });
-      applyOffloadToGraph(graph, getOffloadConfig(vGpuVendor, vGpuVramGb));
-      videoInfo = videoProcessInfo(baseInfo, { kind: 'upscale', scale, engine: upscaleEngine, parentVideoId: entry.id });
+       graph = await buildExistingVideoUpscale(comfyName, { fps, frames, scale, hasAudio, fourK: !!body.fourK, gpuVendor: vGpuVendor });
+        applyOffloadToGraph(graph, getOffloadConfig(vGpuVendor, vGpuVramGb));
+        videoInfo = videoProcessInfo(baseInfo, { kind: 'upscale', scale, parentVideoId: entry.id });
     } else {
       const multiplier = [2, 3, 4].includes(Number(body.multiplier)) ? Number(body.multiplier) : 2;
       graph = await buildExistingVideoInterpolate(comfyName, { fps, frames, smooth: multiplier, hasAudio });
@@ -7704,6 +8249,60 @@ async function handleApi(req, res, url) {
     trackJob(pid, { kind: 'video', profileId: req.profile.id, itemId: item.id, graph, videoInfo });
     ensureWs();
     return json(res, 200, { jobId: pid });
+  }
+
+  if (route === '/api/video/convert-mp4' && req.method === 'POST') {
+    const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (!['video/webm', 'video/x-matroska', 'application/octet-stream'].includes(contentType)) {
+      req.resume();
+      return json(res, 415, { error: 'MP4 conversion accepts WebM video recordings only' });
+    }
+    const contentLength = Number(req.headers['content-length']);
+    if (Number.isFinite(contentLength) && contentLength > MAX_DOCUMENTATION_VIDEO_BYTES) {
+      req.resume();
+      return json(res, 413, { error: 'The documentation video is larger than the 256 MB conversion limit' });
+    }
+    if (!videoExtensionFfmpeg) videoExtensionFfmpeg = await resolveFfmpegExecutable(RUNTIME);
+    if (!videoExtensionFfmpeg) {
+      req.resume();
+      return json(res, 503, { error: 'MP4 conversion needs FFmpeg. Install FFmpeg or make the ComfyUI imageio-ffmpeg executable available.' });
+    }
+
+    let temporaryDirectory = '';
+    try {
+      temporaryDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'mixstudio-documentation-video-'));
+      const source = path.join(temporaryDirectory, 'recording.webm');
+      const output = path.join(temporaryDirectory, 'documentation.mp4');
+      const bytes = await receiveInputFile(req, source, MAX_DOCUMENTATION_VIDEO_BYTES);
+      if (!bytes) return json(res, 400, { error: 'No WebM recording received' });
+      await transcodeVideoFileToMp4({
+        sourcePath: source,
+        outputPath: output,
+        ffmpegPath: videoExtensionFfmpeg,
+      });
+      const stat = await fsp.stat(output);
+      res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Content-Length': stat.size,
+        'Content-Disposition': 'attachment; filename="mix-studio-documentation.mp4"',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      await pipeline(fs.createReadStream(output), res);
+    } catch (error) {
+      if (res.headersSent) {
+        if (!res.destroyed) res.destroy(error);
+        return;
+      }
+      const status = error?.code === 'INPUT_TOO_LARGE' ? 413
+        : error?.code === 'ffmpeg_unavailable' ? 503
+          : error?.code === 'video_transcode_failed' ? 422
+            : 500;
+      return json(res, status, { error: String(error.message || error) });
+    } finally {
+      if (temporaryDirectory) await fsp.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => {});
+    }
+    return;
   }
 
   // Side-by-side comparison: original motion video (left) + SCAIL result
@@ -7975,6 +8574,26 @@ async function handleApi(req, res, url) {
     const prompt = cleanEnhancedText(raw, currentPrompt || changeRequest);
     if (!prompt) return json(res, 500, { error: 'Prompt assistant returned no usable text' });
     return json(res, 200, { prompt });
+  }
+
+  if (route === '/api/prompt/provider/test' && req.method === 'POST') {
+    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can test the shared external prompt provider' });
+    const provider = configuredExternalLlm();
+    const text = await externalLlmRequest({
+      provider: provider.provider,
+      model: provider.model,
+      apiKey: provider.apiKey,
+      baseUrl: provider.baseUrl,
+      instruction: 'You are checking a prompt-writing connection. Follow the user request exactly.',
+      userInput: 'Reply with exactly: Connection ready',
+      maxTokens: 64,
+    });
+    return json(res, 200, {
+      ok: true,
+      provider: provider.provider,
+      model: provider.model,
+      response: String(text).trim().slice(0, 120),
+    });
   }
 
   if (route === '/api/debug/models') {
@@ -8317,7 +8936,7 @@ async function handleApi(req, res, url) {
   }
 
   if (route === '/api/export' && req.method === 'POST') {
-    if (!settings.exportDir) return json(res, 409, { error: 'Choose a default save folder in Advanced Settings first' });
+    if (!settings.exportDir) return json(res, 409, { error: 'Choose a default save folder in Preferences first' });
     const body = await readJsonBody(req);
     const unlocked = isPrivateUnlocked(req);
     const visible = galleryView(db, unlocked).items.filter((item) => item.profileId === req.profile.id);
@@ -8368,7 +8987,7 @@ async function handleApi(req, res, url) {
   }
 
   if (route === '/api/export-file' && req.method === 'POST') {
-    if (!settings.exportDir) return json(res, 409, { error: 'Choose a default save folder in Advanced Settings first' });
+    if (!settings.exportDir) return json(res, 409, { error: 'Choose a default save folder in Preferences first' });
     try {
       const buffer = await readBody(req, 64 * 1024 * 1024);
       if (!buffer.length) return json(res, 400, { error: 'No file received' });
@@ -8904,6 +9523,9 @@ const server = http.createServer(async (req, res) => {
     let p = url.pathname === '/' ? '/index.html' : url.pathname;
     const publicFile = safeMediaPath(PUBLIC, p.replace(/^\//, ''));
     if (!publicFile) { res.writeHead(404); return res.end('not found'); }
+    if (isCriticalPublicAsset(publicFile.name)) {
+      return await serveCriticalPublicAsset(res, publicFile.file, publicFile.name);
+    }
     return serveFile(res, publicFile.file);
   } catch (e) {
     const cancelled = e && e.code === 'job_cancelled';
@@ -8986,47 +9608,6 @@ server.listen(PORT, '0.0.0.0', () => {
   if (typeof WebSocket === 'undefined') {
     console.log('    Note: Node < 22 detected - live progress disabled (polling fallback).');
   }
-   console.log('');
+  console.log('');
+  startComfyLogWatcher();
 });
-
-const DEVICE_LOST_PATTERN = /level_zero.*?UR_RESULT_ERROR_DEVICE_LOST|device.*?lost|GPU.*?reset/i;
-let comfyLogWatcherActive = false;
-let comfyLogWatchTimer = null;
-
-async function watchComfyLogForDeviceLost() {
-  if (comfyLogWatcherActive) return;
-  comfyLogWatcherActive = true;
-  try {
-    const response = await comfyFetch('/history?max_items=0', { signal: AbortSignal.timeout(5000) });
-    const data = await response.json();
-    if (data && data.status && data.status.messages) {
-      const recentErrors = data.status.messages.filter((msg) => DEVICE_LOST_PATTERN.test(String(msg)));
-      if (recentErrors.length > 0) {
-        console.error(`[Mix Studio] Detected ${recentErrors.length} device-lost error(s) in ComfyUI log. Restarting ComfyUI...`);
-        await restartComfy(RUNTIME, (phase, message) => {
-          console.log(`[Mix Studio] ComfyUI restart: ${phase} - ${message}`);
-        });
-        const reconnected = await waitForComfyReconnect(120_000);
-        if (reconnected) {
-          console.log('[Mix Studio] ComfyUI restarted successfully after device-lost error.');
-        } else {
-          console.error('[Mix Studio] ComfyUI did not reconnect after device-lost restart.');
-        }
-      }
-    }
-  } catch (e) {
-    // ComfyUI may be offline or unresponsive; retry on next cycle.
-  } finally {
-    comfyLogWatcherActive = false;
-  }
-}
-
-function startComfyLogWatcher() {
-  if (comfyLogWatchTimer) return;
-  comfyLogWatchTimer = setInterval(() => {
-    if (jobs.size > 0 && !comfyLogWatcherActive) {
-      watchComfyLogForDeviceLost().catch(() => {});
-    }
-  }, 30_000);
-}
-startComfyLogWatcher();
