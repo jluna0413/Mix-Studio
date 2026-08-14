@@ -39,8 +39,8 @@ test('uses 7B-friendly SeedVR2 loader settings', () => {
   assert.equal(inputs.swap_io_components, true);
   assert.equal(inputs.offload_device, 'cpu');
   assert.equal(inputs.attention_mode, 'sageattn_2');
-  // SeedVR2 nodes are CUDA-only and require device: 'cuda:0'
-  assert.equal(inputs.device, 'cuda:0');
+  // Default vendor targets the host GPU device.
+  assert.equal(inputs.device, 'cpu');
 });
 
 test('uses 7B-friendly SeedVR2 loader settings with Intel offload', () => {
@@ -55,11 +55,11 @@ test('uses 7B-friendly SeedVR2 loader settings with Intel offload', () => {
   assert.equal(inputs.swap_io_components, true);
   assert.equal(inputs.offload_device, 'cpu');
   assert.equal(inputs.attention_mode, 'sdpa');
-  // SeedVR2 nodes are CUDA-only and require device: 'cuda:0' regardless of vendor
-  assert.equal(inputs.device, 'cuda:0');
+  // Intel XPU hosts SeedVR2 on xpu:0 (the node advertises this device).
+  assert.equal(inputs.device, 'xpu:0');
 });
 
-test('SeedVR2 loader uses cuda for all vendors', () => {
+test('SeedVR2 loader targets the host GPU device per vendor', () => {
   const nvidiaInputs = seedVr2DitInputs({
     seedvr2Dit: DEFAULT_SEEDVR2_DIT,
     seedvr2Attention: 'sdpa',
@@ -73,24 +73,22 @@ test('SeedVR2 loader uses cuda for all vendors', () => {
     gpuVendor: 'intel',
   });
   assert.equal(intelInputs.attention_mode, 'sdpa');
-  // SeedVR2 nodes are CUDA-only and require device: 'cuda:0' regardless of vendor
-  assert.equal(intelInputs.device, 'cuda:0');
+  assert.equal(intelInputs.device, 'xpu:0');
 
   const noVendorInputs = seedVr2DitInputs({
     seedvr2Dit: DEFAULT_SEEDVR2_DIT,
     seedvr2Attention: 'sdpa',
   });
-  // SeedVR2 nodes are CUDA-only and require device: 'cuda:0' regardless of vendor
-  assert.equal(noVendorInputs.device, 'cuda:0');
+  assert.equal(noVendorInputs.device, 'cpu');
 });
 
-test('seedVr2DeviceForVendor returns cuda for all vendors', () => {
+test('seedVr2DeviceForVendor maps the host GPU', () => {
   assert.equal(seedVr2DeviceForVendor('nvidia'), 'cuda:0');
-  assert.equal(seedVr2DeviceForVendor('Intel'), 'cuda:0');
-  assert.equal(seedVr2DeviceForVendor('intel'), 'cuda:0');
-  assert.equal(seedVr2DeviceForVendor('amd'), 'cuda:0');
-  assert.equal(seedVr2DeviceForVendor(''), 'cuda:0');
-  assert.equal(seedVr2DeviceForVendor(undefined), 'cuda:0');
+  assert.equal(seedVr2DeviceForVendor('Intel'), 'xpu:0');
+  assert.equal(seedVr2DeviceForVendor('intel'), 'xpu:0');
+  assert.equal(seedVr2DeviceForVendor('amd'), 'cpu');
+  assert.equal(seedVr2DeviceForVendor(''), 'cpu');
+  assert.equal(seedVr2DeviceForVendor(undefined), 'cpu');
 });
 
 test('CUDA-only SeedVR2 attention falls back to SDPA on non-NVIDIA backends', () => {

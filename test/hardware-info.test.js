@@ -32,8 +32,17 @@ test('reads Apple Metal identity from ComfyUI system stats', () => {
   assert.deepEqual(parseComfyStatsDevices({ devices: [{
     name: 'mps:0 Apple M4 Max', type: 'mps', vram_total: 64 * 1024 ** 3,
   }] }), [{
-    name: 'Apple M4 Max', memoryBytes: 64 * 1024 ** 3, memoryKind: 'unified',
+    name: 'Apple M4 Max', memoryBytes: 64 * 1024 ** 3, memoryFreeBytes: null, vramFreeGb: null, memoryKind: 'unified',
     driver: '', vendor: 'apple', backend: 'mps', source: 'comfyui',
+  }]);
+});
+
+test('reads free VRAM from ComfyUI system stats', () => {
+  assert.deepEqual(parseComfyStatsDevices({ devices: [{
+    name: 'xpu:0 Intel(R) Arc(TM) Pro B70 Graphics', type: 'xpu', vram_total: 31.2 * 1024 ** 3, vram_free: 5 * 1024 ** 3,
+  }] }), [{
+    name: 'Intel(R) Arc(TM) Pro B70 Graphics', memoryBytes: Math.round(31.2 * 1024 ** 3),
+    memoryFreeBytes: 5 * 1024 ** 3, vramFreeGb: 5, driver: '', vendor: 'intel', backend: 'xpu', source: 'comfyui',
   }]);
 });
 

@@ -192,6 +192,7 @@ const state = {
   upscaling: new Set(),      // item ids
   animating: new Set(),      // item ids
   pendingGalleryRequests: new Set(), // kind:item while its queue POST is in flight
+  telemetry: null, // Live memory telemetry from /api/telemetry/memory
   animateTarget: null,
   animateRouteTarget: null,
   currentItem: null,
@@ -17096,6 +17097,20 @@ $('#generateBtn').addEventListener('click', async () => {
     const seedRaw = $('#seedInput').value.trim();
     const baseSeed = seedRaw === '' ? undefined : Number(seedRaw);
     const batch = Math.max(1, Math.min(8, Number($('#batchInput').value) || 1));
+    
+    // Check memory for 5-second H3 video (5-second = 124 frames at 24fps)
+    const isH3FiveSec = state.vidEngine === 'h3' && Number($('#vidDur').value) <= 5;
+    const currentVramUtil = state.telemetry?.vram?.utilization || 0;
+    if (isH3FiveSec && currentVramUtil > 0.75) {
+      const confirm = await askConfirm({
+        title: 'High VRAM usage detected',
+        message: `VRAM is at ${Math.round(currentVramUtil * 100)}% — generating a 5-second H3 video may cause instability. Continue?`,
+        confirmLabel: 'Generate anyway',
+        cancelLabel: 'Cancel',
+      });
+      if (!confirm) return;
+    }
+    
     const body = {
       prompt,
       promptTemplate: promptTemplateBeforeAutoMotion || undefined,
@@ -18001,6 +18016,17 @@ function connectEvents() {
   es.addEventListener('status', (ev) => {
     renderGenerationStatus(JSON.parse(ev.data));
   });
+  es.addEventListener('oomDetected', (ev) => {
+    const d = JSON.parse(ev.data);
+    if (d.jobId && state.activeJobs.has(d.jobId)) {
+      const stage = d.telemetry?.stage || d.stage || 'unknown';
+      const vramPct = d.telemetry?.vram?.utilization;
+      const message = vramPct
+        ? `OOM detected at ${stage} — VRAM ${Math.round(vramPct * 100)}% utilized`
+        : `OOM detected during ${stage}`;
+      renderGenerationStatus({ jobId: d.jobId, profileId: d.profileId, text: message, isSampling: false });
+    }
+  });
   es.addEventListener('preview', (ev) => {
     const d = JSON.parse(ev.data);
     if (state.activeJobs.size && (!d.jobId || state.activeJobs.has(d.jobId))) {
@@ -18018,6 +18044,15 @@ function connectEvents() {
     toast(`Step ${d.completedStep} complete · running ${d.nextStep} of ${d.total}`);
     refreshGallery(true);
     queueRefreshSoon();
+  });
+  es.addEventListener('retry', (ev) => {
+    const d = JSON.parse(ev.data);
+    if (d.code === 'ltx_oom_retry' && d.jobId && state.activeJobs.has(d.jobId)) {
+      const text = d.retry
+        ? `VRAM pressure — retrying at ${d.retry.width}×${d.retry.height}, ${d.retry.frames} frames…`
+        : 'VRAM pressure — retrying at reduced size…';
+      renderGenerationStatus({ jobId: d.jobId, profileId: d.profileId, text, isSampling: false });
+    }
   });
   es.addEventListener('jobDone', (ev) => {
     const d = JSON.parse(ev.data);
@@ -18181,6 +18216,50 @@ function connectEvents() {
     queueRefreshSoon();
   });
   es.onerror = () => { /* browser auto-reconnects */ };
+  
+  const memTelemetry = new EventSource('/api/telemetry/memory');
+  memTelemetry.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      state.telemetry = {
+        ram: data.ram,
+        vram: data.vram,
+        offloadConfig: data.offloadConfig,
+        timestamp: data.timestamp,
+      };
+      updateMemoryTelemetryDisplay();
+    } catch { /* ignore malformed telemetry */ }
+  };
+  memTelemetry.onerror = () => { /* auto-reconnect */ };
+}
+function updateMemoryTelemetryDisplay() {
+  const telemetry = state.telemetry;
+  if (!telemetry) return;
+  
+  const ramUtil = telemetry.ram?.utilization ?? 0;
+  const vramUtil = telemetry.vram?.utilization ?? 0;
+  const maxVram = telemetry.vram?.totalGb ?? 0;
+  const freeVram = telemetry.vram?.freeGb ?? 0;
+  
+  const statusEl = $('#memoryStatus') || (() => {
+    const el = document.createElement('div');
+    el.id = 'memoryStatus';
+    el.style.cssText = 'position: fixed; top: 8px; right: 8px; background: rgba(0,0,0,0.7); color: #fff; padding: 6px 10px; border-radius: 8px; font-size: 12px; z-index: 10000;';
+    document.body.appendChild(el);
+    return el;
+  })();
+  
+  const ramColor = ramUtil > 85 ? '#ff4444' : ramUtil > 60 ? '#ffaa00' : '#44aa44';
+  const vramColor = vramUtil > 85 ? '#ff4444' : vramUtil > 60 ? '#ffaa00' : '#44aa44';
+  
+  statusEl.innerHTML = `
+    <div style="display: flex; gap: 12px; align-items: center;">
+      <span style="color: ${ramColor}">RAM: ${ramUtil.toFixed(0)}%</span>
+      <span style="color: ${vramColor}">VRAM: ${vramUtil.toFixed(0)}%${maxVram ? ` (${freeVram}GB/${maxVram}GB)` : ''}</span>
+      <span style="opacity: 0.6;">|</span>
+      <span style="opacity: 0.6">${telemetry.offloadConfig?.device || 'unknown'}: ${telemetry.offloadConfig?.offloadMode || 'unknown'}</span>
+    </div>
+  `;
 }
 function isUpscaleJob() { return state.upscaling.size > 0; }
 

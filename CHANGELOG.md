@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-08-08
 
 All shipped changes from v1.2.0 onward are recorded below by release.
 
@@ -140,6 +140,15 @@ All shipped changes from v1.2.0 onward are recorded below by release.
 - Made the H3 frontend duration limit explicitly match its supported 5–15 second backend range at 24 fps.
 - Added an experimental authenticated HTTPS MCP bridge for remote app control and documented the Gemini Spark beta compatibility findings for a later re-evaluation.
 
+### Krea 2 editing
+
+- Reworked **Krea 2 Edit** around the recommended full-rank Identity Edit v1.2 model and current ComfyUI-Krea2Edit nodes. The graph now uses dual latent and image-grounded conditioning, FIT reference geometry, a 2-megapixel output guard, and the recommended 8–12 step, CFG 1 sampling range.
+- Added **Reference boost** to Advanced options, with the upstream-recommended starting value of 4.
+- Added ordered two-image editing with the scene or source first and the subject reference second.
+- Renamed the existing Conditioning Rebalance workflow to **Krea 2 Remix**, preserving its multi-reference composition workflow as a separate model choice.
+- Updated Generation setup to install `krea2_identity_edit_v1_2.safetensors` and the compatible Krea2Edit node revision. Existing default v1 and v1.1 Identity Edit settings migrate to v1.2.
+- Updated Krea 2 Expand to use the v1.2 identity-conditioning path and Reference boost.
+
 ## 1.1.0 - 2026-08-03
 
 - Added MiniMax H3 text-to-video, image-to-video, first/last-frame, and native-audio generation through ComfyUI's day-zero native nodes.
@@ -196,15 +205,6 @@ All shipped changes from v1.2.0 onward are recorded below by release.
 - Streamlined the public README and moved detailed setup, low-VRAM, contribution, and operator guidance into focused documentation.
 
 ## 1.0.2 - 2026-07-24
-
-### Krea 2 editing
-
-- Reworked **Krea 2 Edit** around the recommended full-rank Identity Edit v1.2 model and current ComfyUI-Krea2Edit nodes. The graph now uses dual latent and image-grounded conditioning, FIT reference geometry, a 2-megapixel output guard, and the recommended 8–12 step, CFG 1 sampling range.
-- Added **Reference boost** to Advanced options, with the upstream-recommended starting value of 4.
-- Added ordered two-image editing with the scene or source first and the subject reference second.
-- Renamed the existing Conditioning Rebalance workflow to **Krea 2 Remix**, preserving its multi-reference composition workflow as a separate model choice.
-- Updated Generation setup to install `krea2_identity_edit_v1_2.safetensors` and the compatible Krea2Edit node revision. Existing default v1 and v1.1 Identity Edit settings migrate to v1.2.
-- Updated Krea 2 Expand to use the v1.2 identity-conditioning path and Reference boost.
 
 ### Interface
 

@@ -38,8 +38,8 @@ test('parses ROCm utilization from the largest-VRAM AMD device', () => {
 });
 
 test('assesses running jobs as active when GPU is busy', () => {
-  const health = assessQueueHealth({
-    runningCount: 1,
+    const health = assessQueueHealth({
+      runningCount: 1,
     pendingCount: 0,
     longestRunningMs: 8 * 60 * 1000,
     gpu: { utilization: 85, memoryUsedMb: 50000, memoryTotalMb: 98000, powerDrawW: 520 },
@@ -121,4 +121,21 @@ test('queue sheet supports clearing history, gallery navigation, and drag reorde
   assert.match(styleCss, /\.sheet-panel\.queue-drag-scroll-lock \{[\s\S]*overflow-y: hidden;[\s\S]*touch-action: none;/);
   assert.match(appJs, /\/api\/queue\/history\/clear/);
   assert.match(appJs, /\/api\/queue\/reorder/);
+});
+
+test('concurrent in-flight prompts are capped to avoid VRAM/RAM stacking on heavy jobs', () => {
+  // queuePrompt must acquire a single shared slot before POSTing to ComfyUI so
+  // a burst of upscales / large Krea2 runs cannot pile onto the GPU at once
+  // and freeze the machine. The default cap is 1 (configurable via env).
+  assert.match(serverJs, /MAX_CONCURRENT_PROMPTS/);
+  assert.match(serverJs, /function _acquirePromptSlot\(\)/);
+  assert.match(serverJs, /function _releasePromptSlot\(\)/);
+  // The slot is held across the whole job lifecycle (until completeJob/failJob/
+  // cancelJob), not just the POST round-trip.
+  assert.match(serverJs, /await _acquirePromptSlot\(\)/);
+  assert.match(serverJs, /slotToken = await _acquirePromptSlot\(\)/);
+  assert.match(serverJs, /function removeJob\(pid\)/);
+  assert.match(serverJs, /job\._slotToken\.release\(\)/);
+  // A bounded default (capped at 4, default 1) keeps Intel XPU machines safe.
+  assert.match(serverJs, /Math\.max\(1, Math\.min\(4,/);
 });

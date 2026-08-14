@@ -151,7 +151,8 @@ test('MiniMax H3 first/last-frame graph matches the native joint AV workflow', a
   assert.equal(graph.sampler_select.inputs.sampler_name, 'res_multistep');
   assert.deepEqual(graph.decode.inputs.samples, ['sample', 0]);
   assert.deepEqual(graph.decode_audio.inputs.samples, ['sample', 0]);
-  assert.deepEqual(graph.video.inputs.audio, ['decode_audio', 0]);
+  assert.deepEqual(graph.decode_audio.inputs.vae, ['video_vae', 0]);  // Uses video_vae when no audio refs
+  assert.equal(graph.video.inputs.audio, null);  // No audio in frames mode
   assert.equal(graph.video.inputs.fps, 24);
   assert.equal(graph.poster_save.class_type, 'SaveImage');
 });
@@ -432,4 +433,51 @@ test('MiniMax H3 reference mode rejects an empty reference set', async () => {
     buildMiniMaxH3Graph({ mode: 'reference', prompt: 'Empty', W: 768, H: 768, frames: 124 }, settings),
     /needs at least one image, video, or audio reference/
   );
+});
+
+test('Frames mode skips audio_vae and uses video_vae for decode_audio', async () => {
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'frames',
+    prompt: 'A simple frames mode test',
+    W: 768,
+    H: 1344,
+    frames: 124,
+  }, settings);
+
+  assert.equal(graph.audio_vae, undefined);
+  assert.deepEqual(graph.decode_audio.inputs.vae, ['video_vae', 0]);
+  assert.equal(graph.video.inputs.audio, null);
+});
+
+test('Reference mode with only images skips audio_vae', async () => {
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'reference',
+    prompt: 'Images only',
+    references: { images: [{ name: 'ref.png' }], videos: [], audios: [] },
+    W: 768,
+    H: 1344,
+    frames: 124,
+  }, settings);
+
+  assert.equal(graph.audio_vae, undefined);
+  assert.equal(graph.condition.inputs.audio_vae, undefined);
+  assert.deepEqual(graph.decode_audio.inputs.vae, ['video_vae', 0]);
+  assert.equal(graph.video.inputs.audio, null);
+});
+
+test('Reference mode with audio references includes audio_vae', async () => {
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'reference',
+    prompt: 'With audio',
+    references: { images: [{ name: 'ref.png' }], videos: [], audios: [{ name: 'voice.mp3' }] },
+    W: 768,
+    H: 1344,
+    frames: 124,
+  }, settings);
+
+  assert.equal(graph.audio_vae.class_type, 'VAELoader');
+  assert.deepEqual(graph.audio_vae.inputs.vae_name, 'minimax_h3_audio_vae_fp32.safetensors');
+  assert.deepEqual(graph.condition.inputs.audio_vae, ['audio_vae', 0]);
+  assert.deepEqual(graph.decode_audio.inputs.vae, ['audio_vae', 0]);
+  assert.deepEqual(graph.video.inputs.audio, ['decode_audio', 0]);
 });

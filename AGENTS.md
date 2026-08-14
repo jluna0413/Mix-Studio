@@ -41,7 +41,6 @@ docs/superpowers/plans/   old planning docs (gitignored)
 | SCAIL 2 | `buildAnimateScail` (+ chunk/infinity variants in `lib/video-workflows`) | SAM3 tracks driving video + ref, WanSCAILToVideo |
 | Upscales | `buildUpscale` / `lib/upscale-workflows` | SeedVR2 / Ultimate SD |
 | Composite | `/api/composite` route | ImageStitch side-by-side, per-frame |
-
 Enhancement passes: LTX enhances **in-graph** (`TextGenerateLTX2Prompt` / `TextGenerate` with image input); Krea2/Wan/SCAIL enhance via a **separate server-side job** (`enhancePrompt`, `wanEnhance` — two-pass with `<final_prompt>` sentinel + `cleanEnhancedText`, because Qwen3-VL leaks its reasoning otherwise).
 
 ## Hard-won gotchas (do not relearn these the expensive way)
@@ -65,6 +64,15 @@ Enhancement passes: LTX enhances **in-graph** (`TextGenerateLTX2Prompt` / `TextG
 - **NEVER run destructive tests against live data.** A profile-deletion smoke test once wiped the owner's entire gallery; it was recovered from ComfyUI outputs. Destructive routes require server-side typed confirmation (`confirmName`) by design — keep it that way. Verify with read-only checks; use throwaway fixtures only, and never assume db state (other profiles/folders may exist).
 - **Backups**: `backupDb()` runs at boot + every 30 min (last 40 in `data/backups/`), plus `pre-delete` snapshots. Deleted-profile media goes to `data/trash/`, never unlinked.
 - Tests: `node --test` (from repo root). All lib modules are covered; keep new logic in `lib/` with a test where practical.
+
+## MCP / agent surface (`lib/mcp/`, off by default)
+
+- `settings.mcp.enabled` defaults to **false**; `/mcp` returns 404 until an owner turns it on, so existing installs are unaffected.
+- **MCP never inherits loopback auto-trust.** `currentProfile()` hands localhost the Owner profile; `lib/mcp/auth.js` deliberately does not, and requires a bearer agent token on every request. Do not "simplify" this by reusing `currentProfile`.
+- Tools dispatch to the **real** `/api/*` routes via `lib/mcp/dispatch.js` (synthetic req/res, `req.mcpProfile` forces the agent's profile). Never re-implement a route's clamps in a tool — that is how the two surfaces drift.
+- Risk tiers `low|medium|high` + capabilities gate visibility, not just execution. `admin` and `crossProfile:read` also need enabling in `settings.mcp.capabilities`. High-risk tools require a typed confirmation, same as `confirmName`.
+- `GET /api/jobs/:id` (`lib/job-status.js`) resolves live Map → recent-outcome ring → `db.items`. A 404 means "look in the gallery", **not** "the job failed" — the in-memory state does not survive a restart.
+- Full details in `docs/mcp.md`.
 
 ## Frontend conventions (public/app.js)
 

@@ -141,7 +141,7 @@ test('server intercepts execution errors for image input support', () => {
 });
 
 test('server applies offload config to edit/T2I generation jobs', () => {
-  assert.match(serverJs, /applyOffloadToGraph\(graph, getOffloadConfig\(p\.gpuVendor, p\.vramGb\)\)/);
+  assert.match(serverJs, /applyOffloadToGraph\(graph, getOffloadConfig\(p\.gpuVendor, p\.vramGb, p\.vramFreeGb\)\)/);
 });
 
 test('server sets gpuVendor and vramGb on params in the generate route', () => {

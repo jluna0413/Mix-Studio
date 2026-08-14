@@ -9,12 +9,14 @@ const {
   configuredVideoEngineCapability,
   dependencyComponentBlock,
   ltxRefinePreflight,
+  ltxVramEstimate,
   videoEngineCapabilities,
 } = require('../lib/generation-capabilities');
 
 const apple = { gpuVendor: 'apple', gpuBackend: 'mps', vramGb: 64 };
 const nvidia = { gpuVendor: 'nvidia', gpuBackend: 'cuda', vramGb: 24 };
 const amd = { gpuVendor: 'amd', gpuBackend: 'rocm', vramGb: 24 };
+const b70 = { gpuVendor: 'intel', gpuBackend: 'xpu', vramGb: 32, vramFreeGb: 18 };
 
 test('Apple Metal exposes BF16 LTX and disables curated FP8 video families', () => {
   const capabilities = videoEngineCapabilities(apple);
@@ -54,6 +56,39 @@ test('LTX refine preflight catches the reported large Apple request before queue
 
   assert.equal(ltxRefinePreflight({ width: 1280, height: 1280, frames: 201, fps: 25, profile: apple }).ok, true);
   assert.equal(ltxRefinePreflight({ width: 1600, height: 896, frames: 273, fps: 25, profile: nvidia }).ok, true);
+});
+
+test('ltxVramEstimate returns higher stage2 latent for same resolution but stage1 includes text encoder', () => {
+  const s1 = ltxVramEstimate(1280, 720, 121, 1);
+  const s2 = ltxVramEstimate(1280, 720, 121, 2);
+  assert.ok(s2 > ltxVramEstimate(1280, 720, 121, 1) * 0.5, 'stage2 latent is 4x stage1 latent');
+  assert.ok(ltxVramEstimate(1920, 1080, 121, 2) > ltxVramEstimate(1280, 720, 121, 2), 'higher res needs more VRAM');
+  assert.ok(ltxVramEstimate(1280, 720, 241, 2) > ltxVramEstimate(1280, 720, 121, 2), 'more frames need more VRAM');
+});
+
+test('ltxRefinePreflight rejects a 4K 20s refine on a simulated 16GB GPU', () => {
+  const result = ltxRefinePreflight({ width: 1920, height: 1080, frames: 501, fps: 25, profile: { gpuVendor: 'nvidia', vramFreeGb: 16 } });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /exceeds available VRAM/);
+});
+
+test('ltxRefinePreflight accepts a 1280x720 10s refine on a simulated 32GB GPU', () => {
+  const result = ltxRefinePreflight({ width: 1280, height: 720, frames: 251, fps: 25, profile: { gpuVendor: 'nvidia', vramFreeGb: 32 } });
+  assert.equal(result.ok, true);
+});
+
+test('ltxRefinePreflight flags needsLowVram when estimate is above 85% threshold', () => {
+  const result = ltxRefinePreflight({ width: 1280, height: 720, frames: 121, fps: 25, profile: { gpuVendor: 'intel', vramFreeGb: 28 } });
+  assert.equal(result.ok, true);
+  assert.equal(result.needsLowVram, true);
+  assert.ok(result.requiredGb > result.vramFreeGb * 0.85);
+  assert.ok(result.requiredGb <= result.vramFreeGb);
+});
+
+test('ltxRefinePreflight skips VRAM gate when vramFreeGb is missing', () => {
+  const result = ltxRefinePreflight({ width: 1920, height: 1080, frames: 501, fps: 25, profile: { gpuVendor: 'nvidia' } });
+  assert.equal(result.ok, true);
+  assert.equal(result.needsLowVram, undefined);
 });
 
 test('video UI consumes server capability gating', () => {

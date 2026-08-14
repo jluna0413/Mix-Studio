@@ -2745,7 +2745,13 @@ html:-webkit-full-screen { background: #000; }
     opacity 180ms ease,
     visibility 0s linear 280ms;
 }
-.res-body-inner { min-height: 0; overflow: hidden; }
+.res-body-inner {
+  min-height: 0;
+  overflow: hidden;
+  overflow-y: auto;
+  max-height: min(48dvh, 420px);
+  padding-right: 4px;
+}
 .res-panel.expanded .res-body {
   grid-template-rows: 1fr;
   margin-top: 12px;
