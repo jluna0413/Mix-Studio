@@ -51,7 +51,7 @@ typically VRAM exhaustion or a TDR-style reset, not a graph error.
 
 ---
 
-## 3. Confirmed bug: `h3R2V` escalation is dead code
+## 3. Confirmed bug: `h3R2V` escalation is dead code — **FIXED (`655b131`)**
 
 `lib/offload-config.js:27`
 
@@ -62,7 +62,7 @@ function getOffloadConfig(gpuVendor, vramGb = 0, options = {}) {
   if (h3R2V && vram > 0 && vram <= 48) {     // line 42 — NEVER REACHED
 ```
 
-Every call site passes the wrong third argument, or none:
+Every call site passed the wrong third argument, or none:
 
 ```js
 server.js:4547  getOffloadConfig(p.gpuVendor, p.vramGb, p.vramFreeGb)   // number, not {options}
@@ -71,15 +71,40 @@ server.js:9357  getOffloadConfig(...gpuVendor, ...vramGb)               // omitt
 server.js:9584  getOffloadConfig(vGpuVendor, vGpuVramGb)                // omitted
 ```
 
-`grep h3R2V` across `lib/` + `server.js` finds **no caller** that sets it.
-Verified: the branch has never executed.
+`grep h3R2V` across `lib/` + `server.js` found **no caller** that set it.
+Verified: the branch had never executed.
 
 - **Impact on Intel:** none directly — Intel returns early at line 37 with
   sequential offload always on.
-- **Impact on NVIDIA ≤48 GB:** the intended OOM safety net for H3 R2V has
+- **Impact on NVIDIA ≤48 GB:** the intended OOM safety net for H3 R2V had
   never once run.
-- **Secondary smell:** `vramFreeGb` is passed as if it were consumed. It is
-  silently ignored. Free VRAM never influences offload decisions.
+
+### Resolution (Phase 2, commit `655b131`)
+
+1. The video/animate path now passes `{ h3R2V: engine === 'h3' }` — derived
+   from the engine, so non-H3 engines are unaffected.
+2. The two image paths dropped the stray `vramFreeGb` argument. Image
+   generation never builds an H3 graph, so no escalation applies. **`vramFreeGb`
+   itself was kept** — `lib/generation-capabilities.js` uses it for real
+   budgeting; only the misuse in this argument slot was wrong.
+3. `getOffloadConfig` now guards the options slot. A latent crash was found
+   *by the new test*, not by inspection: `= {}` defaults on `undefined` but
+   **not** `null`, so `getOffloadConfig(v, g, null)` threw
+   `Cannot read properties of null (reading 'h3R2V')`.
+
+**Verification:** 11 new tests (7 unit against the real export, 4 call-site
+guards). Both fixes proven load-bearing by reverting each in turn — removing the
+call-site `h3R2V` fails call-site tests 3 & 4; removing the null guard fails unit
+test 7. Suite: **1315 pass, 0 fail**.
+
+**Bonus finding:** `test/edit-image-input.test.js` asserted the *exact buggy
+string* including `p.vramFreeGb`, so the test suite was actively pinning the bug
+in place. Rewritten to assert intent rather than formatting. Worth watching for
+this pattern elsewhere — a test that pins formatting can lock in a defect.
+
+**Note for Phase 3:** `lib/generation-capabilities.js:150-160` already contains
+VRAM budgeting logic (`vramFreeGb`, `lowVramThreshold`, `requiredGb`). Phase 3
+should extend that rather than build a parallel estimator.
 
 ---
 
