@@ -56,6 +56,7 @@ const {
   h3ReferenceVariant,
   h3TurboCompatibility,
   h3VariantSettingDefaults,
+  normalizeH3ClipVariant,
   normalizeH3FrameVariant,
   normalizeH3ReferenceVariant,
 } = require('./lib/h3-model-variants');
@@ -607,6 +608,7 @@ function normalizeSettings(s) {
   s.vramProfile = normalizeVramProfile(s.vramProfile);
   s.h3FrameModelVariant = normalizeH3FrameVariant(s.h3FrameModelVariant);
   s.h3ReferenceModelVariant = normalizeH3ReferenceVariant(s.h3ReferenceModelVariant);
+  s.h3ClipVariant = normalizeH3ClipVariant(s.h3ClipVariant);
   s.h3TurboLora = String(s.h3TurboLora || '').trim() || DEFAULT_H3_TURBO_LORA;
   s.h3RefTurboLora = String(s.h3RefTurboLora || '').trim() || H3_TURBO_LORAS.referenceRecommended;
   s.hfEndpoint = normalizeHuggingFaceEndpoint(s.hfEndpoint);
@@ -7727,7 +7729,15 @@ async function handleApi(req, res, url) {
       ? body.modelVariants.krea2
       : '';
     const krea2Variant = effectiveKrea2Variant(requestedKrea2Variant, settings);
-    const modelVariants = { krea2: krea2Variant };
+    // H3 text-encoder variant. Honour an explicit request, otherwise fall back
+    // to the persisted setting, otherwise 'auto' (which lets the installer pick
+    // per-vendor — Intel Arc needs nvfp4 because int8_convrot's ConvRot kernels
+    // are CUDA-only).
+    const requestedH3Variant = body.modelVariants && typeof body.modelVariants === 'object'
+      ? body.modelVariants.h3
+      : '';
+    const h3Variant = normalizeH3ClipVariant(requestedH3Variant || settings.h3ClipVariant);
+    const modelVariants = { krea2: krea2Variant, h3: h3Variant };
     const components = [...new Set(requested.filter((id) => Object.prototype.hasOwnProperty.call(DEPENDENCY_COMPONENTS, id)))];
     if (!components.length) return json(res, 400, { error: 'Choose at least one missing model or node group to install.' });
     const hardwareProfile = setupHardwareProfile(await getSetupHardwareInfo());
