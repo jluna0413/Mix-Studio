@@ -1,0 +1,19 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================================
+;  REVERT: restore TDR to the disabled state this machine had before
+; ============================================================================
+;  Only use this if re-enabling TDR caused a problem — for example if long
+;  generations are being killed mid-run by the 10 second timeout.
+;
+;  Better first step than reverting: raise TdrDelay (e.g. 30 or 60) while
+;  KEEPING TdrLevel = 3, so hang detection stays on but tolerates longer
+;  kernels. Reverting to TdrLevel = 0 restores the condition where any GPU
+;  hang takes down the whole machine.
+;
+;  REQUIRES A REBOOT to take effect.
+; ============================================================================
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers]
+"TdrLevel"=dword:00000000
+"TdrDelay"=dword:00000078

@@ -1,0 +1,30 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================================
+;  Re-enable GPU Timeout Detection & Recovery (TDR)
+; ============================================================================
+;  WHY: this machine currently has TdrLevel = 0, which switches OFF GPU hang
+;  detection entirely. When the GPU wedges, Windows never resets it and simply
+;  waits — turning what should be a ~2 second recoverable driver reset into a
+;  full-system hang. Evidence: 38 Event-41 hard crashes vs 1 clean shutdown in
+;  14 days, with BugcheckCode 0 and no crash dump.
+;
+;  WHAT THIS SETS:
+;    TdrLevel = 3   detect a hung GPU and recover the driver (Windows default)
+;    TdrDelay = 10  wait 10 seconds before declaring a hang
+;
+;  Why 10 and not the 2 second default: heavy diffusion/AI kernels can
+;  legitimately block the GPU for several seconds. 2s risks killing valid work;
+;  10s tolerates real inference while still catching a genuine wedge.
+;
+;  TRADEOFF: when TDR fires it kills the running GPU job, so a long generation
+;  that trips it is lost. That is strictly better than losing the whole session
+;  to a hard hang.
+;
+;  REQUIRES A REBOOT to take effect.
+;  To undo, run tdr-restore-disabled.reg (also in this folder).
+; ============================================================================
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers]
+"TdrLevel"=dword:00000003
+"TdrDelay"=dword:0000000a
