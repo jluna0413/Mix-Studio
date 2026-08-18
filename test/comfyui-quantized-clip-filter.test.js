@@ -41,9 +41,10 @@ const QUANT_SUFFIXES = [
  *
  * @param {string[]} checkpointKeys every key present in the checkpoint
  * @param {Set<string>} modelKeys keys the model's state_dict() exposes
+ * @param {Set<string>} shapeMismatches enumerated keys whose shape disagrees
  * @returns {string[]} keys that survive the filter
  */
-function filterStateDictKeys(checkpointKeys, modelKeys) {
+function filterStateDictKeys(checkpointKeys, modelKeys, shapeMismatches = new Set()) {
   const quantPrefixes = new Set();
   for (const key of checkpointKeys) {
     if (key.endsWith('.comfy_quant')) {
@@ -64,7 +65,13 @@ function filterStateDictKeys(checkpointKeys, modelKeys) {
       kept.push(key); // quantized: bypass the shape filter
       continue;
     }
-    if (modelKeys.has(key)) kept.push(key); // plain: shape-filtered as before
+    // A key the model does not enumerate is NOT necessarily unwanted: a lazy
+    // ops.Linear (quantized OR plain BF16, as in qwen3vl's non-quantized
+    // vision tower) registers no `weight` until load populates it. Dropping
+    // these left visual.blocks.N.attn.qkv with weight=None and crashed the
+    // image path. Only shape-filter keys the model actually enumerates.
+    if (!modelKeys.has(key)) kept.push(key);
+    else if (!shapeMismatches.has(key)) kept.push(key);
   }
   return kept;
 }
@@ -97,8 +104,14 @@ function buildCheckpointKeys(layerCount = 2) {
 }
 
 /**
- * The model's state_dict() omits every quantized weight (lazy init) but does
- * expose plain params such as norms and the vision tower.
+ * The model's state_dict() omits every LAZY param — which is both the
+ * quantized text projections AND the non-quantized BF16 vision tower (both are
+ * ops.Linear, which registers no `weight` until load populates it). Only truly
+ * eager params (norms, embeddings) are enumerated.
+ *
+ * Getting this right matters: an earlier version of this helper wrongly
+ * exposed the vision keys, so the "vision tower preserved" test passed for the
+ * wrong reason while the real loader was silently dropping them.
  */
 function buildModelKeys(checkpointKeys) {
   const quantPrefixes = new Set(
@@ -109,6 +122,10 @@ function buildModelKeys(checkpointKeys) {
   return new Set(
     checkpointKeys.filter((key) => {
       if (key.endsWith('.comfy_quant') || key.endsWith('.weight_scale')) return false;
+      // Lazy ops.Linear layers are absent from state_dict(). In this
+      // checkpoint that is every quantized projection plus the whole
+      // (non-quantized) vision tower.
+      if (key.startsWith('visual.')) return false;
       const prefix = key.endsWith('.weight')
         ? key.slice(0, -'.weight'.length)
         : key.endsWith('.bias') ? key.slice(0, -'.bias'.length) : key;
@@ -150,27 +167,53 @@ test('quant metadata and scales are preserved', () => {
   assert.ok(kept.has('model.embed_tokens.comfy_quant'));
 });
 
-test('non-quantized keys still shape-filter against the model', () => {
-  const checkpointKeys = buildCheckpointKeys(1).concat(['model.bogus.orphan.weight']);
-  const modelKeys = buildModelKeys(buildCheckpointKeys(1)); // orphan absent
-  const kept = new Set(filterStateDictKeys(checkpointKeys, modelKeys));
-
-  assert.ok(kept.has('model.layers.0.input_layernorm.weight'), 'known plain key kept');
-  assert.ok(!kept.has('model.bogus.orphan.weight'), 'unknown plain key dropped');
-});
-
-test('non-quantized vision tower keys are preserved', () => {
+test('enumerated keys with mismatched shapes are still dropped', () => {
+  // This is the filter's original purpose (klein T5 compatibility): when the
+  // model DOES enumerate a key and the shapes disagree, drop it. Absence is
+  // no longer treated as a mismatch, but a real mismatch must still be caught.
   const checkpointKeys = buildCheckpointKeys(1);
   const modelKeys = buildModelKeys(checkpointKeys);
-  const kept = new Set(filterStateDictKeys(checkpointKeys, modelKeys));
+  const mismatched = 'model.layers.0.input_layernorm.weight';
+  assert.ok(modelKeys.has(mismatched), 'precondition: model enumerates this key');
 
+  const kept = new Set(
+    filterStateDictKeys(checkpointKeys, modelKeys, new Set([mismatched]))
+  );
+  assert.ok(!kept.has(mismatched), 'shape-mismatched enumerated key must be dropped');
+  assert.ok(kept.has('model.layers.0.post_attention_layernorm.weight'), 'matching key kept');
+});
+
+test('non-quantized LAZY vision weights survive (i2v crash regression)', () => {
+  // The bug: visual.blocks.N.attn.qkv is a lazy ops.Linear but is NOT
+  // quantized (no .comfy_quant sibling), so it got neither the quant bypass
+  // nor a state_dict entry — and was silently dropped. weight stayed None and
+  // the image path died at qwen35.py:490 self.qkv(x) -> ops.py:393
+  // s.weight.device with "'NoneType' object has no attribute 'device'".
+  //
+  // Text-to-video never runs the vision tower, which is exactly why t2v
+  // worked and image-to-video crashed on the same checkpoint.
+  const checkpointKeys = buildCheckpointKeys(1);
+  const modelKeys = buildModelKeys(checkpointKeys);
+
+  // Precondition: the model genuinely does not enumerate the vision weight.
+  assert.ok(
+    !modelKeys.has('visual.blocks.0.attn.qkv.weight'),
+    'precondition: lazy vision Linear must be absent from model state_dict'
+  );
+  // Precondition: it is NOT rescued by the quantized bypass.
+  assert.ok(
+    !checkpointKeys.includes('visual.blocks.0.attn.qkv.comfy_quant'),
+    'precondition: vision tower is not quantized'
+  );
+
+  const kept = new Set(filterStateDictKeys(checkpointKeys, modelKeys));
   for (const key of [
     'visual.blocks.0.attn.qkv.weight',
     'visual.blocks.0.attn.qkv.bias',
     'visual.blocks.0.mlp.linear_fc1.weight',
     'visual.merger.linear_fc1.weight',
   ]) {
-    assert.ok(kept.has(key), `vision tower key must be preserved: ${key}`);
+    assert.ok(kept.has(key), `lazy vision key must be preserved: ${key}`);
   }
 });
 

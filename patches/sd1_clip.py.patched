@@ -340,7 +340,21 @@ class SDClipModel(torch.nn.Module, ClipTokenWeightEncoder):
                 new_sd[k] = v
                 continue
             m = model_sd.get(k)
-            if m is not None and v.shape == m.shape:
+            if m is None:
+                # The model does not enumerate this key. That does NOT mean the
+                # key is unwanted: a lazy `ops.Linear` (quantized OR plain
+                # BF16, as in qwen3vl's non-quantized vision tower) registers
+                # no `weight` in state_dict() until _load_from_state_dict
+                # populates it. Dropping these left visual.blocks.N.attn.qkv
+                # with weight=None, which crashed the image path with
+                # "'NoneType' object has no attribute 'device'" while the
+                # text-only path (vision tower never invoked) appeared fine.
+                # Genuinely unexpected keys are harmless here because the
+                # load below uses strict=False.
+                new_sd[k] = v
+            elif v.shape == m.shape:
+                # Enumerated by the model: keep only on exact shape match
+                # (this is the original klein T5 mismatch filter).
                 new_sd[k] = v
         return self.transformer.load_state_dict(new_sd, strict=False, assign=getattr(self, "can_assign_sd", False))
 

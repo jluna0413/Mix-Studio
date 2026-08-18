@@ -96,16 +96,93 @@ Missing weight for layer model.layers.* : 0
 NoneType ... 'device' errors            : 0
 ```
 
-## Note on `visual.*` warnings — benign
-Roughly 116 `Missing weight for layer visual.*` warnings still appear. These are
-**cosmetic, not a fault**:
+## The `visual.*` warnings were NOT benign — second bug, image path
 
-- The vision tower is **not quantized** — 0 `comfy_quant` keys under `visual.*`.
-- Checkpoint carries 351 `visual.*` keys; the model exposes 235.
-- **116 keys exist only in the checkpoint** (this build's vision tower doesn't consume them).
-- **0 keys the model expects are unfilled**, and **0 shape mismatches**.
+> **Correction.** An earlier version of this document claimed the ~116
+> `Missing weight for layer visual.*` warnings were cosmetic. **That was wrong**,
+> and the wrong call cost real debugging time. Those warnings were the bug
+> announcing itself.
 
-The vision tower loads completely and correctly. Ignore these warnings.
+### Symptom
+Text-to-video worked. Image-to-video crashed with the *same* error as before:
+
+```
+AttributeError: 'NoneType' object has no attribute 'device'   (MiniMaxH3ImageToVideo)
+```
+
+### Why the first fix missed it
+The first patch bypassed the shape filter for **quantized** layers, keyed off a
+`<prefix>.comfy_quant` sibling. But qwen3vl's checkpoint is **mixed precision**:
+
+| Tower | Quantized? | `.comfy_quant` sibling | dtype |
+|---|---|---|---|
+| Text (`model.layers.*`) | yes (NVFP4) | present | U8 + scales |
+| **Vision (`visual.*`)** | **no** | **absent** | **BF16** |
+
+The vision `qkv` is *also* a lazy `ops.Linear` — it registers no `weight` in
+`state_dict()` until load populates it — but it has no `comfy_quant` key, so it
+got **neither** the quant bypass **nor** a `state_dict` entry:
+
+```python
+m = model_sd.get(k)          # None: lazy layer, not enumerated
+if m is not None and ...:    # False -> key silently DROPPED
+```
+
+`weight` stayed `None`, and the first image forward pass died:
+
+```
+qwen35.py:490   self.qkv(x)            # vision attention
+ops.py:1338     forward_comfy_cast_weights
+ops.py:393      s.weight.device        # s.weight is None
+```
+
+**Only the image path runs the vision tower.** That is precisely why t2v passed
+and i2v failed on the identical checkpoint — and why "swap the text encoder"
+looked like a fix when it never was.
+
+### The fix
+Treat *absence* from `state_dict()` as "not enumerated", not as "unwanted".
+Shape-filter only the keys the model actually enumerates:
+
+```python
+m = model_sd.get(k)
+if m is None:
+    new_sd[k] = v          # lazy layer (quantized OR plain BF16): keep
+elif v.shape == m.shape:
+    new_sd[k] = v          # enumerated: original klein T5 mismatch filter
+```
+
+`load_state_dict(..., strict=False)` makes genuinely unexpected keys harmless.
+
+### Verification (Arc B70, fresh server, patched loader)
+
+Differential probe — two graphs identical except `first_frame`:
+
+| Case | `first_frame` | Before fix | After fix |
+|---|---|---|---|
+| A (t2v) | absent | success | success |
+| B (i2v) | connected | **`NoneType` crash** | **success** |
+
+Direct load assertion through `comfy.sd.load_clip`:
+
+```
+vision blocks                 : 27
+blocks with real qkv weight   : 27
+blocks still broken           : 0
+block 0 qkv.weight            : shape=(3456, 1152) dtype=torch.bfloat16
+Missing weight for layer visual.* : 0   (was ~116)
+Missing weight for layer model.*  : 0
+NoneType ... 'device' errors      : 0
+```
+
+The ~116 warnings disappearing is the direct confirmation: those weights are now
+loaded instead of dropped.
+
+### Lesson
+A warning that only fires on a code path you haven't exercised is not benign —
+it is untested. t2v success was used as evidence about a tower t2v never runs.
+Regression coverage: `test/comfyui-quantized-clip-filter.test.js` (test 4 fails
+against the old logic — verified by reverting).
 
 ## Working configuration
 ```
