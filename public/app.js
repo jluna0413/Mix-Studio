@@ -29851,7 +29851,7 @@ const SETTINGS_SERVER_CONTROL_IDS = new Set([
   'setLtxCameraLora', 'setLtxMotionEnhancerLora', 'setLtxMotionTrackLora', 'setLtxCinemagraphLora', 'setLtxEditLora', 'setLtxDirectorLora', 'setLtxTe',
   'setLtxGemmaLora', 'setLtxUps', 'setFaceIdLora', 'setFaceIdDistilled',
   'setLtxMsrLora', 'setLtxPixelUpscale2xLora', 'setLtxPixelUpscale4xLora', 'setLtxTextProjection', 'setLtxStoryboardLora',
-  'setH3FrameModelVariant', 'setH3TurboSetup', 'setH3ReferenceModelVariant',
+  'setH3ClipVariant', 'setH3FrameModelVariant', 'setH3TurboSetup', 'setH3ReferenceModelVariant',
   'setH3Unet', 'setH3RefUnet', 'setH3Bf16Unet', 'setH3Bf16RefUnet', 'setH3DynTimeRefUnet', 'setH3DynTimeRefHqUnet',
   'setH3TurboLora', 'setH3RefTurboLora', 'setH3Clip', 'setH3VideoVae', 'setH3AudioVae',
   'setWanHigh', 'setWanLow', 'setWanClip', 'setWanVae', 'setWanHighLora',
@@ -30019,6 +30019,7 @@ function settingsPayload() {
     ltxPixelUpscale4xLora: $('#setLtxPixelUpscale4xLora').value,
     ltxTextProjection: $('#setLtxTextProjection').value,
     ltxStoryboardLora: $('#setLtxStoryboardLora').value,
+    h3ClipVariant: $('#setH3ClipVariant').value,
     h3FrameModelVariant: $('#setH3FrameModelVariant').value,
     h3ReferenceModelVariant: $('#setH3ReferenceModelVariant').value,
     h3Unet: $('#setH3Unet').value,
@@ -33958,6 +33959,7 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setLtxPixelUpscale4xLora').value = s.ltxPixelUpscale4xLora || '';
     $('#setLtxTextProjection').value = s.ltxTextProjection || '';
     $('#setLtxStoryboardLora').value = s.ltxStoryboardLora || '';
+    $('#setH3ClipVariant').value = s.h3ClipVariant || 'auto';
     $('#setH3FrameModelVariant').value = s.h3FrameModelVariant || 'standard';
     $('#setH3ReferenceModelVariant').value = s.h3ReferenceModelVariant || 'standard';
     $('#setH3Unet').value = s.h3Unet || '';
@@ -36154,7 +36156,10 @@ $('#dependencyInstallMissing').addEventListener('click', async () => {
     const result = await api('/api/dependencies/install', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         components,
-        modelVariants: { krea2: $('#setKrea2ModelVariant').value },
+        modelVariants: {
+          krea2: $('#setKrea2ModelVariant').value,
+          h3: $('#setH3ClipVariant')?.value || 'auto',
+        },
       }),
     });
     if (lastMeta && lastMeta.dependencies) lastMeta.dependencies.install = result.install;
@@ -36171,7 +36176,10 @@ $('#dependencyRepairMissing').addEventListener('click', async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         components,
         repair: true,
-        modelVariants: { krea2: $('#setKrea2ModelVariant').value },
+        modelVariants: {
+          krea2: $('#setKrea2ModelVariant').value,
+          h3: $('#setH3ClipVariant')?.value || 'auto',
+        },
       }),
     });
     if (lastMeta && lastMeta.dependencies) lastMeta.dependencies.install = result.install;

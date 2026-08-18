@@ -540,6 +540,9 @@ const DEFAULT_SETTINGS = {
   h3Unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
   h3RefUnet: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
   h3Clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+  // 'auto' resolves per-vendor at install time. Intel Arc must get nvfp4-awq:
+  // the int8-convrot encoder needs CUDA-only ConvRot kernels and fails on XPU.
+  h3ClipVariant: 'auto',
   h3VideoVae: 'minimax_h3_video_vae_fp16.safetensors',
   h3AudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
   h3TurboLora: DEFAULT_H3_TURBO_LORA,
@@ -7315,7 +7318,7 @@ async function handleApi(req, res, url) {
     const changesLocalPromptAi = ['localPromptAiClip', 'localPromptAiClipType']
       .some((key) => typeof body[key] === 'string' && body[key].trim() !== String(settings[key] || ''));
     const changesH3ModelVariant = [
-      'h3FrameModelVariant', 'h3ReferenceModelVariant', 'h3Unet', 'h3RefUnet',
+      'h3ClipVariant', 'h3FrameModelVariant', 'h3ReferenceModelVariant', 'h3Unet', 'h3RefUnet',
       'h3Bf16Unet', 'h3Bf16RefUnet', 'h3DynTimeRefUnet', 'h3DynTimeRefHqUnet',
       'h3TurboLora', 'h3RefTurboLora', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
     ]

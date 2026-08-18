@@ -2673,6 +2673,15 @@
             <summary class="settings-model-summary"><span class="settings-model-name">MiniMax H3</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></summary>
             <div class="settings-model-body">
             <p class="settings-default-note">The standard pruned INT8 models remain the default. Full BF16 needs unusually large memory; DynTime modifies three ComfyUI core files only after explicit setup and keeps verified backups.</p>
+            <div class="field"><label for="setH3ClipVariant">Text encoder precision</label>
+              <select id="setH3ClipVariant">
+                <option value="auto">Automatic · match your GPU</option>
+                <option value="nvfp4-awq">NVFP4 AWQ · 14.6 GB · works on all GPUs</option>
+                <option value="int8-convrot">INT8 ConvRot · 27.1 GB · NVIDIA only</option>
+                <option value="int8-convrot-uncensored">INT8 ConvRot uncensored · NVIDIA only</option>
+              </select>
+              <small id="setH3ClipVariantHelp" class="field-help">INT8 ConvRot needs CUDA-only kernels and fails on Intel Arc. Automatic picks NVFP4 there.</small>
+            </div>
             <div class="field"><label for="setH3FrameModelVariant">Text + Frames model</label>
               <select id="setH3FrameModelVariant">
                 <option value="standard">Standard · pruned INT8 · 21 GB</option>
