@@ -1,0 +1,312 @@
+# H3 Workflow Resource Management — Diagnosis & Plan
+
+**Status:** DIAGNOSIS ONLY. No code changed. Awaiting approval.
+**Date:** 2026-08-18
+**Trigger:** Machine hard-crashed running H3 image-to-video on Intel Arc Pro B70 (32 GB).
+
+---
+
+## 1. What happened, in order
+
+| # | Event | Evidence |
+|---|---|---|
+| 1 | H3 i2v failed with `'NoneType' object has no attribute 'device'` | job `20fba4f3` |
+| 2 | Root cause found: vision-tower weights dropped by `sd1_clip.py` filter | differential probe, 27/27 blocks |
+| 3 | Fixed (`c25f644`); probe case B went crash → success | live verification |
+| 4 | User submitted real job → got **past** H3 conditioning, died in sampler | `SamplerCustomAdvanced -> RuntimeError: level_zero ... error 20 (UR_RESULT_ERROR_DEVICE_LOST)` |
+| 5 | ComfyUI process died; then the **machine crashed** | port 49000 dead; reboot 15:55:39 |
+
+**The fix worked.** The failure moved from model loading to the sampler — a
+different, deeper stage. But it exposed a resource problem.
+
+### Uncomfortable but important: my fix increased VRAM pressure
+
+Before `c25f644`, the loader silently dropped **351 `visual.*` tensors** — they
+were never allocated. Now they load correctly. So the job progresses further and
+allocates more. The crash is not a regression in correctness; it is the workload
+finally running for real against a budget nobody was enforcing.
+
+---
+
+## 2. The core resource problem
+
+Models the H3 i2v graph loads, measured on disk:
+
+| Model | Size |
+|---|---|
+| `minimax_h3_fl2va_pruned_int8_convrot` (DiT/UNET) | 19.53 GB |
+| `qwen3vl_32b_minimax_h3_nvfp4_awq` (text+vision CLIP) | 14.60 GB |
+| `minimax_h3_video_vae_fp16` | 4.85 GB |
+| `minimax_h3_audio_vae_fp32` | 0.56 GB |
+| `minimax_h3_turbo_v4_step600_ema` (LoRA) | 0.72 GB |
+| **Total** | **40.28 GB** |
+
+**Against 32 GB of VRAM** — before counting activations, the 124-frame latent,
+attention workspace, or fragmentation. Sequential CPU offload is enabled for
+Intel, which is why anything runs at all, but nothing checks whether the job
+*can* fit before submitting it.
+
+`UR_RESULT_ERROR_DEVICE_LOST` on Arc is the level-zero driver losing the device —
+typically VRAM exhaustion or a TDR-style reset, not a graph error.
+
+---
+
+## 3. Confirmed bug: `h3R2V` escalation is dead code
+
+`lib/offload-config.js:27`
+
+```js
+function getOffloadConfig(gpuVendor, vramGb = 0, options = {}) {
+  const h3R2V = options.h3R2V === true;      // line 30
+  ...
+  if (h3R2V && vram > 0 && vram <= 48) {     // line 42 — NEVER REACHED
+```
+
+Every call site passes the wrong third argument, or none:
+
+```js
+server.js:4547  getOffloadConfig(p.gpuVendor, p.vramGb, p.vramFreeGb)   // number, not {options}
+server.js:4567  getOffloadConfig(p.gpuVendor, p.vramGb, p.vramFreeGb)   // same
+server.js:9357  getOffloadConfig(...gpuVendor, ...vramGb)               // omitted
+server.js:9584  getOffloadConfig(vGpuVendor, vGpuVramGb)                // omitted
+```
+
+`grep h3R2V` across `lib/` + `server.js` finds **no caller** that sets it.
+Verified: the branch has never executed.
+
+- **Impact on Intel:** none directly — Intel returns early at line 37 with
+  sequential offload always on.
+- **Impact on NVIDIA ≤48 GB:** the intended OOM safety net for H3 R2V has
+  never once run.
+- **Secondary smell:** `vramFreeGb` is passed as if it were consumed. It is
+  silently ignored. Free VRAM never influences offload decisions.
+
+---
+
+## 4. Second issue: the UNET is a CUDA-only quant on an Intel GPU
+
+The failing job loaded:
+
+```
+unet_name = minimax_h3_fl2va_pruned_int8_convrot.safetensors
+```
+
+`int8_convrot` is the CUDA-only ConvRot quant format — the exact family that
+broke the text encoder on XPU and drove the switch to `nvfp4_awq`. The CLIP is
+now correctly nvfp4, but **the DiT is still int8_convrot**. This needs
+investigation: it may work (different code path), or it may be doing expensive
+dequant fallbacks, or contributing to the device loss. Unknown, and I will not
+guess.
+
+---
+
+## 5. Crash forensics (Phase 0 — COMPLETE, read-only)
+
+### 5.1 The crash left no dump
+
+Windows System log around the crash:
+
+| Time | Event ID | Provider | Meaning |
+|---|---|---|---|
+| 15:55:42 | 172 | Kernel-Power | power-transition detail |
+| 15:55:42 | **41** | Kernel-Power | "rebooted without cleanly shutting down" |
+| 15:55:58 | 6008 | EventLog | unexpected shutdown recorded |
+
+```
+BugcheckCode : 0
+MEMORY.DMP   : absent
+Minidump     : none
+```
+
+Bugcheck 0 with no dump = Windows never reached the bugcheck writer. A **hard
+hang or power-level reset**, not a trappable driver fault. The GPU driver was
+fine afterwards (`Status: OK`, `32.0.101.8805`).
+
+### 5.2 TDR recovery is DISABLED on this machine — critical
+
+```
+HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers
+    TdrLevel = 0        <-- 0 = TDR DETECTION OFF (default is 3 = recover)
+    TdrDelay = 120      <-- 120 seconds (default is 2)
+```
+
+This is the single most important finding of the investigation.
+
+**What TDR normally does:** if the GPU stops responding for ~2 s, Windows resets
+the driver, kills the offending work, and the machine survives with a brief
+flicker plus an Event 4101 "display driver recovered".
+
+**With `TdrLevel = 0`:** that safety net is switched off. A wedged GPU is never
+reset — the system simply waits, forever. This converts what should be a
+*recoverable stutter* into a **full-system hang**.
+
+That is exactly the observed signature:
+- `UR_RESULT_ERROR_DEVICE_LOST` from level-zero (GPU stopped responding)
+- **zero** Event 4101 TDR-recovery events in 24 h — because detection is off
+- no bugcheck, no dump — nothing trapped it
+- machine hung hard
+
+**Consequence:** on this configuration *any* GPU hang, from any application,
+takes the whole machine down. That is a pre-existing platform setting, not an
+H3 or Mix Studio bug — but it converts every VRAM overcommit into a hard crash
+rather than a caught error, which is why resource management here matters far
+more than on a default system.
+
+### 5.3 This is chronic, not new
+
+14-day shutdown history:
+
+```
+hard crashes (Event 41) : 38
+clean shutdowns (6006)  :  1
+```
+
+**38 hard crashes to 1 clean shutdown.** This long predates today's H3 work and
+predates commit `c25f644`. Two of the 38 recorded a bugcheck code:
+
+| Date | Bugcheck | Name |
+|---|---|---|
+| 8/17 14:23 | 455 = `0x1C7` | `STORE_DATA_STRUCTURE_CORRUPTION` |
+| 8/16 22:40 | 299 = `0x12B` | `FAULTY_HARDWARE_CORRUPTED_PAGE` |
+
+`0x12B` is a **hardware-level** indicator (single-bit memory/bus error). No
+WHEA-Logger events were recorded, so it is not conclusive on its own.
+
+RAM checked and looks sane: 4 × 32 GB = 128 GB, `F4-2666C18-32GVK`, running at
+rated 2667 MT/s with no overclock (`Speed == ConfiguredClockSpeed`).
+
+**Read carefully:** 38 crashes in 14 days with `TdrLevel = 0` is most plausibly
+the TDR setting turning ordinary GPU hangs into hard resets — this machine runs
+heavy GPU work daily. But `0x12B` means underlying hardware cannot be ruled out
+and deserves a memory test independently of anything in this repo.
+
+---
+
+## 6. What is NOT yet known
+
+Being explicit about the limits of this diagnosis:
+
+- **No VRAM telemetry from the crash.** I deleted `_comfy_restart.log` during
+  cleanup before the fatal run — a mistake. There is no peak-allocation trace.
+  (Fixed going forward: see §6.1.)
+- **No crash dump** (see §5.1), so no kernel-side evidence of the hang cause.
+- **Whether the crash is VRAM exhaustion specifically**, versus the
+  int8_convrot DiT on XPU, or 124 frames at 608×384 simply being too large.
+  `DEVICE_LOST` is a symptom, not a cause.
+- **Whether `0x12B` indicates real failing hardware** or is a downstream
+  artifact of the GPU hangs.
+- Whether reducing frames/resolution alone makes it pass.
+
+### 6.1 Phase 0 deliverables (in place, not yet exercised)
+
+| Artifact | Purpose |
+|---|---|
+| `D:\...\ComfyUI\start-comfy-logged.bat` | launches ComfyUI with a **timestamped, append-only** log under `ComfyUI\logs\`; `-u` unbuffered so a hard crash keeps the tail |
+| `D:\...\ComfyUI\vram-monitor.py` | samples `torch.xpu` allocated/reserved/peak to CSV, `flush + fsync` per row so evidence survives a hang |
+
+Both syntax-checked. Neither has been run against the GPU.
+
+---
+
+## 7. Proposed plan (ordered, each step gated)
+
+### Phase 0 — Preserve evidence (no risk)
+1. Check Windows Event Log for the bugcheck / driver TDR around 15:5x.
+2. Confirm Arc driver version + whether a TDR was recorded.
+3. Re-enable persistent ComfyUI logging so the next run leaves a trace.
+
+### Phase 1 — Measure before changing (low risk, no GPU stress)
+4. Instrument a *small* H3 i2v run (short length, low res) with
+   `torch.xpu.max_memory_allocated()` sampling to get a real peak-VRAM curve.
+5. Determine empirically where the ceiling is on this hardware:
+   frames × resolution → peak VRAM.
+
+### Phase 2 — Fix the confirmed bug (small, testable)
+6. Fix the `getOffloadConfig` call sites so `options` is an object and
+   `h3R2V` actually reaches the branch. **TDD:** failing test first proving
+   `h3R2V` is ignored today.
+7. Decide `vramFreeGb`'s fate: either consume it deliberately or remove it
+   from the signature. No silently-ignored parameters.
+
+### Phase 3 — Real resource management (the actual request)
+8. Add an H3 VRAM budget estimator: sum the models the graph will load +
+   estimated latent/activation cost from frames × W × H.
+9. Add a **preflight guard**: when the estimate exceeds the budget, either
+   (a) escalate offload automatically, or (b) refuse with an actionable message
+   ("124 frames at 608×384 needs ~N GB; you have 32 GB — try 97 frames")
+   *before* submitting to ComfyUI. Failing fast beats crashing the machine.
+10. Surface the estimate in the UI so the cost is visible before clicking
+    generate.
+
+### Phase 4 — Investigate the DiT quant
+11. Determine whether `int8_convrot` is safe/performant for the DiT on XPU, and
+    whether an nvfp4 or bf16 DiT variant exists.
+
+---
+
+## 8. Recommendation — REVISED after Phase 0
+
+Phase 0 changed the priority order. The most valuable fix is no longer in this
+repo at all.
+
+### 8.1 Do this first: re-enable TDR (outside Mix Studio)
+
+`TdrLevel = 0` means **any** GPU hang hard-hangs the machine. Restoring the
+default converts today's crash class into a recoverable driver reset:
+
+```
+HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers
+    TdrLevel = 3     (default: detect + recover)
+    TdrDelay = 10    (generous for long AI kernels, but not infinite)
+```
+
+`TdrDelay = 10` rather than the 2 s default: heavy diffusion kernels can
+legitimately block for several seconds, and 2 s risks false resets mid-inference.
+10 s tolerates real work while still catching a genuine wedge.
+
+**This is a system-level registry change requiring a reboot, and it is the
+user's call — I have not made it.** Note the caveat: TDR resets kill the running
+job, so a long generation that trips it is lost. That is still strictly better
+than losing the whole session.
+
+**Why `TdrLevel = 0` may have been set deliberately:** some AI workflows disable
+TDR precisely to stop long kernels being killed. If that was intentional, the
+tradeoff should be a conscious one — `TdrDelay` high with detection ON, rather
+than detection OFF entirely.
+
+### 8.2 Then: rule out hardware
+
+Bugcheck `0x12B FAULTY_HARDWARE_CORRUPTED_PAGE` on 8/16 warrants a memory test
+(`mdsched.exe`, or MemTest86 for a thorough pass) independently of any code here.
+38 crashes in 14 days should not be normalised.
+
+### 8.3 Then, in this repo (unchanged from the original plan)
+
+- **Phase 1** — measure peak VRAM on small runs, step up. Tooling is now in
+  place (§6.1).
+- **Phase 2** — fix the `h3R2V` dead-code bug (safe, TDD-able, no GPU).
+- **Phase 3** — VRAM budget estimator + preflight guard that refuses
+  over-budget jobs with an actionable message.
+- **Phase 4** — investigate the `int8_convrot` DiT on XPU.
+
+**Phase 2 remains safe to start immediately** — it touches no GPU and has a
+clear failing test.
+
+### 8.4 Do NOT do
+
+Re-run the 124-frame 608×384 job to "see if it still fails." With TDR disabled
+that risks another hard crash, and it would produce no new information.
+
+---
+
+## Appendix — verified state at time of writing
+
+```
+Mix Studio HEAD : c25f644 (working tree clean apart from pre-existing untracked)
+Test suite      : 1304 pass, 0 fail
+ComfyUI         : DOWN (not restarted — deliberately, pending approval)
+Mix Studio      : DOWN
+GPU             : Intel Arc Pro B70, driver 32.0.101.8805, Status OK
+Last boot       : 2026-08-18 15:55:39
+H3 i2v fix      : verified working (27/27 vision blocks load; probe B success)
+```
