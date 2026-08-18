@@ -4544,7 +4544,10 @@ async function buildGenerationGraph(p, refNames) {
 
 async function queueGenerationJob(p, profileId, refNames, refinedPrompt = null) {
   const graph = await buildGenerationGraph(p, refNames);
-  applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb, p.vramFreeGb));
+  // NB: the third parameter is an OPTIONS OBJECT, not free VRAM. This used to
+  // pass p.vramFreeGb, which was silently ignored (a number has no .h3R2V).
+  // Image generation never builds an H3 graph, so no escalation applies here.
+  applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb));
   const pid = await queuePrompt(graph, { profileId });
   trackJob(pid, { kind: 'gen', profileId, params: p, graph, refImageNames: refNames, refinedPrompt });
   ensureWs();
@@ -4564,7 +4567,9 @@ async function queueStrengthHuntJob(p, profileId, refNames, refinedPrompt = null
     }), refNames));
   }
   const graph = mergeStrengthHuntGraphs(graphs);
-  applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb, p.vramFreeGb));
+  // Third parameter is an OPTIONS OBJECT (see queueGenerationJob); the previous
+  // p.vramFreeGb argument was silently ignored. LoRA hunt is image-only.
+  applyOffloadToGraph(graph, getOffloadConfig(p.gpuVendor, p.vramGb));
   const pid = await queuePrompt(graph, { profileId });
   trackJob(pid, {
     kind: 'loraHunt', profileId, params: Object.assign({}, p, { batch: 1, postUpscale: undefined }),
@@ -9354,7 +9359,15 @@ async function handleApi(req, res, url) {
         : engine === 'eros' ? await buildAnimateEros(comfyName, opts)
           : faceImageName ? await buildAnimateFaceId(faceImageName, opts)
             : await buildAnimate(comfyName, opts);
-    applyOffloadToGraph(graph, getOffloadConfig(generationHardwareProfile.gpuVendor, generationHardwareProfile.vramGb));
+    applyOffloadToGraph(graph, getOffloadConfig(
+      generationHardwareProfile.gpuVendor,
+      generationHardwareProfile.vramGb,
+      // H3 loads ~40GB of models (DiT + qwen3vl CLIP + video VAE + audio VAE +
+      // turbo LoRA), which overcommits cards under ~48GB. Signal it so the
+      // offload escalation can fire; previously this argument was omitted and
+      // the escalation was dead code.
+      { h3R2V: engine === 'h3' },
+    ));
     let pid;
     try {
       pid = await queuePrompt(graph, { profileId: req.profile.id });

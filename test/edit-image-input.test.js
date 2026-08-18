@@ -141,7 +141,12 @@ test('server intercepts execution errors for image input support', () => {
 });
 
 test('server applies offload config to edit/T2I generation jobs', () => {
-  assert.match(serverJs, /applyOffloadToGraph\(graph, getOffloadConfig\(p\.gpuVendor, p\.vramGb, p\.vramFreeGb\)\)/);
+  // Behavioural, not formatting-pinned. The previous version of this assertion
+  // required the exact string `getOffloadConfig(p.gpuVendor, p.vramGb,
+  // p.vramFreeGb)` — which pinned a real BUG in place: the third parameter is
+  // an options object, so passing the vramFreeGb number silently disabled the
+  // H3 offload escalation. See test/h3-offload-callsites.test.js.
+  assert.match(serverJs, /applyOffloadToGraph\(graph, getOffloadConfig\(p\.gpuVendor, p\.vramGb\)\)/);
 });
 
 test('server sets gpuVendor and vramGb on params in the generate route', () => {
