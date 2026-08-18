@@ -245,3 +245,63 @@ test('h3Preflight never throws on malformed input', () => {
     assert.doesNotThrow(() => h3Preflight(opts), `must tolerate ${JSON.stringify(opts)}`);
   }
 });
+
+// ----------------------------------------------------------------- calibration
+
+test('estimate never under-predicts the measured peaks (Arc Pro B70)', () => {
+  // Measured on an Intel Arc Pro B70 (31.16 GB usable) via ComfyUI with
+  // sequential CPU offload. Full sweep in docs/h3-resource-management-plan.md
+  // §10. A guard that under-predicts is worse than no guard, so the estimate
+  // must sit at or above every measurement.
+  const measured = [
+    { label: 'tiny', width: 256, height: 256, frames: 5, peakGb: 19.47 },
+    { label: 'small', width: 384, height: 256, frames: 22, peakGb: 19.47 },
+    { label: 'modest', width: 512, height: 320, frames: 56, peakGb: 19.55 },
+    { label: 'half', width: 608, height: 384, frames: 90, peakGb: 19.58 },
+    { label: 'real-job', width: 608, height: 384, frames: 124, peakGb: 19.58 },
+  ];
+
+  for (const m of measured) {
+    const estimate = h3VramEstimate({
+      width: m.width, height: m.height, frames: m.frames,
+    });
+    assert.ok(
+      estimate >= m.peakGb,
+      `${m.label}: estimate ${estimate.toFixed(2)} GB must not under-predict the `
+      + `measured ${m.peakGb} GB (under-predicting defeats the guard)`
+    );
+    // Guard against drifting so far above reality that valid work is blocked.
+    assert.ok(
+      estimate - m.peakGb < 3.0,
+      `${m.label}: estimate ${estimate.toFixed(2)} GB is more than 3 GB above the `
+      + `measured ${m.peakGb} GB — too conservative, would block valid work`
+    );
+  }
+});
+
+test('the measured floor dominates: geometry barely moves the estimate', () => {
+  // Measured reality: a 22x pixel increase and 25x frame increase moved the
+  // real peak by 0.11 GB (19.47 -> 19.58). The model must reflect that, because
+  // it is why "shorten your clip" is not useful advice for H3.
+  const smallest = h3VramEstimate({ width: 256, height: 256, frames: 5 });
+  const largest = h3VramEstimate({ width: 608, height: 384, frames: 124 });
+  assert.ok(
+    largest - smallest < 1.0,
+    `geometry moved the estimate by ${(largest - smallest).toFixed(2)} GB; measured `
+    + 'reality is ~0.11 GB, so the model has drifted from the hardware'
+  );
+});
+
+test("the user's real job passes on an idle 31.16 GB card", () => {
+  // Ground truth: this exact job SUCCEEDED during the Phase 1 sweep, so the
+  // guard must not block it. (It previously crashed for a different reason —
+  // the vision-tower loader bug fixed in c25f644.)
+  const result = h3Preflight({
+    width: 608, height: 384, frames: 124,
+    profile: { gpuVendor: 'intel', vramFreeGb: 31.16 },
+  });
+  assert.strictEqual(
+    result.ok, true,
+    'a job that is known to succeed on this hardware must not be blocked'
+  );
+});

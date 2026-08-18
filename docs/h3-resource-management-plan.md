@@ -383,7 +383,74 @@ gated.
 
 ---
 
-## 9. Phase 3 — VRAM preflight guard (**DONE, `1455044`**)
+## 9. Phase 1 — MEASURED (TDR live, sweep clean)
+
+Ran after the reboot confirmed `TdrLevel = 3` was active (boot 17:18:12, uptime
+95 min at sweep start). Stepped sweep, smallest first, aborting on first failure.
+
+Raw data: `docs/phase1-vram-measurements.csv` (86 samples).
+Card reports **31.16 GB usable** (not 32).
+
+| Step | Geometry | Peak VRAM used | Result |
+|---|---|---|---|
+| tiny | 256×256 × 5 | 19.47 GB | ✅ |
+| small | 384×256 × 22 | 19.47 GB | ✅ |
+| modest | 512×320 × 56 | 19.55 GB | ✅ |
+| half | 608×384 × 90 | 19.58 GB | ✅ |
+| **real-job** | **608×384 × 124** | **19.58 GB** | ✅ |
+
+**Every step succeeded — including the exact geometry that crashed the machine.**
+Zero Event 4101 (TDR recovery) and zero Event 41 (hard crash) during the sweep.
+
+### 10.1 The Phase 3 hypothesis was right
+
+A **22× pixel increase and 25× frame increase moved the peak by 0.11 GB**
+(19.47 → 19.58). The fixed model working set is essentially the entire cost.
+This confirms, with measurement rather than inference, that "shorten your clip"
+is not a useful lever for fitting H3 into VRAM — and validates removing that
+advice from the guard.
+
+### 10.2 Calibration applied
+
+The uncalibrated estimate sat ~2.5 GB **below** reality (17.0 vs 19.5) — the
+unsafe direction for a guard. Component figures were scaled to the measurement:
+
+| Component | Before | After |
+|---|---|---|
+| dit (frames / reference) | 6.0 / 7.0 | 7.5 / 8.5 |
+| textEncoder | 3.5 | 4.5 |
+| videoVae | 2.5 | 3.0 |
+| overhead | 2.0 | 2.5 |
+| safety margin | 3.0 | 2.5 |
+
+Result: estimate now **never under-predicts**, with ≤0.53 GB of conservative
+headroom. Locked in by three regression tests that fail if the model drifts from
+the hardware in either direction.
+
+### 10.3 What this means for the original crash
+
+The real job needs **19.58 GB of 31.16 GB** — it was never close to an OOM. So
+**VRAM exhaustion was not the cause of the machine crash.** The actual cause was
+the vision-tower loader bug fixed in `c25f644`: the crash happened at
+`MiniMaxH3ImageToVideo` during *conditioning*, before sampling, and the
+subsequent `UR_RESULT_ERROR_DEVICE_LOST` plus full-system hang was that failure
+landing on a machine with `TdrLevel = 0` — no recovery path.
+
+Both root causes are now fixed:
+
+| Cause | Fix |
+|---|---|
+| vision weights dropped → NoneType crash | `c25f644` |
+| GPU hang freezes whole machine (no TDR) | `TdrLevel=3, TdrDelay=10` + reboot |
+
+The preflight guard (Phase 3) remains worthwhile as defence for genuinely
+over-budget configurations — e.g. a card with other work resident — but it was
+**not** the fix for this incident. Worth stating plainly rather than claiming
+credit for it.
+
+---
+
+## 10. Phase 3 — VRAM preflight guard (**DONE, `1455044`**)
 
 Added to `lib/generation-capabilities.js`, extending the existing
 `ltxRefinePreflight` / `ltxVramEstimate` pattern rather than a parallel one:
@@ -443,12 +510,12 @@ proven load-bearing by deleting it — 4 of 5 route tests fail. Suite: **1335
 pass, 0 fail**.
 
 ```
-Mix Studio HEAD : 1455044
-Test suite      : 1335 pass, 0 fail
-Phases complete : 0 (forensics), 2 (h3R2V), 3 (preflight), 4 (DiT cleared)
-Phase 1         : BLOCKED — TdrLevel still 0, no reboot yet
-ComfyUI         : running, port 49000
-GPU             : Intel Arc Pro B70, driver 32.0.101.8805, Status OK
-Last boot       : 2026-08-18 15:55:39
-H3 i2v loader   : FIXED (c25f644) — 27/27 vision blocks load
+Test suite      : 1338 pass, 0 fail
+Phases complete : ALL (0 forensics, 1 measured, 2 h3R2V, 3 preflight, 4 DiT)
+TDR             : TdrLevel=3, TdrDelay=10 - ACTIVE since boot 2026-08-18 17:18
+ComfyUI         : running, port 49000, logging to ComfyUI/logs/
+GPU             : Intel Arc Pro B70, 31.16 GB usable, driver 32.0.101.8805
+H3 i2v          : WORKING end-to-end (608x384 x124 succeeded, 19.58 GB peak)
+Est. accuracy   : never under-predicts, <=0.53 GB conservative
+Open item       : memory test (mdsched) for the 0x12B bugcheck
 ```
