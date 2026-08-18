@@ -108,20 +108,64 @@ should extend that rather than build a parallel estimator.
 
 ---
 
-## 4. Second issue: the UNET is a CUDA-only quant on an Intel GPU
+## 4. Second issue: the DiT quant — **RESOLVED, DiT is NOT the problem**
 
-The failing job loaded:
+The failing job loaded a DiT whose filename looks alarming on an Intel GPU:
 
 ```
 unet_name = minimax_h3_fl2va_pruned_int8_convrot.safetensors
 ```
 
-`int8_convrot` is the CUDA-only ConvRot quant format — the exact family that
-broke the text encoder on XPU and drove the switch to `nvfp4_awq`. The CLIP is
-now correctly nvfp4, but **the DiT is still int8_convrot**. This needs
-investigation: it may work (different code path), or it may be doing expensive
-dequant fallbacks, or contributing to the device loss. Unknown, and I will not
-guess.
+`int8_convrot` is the same family label as the text encoder that broke on XPU,
+so this was flagged as a suspect. **Phase 4 cleared it.** Evidence:
+
+### 4.1 The DiT's actual quant layout
+
+Read from the checkpoint's `comfy_quant` payload (`blocks.0.attn.out_proj`):
+
+```json
+{"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}
+```
+
+| Property | H3 DiT | H3 CLIP (nvfp4, working) |
+|---|---|---|
+| tensors | 932 | 2054 |
+| dtypes | I8 200, U8 200, F32 210, BF16 220, F16 102 | U8 701, BF16 651, F8_E4M3 350, F32 351 |
+| `.comfy_quant` | 200 | 351 |
+| `*_rotary` tensors | **0** | 0 |
+| `.weight_scale_2` (NVFP4) | 0 | 350 |
+
+So the DiT is plain per-channel **INT8 tensorwise** with a ConvRot rotation flag —
+*not* the W4A4 ConvRot variant, and it ships no rotary weight tensors.
+
+### 4.2 It dispatches to comfy_kitchen — but the EAGER backend
+
+`comfy/ops.py:984` routes this layout to `quant_ops.ck.int8_linear`, where `ck`
+is `comfy_kitchen`. That is the same extension implicated in the CLIP failure,
+and there is **no eager fallback** exposed on `quant_ops`
+(`int8_linear`, `INT8_EAGER`, `int8_linear_eager` all absent).
+
+However `comfy_kitchen` resolves internally to
+`comfy_kitchen/backends/eager/quantization.py` — a pure-PyTorch path that works
+on XPU. Confirmed by direct call on `xpu:0` (tiny 256×128 tensors, a few KB):
+
+```
+ck.int8_linear(x, qdata, scale, None, bf16, convrot=True, convrot_groupsize=256)
+  -> out shape=(8, 128) dtype=torch.bfloat16 device=xpu:0
+  -> finite values: True
+```
+
+Also verified: `grep comfy_kitchen comfy/ops.py` → **0 hits**, and no
+`is_cuda` / `.cuda()` / `device.type == 'cuda'` gate exists on any dequant path.
+
+**Conclusion: the DiT's int8+convrot path is functional on Intel Arc.** It is
+*not* a contributor to the crash, and swapping the DiT is not needed. This
+removes Phase 4 from the remaining work.
+
+> Method note: my first smoke test failed with `ConvRot group size 256 does not
+> divide input features 64` — my own test-fixture error (I picked 64 input
+> features), not a code defect. Corrected to 256 and it passed. Worth recording
+> so the earlier failure isn't later misread as evidence against the DiT.
 
 ---
 
@@ -305,22 +349,37 @@ Bugcheck `0x12B FAULTY_HARDWARE_CORRUPTED_PAGE` on 8/16 warrants a memory test
 (`mdsched.exe`, or MemTest86 for a thorough pass) independently of any code here.
 38 crashes in 14 days should not be normalised.
 
-### 8.3 Then, in this repo (unchanged from the original plan)
+### 8.3 Then, in this repo
 
-- **Phase 1** — measure peak VRAM on small runs, step up. Tooling is now in
-  place (§6.1).
-- **Phase 2** — fix the `h3R2V` dead-code bug (safe, TDD-able, no GPU).
+- **Phase 1** — measure peak VRAM on small runs, step up. Tooling in place
+  (§6.1). **BLOCKED on TDR:** running real generations while `TdrLevel = 0`
+  risks another full-system hang.
+- **Phase 2** — ~~fix the `h3R2V` dead-code bug~~ **DONE (`655b131`)**.
 - **Phase 3** — VRAM budget estimator + preflight guard that refuses
-  over-budget jobs with an actionable message.
-- **Phase 4** — investigate the `int8_convrot` DiT on XPU.
-
-**Phase 2 remains safe to start immediately** — it touches no GPU and has a
-clear failing test.
+  over-budget jobs with an actionable message. Extend
+  `lib/generation-capabilities.js` (which already has budgeting) rather than
+  building a parallel estimator.
+- **Phase 4** — ~~investigate the `int8_convrot` DiT on XPU~~ **DONE — the DiT
+  is fine** (§4). No DiT swap needed; suspicion removed.
 
 ### 8.4 Do NOT do
 
 Re-run the 124-frame 608×384 job to "see if it still fails." With TDR disabled
 that risks another hard crash, and it would produce no new information.
+
+### 8.5 Current blocking state
+
+With Phases 0, 2 and 4 complete, the remaining work splits cleanly:
+
+| Work | Needs GPU? | Blocked? |
+|---|---|---|
+| Phase 3 estimator + preflight guard | no | **no — can proceed** |
+| Phase 1 empirical VRAM curve | yes | yes, until TDR is re-enabled |
+
+Phase 3 can be built now using the measured **model sizes** (§2, 40.28 GB from
+disk) with a conservative activation margin, then *calibrated* by Phase 1 once
+GPU work is safe. That ordering avoids sitting idle while keeping the risky step
+gated.
 
 ---
 
