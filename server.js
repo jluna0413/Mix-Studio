@@ -328,6 +328,7 @@ const {
   configuredVideoEngineCapabilities,
   dependencyComponentBlock,
   ltxRefinePreflight,
+  h3Preflight,
 } = require('./lib/generation-capabilities');
 const {
   buildKrea2ModelLoader,
@@ -9129,6 +9130,30 @@ async function handleApi(req, res, url) {
           code: 'ltx_refine_too_large',
           engine,
         }, refinePreflight));
+      }
+    }
+
+    // MiniMax H3 VRAM preflight. H3 loads ~40 GB of models and its cost is
+    // dominated by that fixed working set rather than clip length. Submitting
+    // an over-budget job previously reached ComfyUI and died with
+    // level_zero UR_RESULT_ERROR_DEVICE_LOST — and on a machine with GPU TDR
+    // disabled that hangs the whole system. Fail fast here instead.
+    if (engine === 'h3') {
+      const h3Check = h3Preflight({
+        width: W,
+        height: H,
+        frames,
+        fps,
+        mode: h3ReferenceBacked ? 'reference' : 'frames',
+        turbo: h3Turbo,
+        profile: generationHardwareProfile,
+      });
+      if (!h3Check.ok) {
+        return json(res, 409, Object.assign({
+          error: h3Check.error,
+          code: 'h3_insufficient_vram',
+          engine,
+        }, h3Check));
       }
     }
 
