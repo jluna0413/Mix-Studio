@@ -383,14 +383,72 @@ gated.
 
 ---
 
-## Appendix — verified state at time of writing
+## 9. Phase 3 — VRAM preflight guard (**DONE, `1455044`**)
+
+Added to `lib/generation-capabilities.js`, extending the existing
+`ltxRefinePreflight` / `ltxVramEstimate` pattern rather than a parallel one:
+
+| Function | Purpose |
+|---|---|
+| `h3VideoLatentT(frames)` | mirrors ComfyUI's `video_latent_t` exactly (`nodes_minimax_h3.py:39-40`) |
+| `h3VramEstimate(opts)` | resident working set under sequential offload |
+| `h3Preflight(opts)` | blocks with `409 h3_insufficient_vram`, or passes with `needsLowVram` |
+
+Latent geometry is taken from the real node shape
+`[B, 24, latent_t, height//16, width//16]` at 24 fps — not guessed.
+
+Wired into the animate route beside the LTX guard, receiving real request
+geometry plus `mode`/`turbo` (reference mode loads an extra DiT + audio VAE).
+
+### 9.1 Measured: clip length is nearly irrelevant for H3
+
+The most useful finding of Phase 3, and it inverted the design:
+
+| Geometry | Estimate |
+|---|---|
+| 32 × 32 × 5 frames | **17.00 GB** |
+| 608 × 384 × 5 | 17.00 GB |
+| 608 × 384 × 124 | 17.03 GB |
+| 1344 × 768 × 362 | **17.52 GB** |
+
+**A 500× increase in pixels×frames moves the total by 0.5 GB.** The fixed model
+working set (~14 GB + 3 GB margin) is the entire cost; the latent and attention
+workspace are megabytes.
+
+Consequences:
+
+1. My first implementation suggested "use fewer frames", then "use a lower
+   resolution". **Both are dead ends** — the resolution-search branch was
+   literally unreachable code. Removed.
+2. The guard now names the floor and the shortfall and points at the only real
+   levers: free VRAM, or use a lighter engine.
+3. **This reframes the original crash.** At 30 GB free the real job (608×384,
+   124 frames) is estimated at 17.0 GB and *passes* preflight. So the crash was
+   probably **not** a simple static overcommit — something at runtime consumed
+   far more than the resident-weight model predicts, or the level-zero hang had
+   another trigger. Phase 1 measurement is needed to resolve this; the guard
+   protects the clear-cut cases but the estimate is **uncalibrated**.
+
+### 9.2 Honest limitations
+
+- Component figures (dit 6.0, textEncoder 3.5, videoVae 2.5, overhead 2.0) are
+  **conservative engineering estimates, not measurements.** Phase 1 must
+  calibrate them against `torch.xpu.max_memory_allocated`.
+- The estimate cannot see other processes' VRAM use beyond what `vramFreeGb`
+  reports at request time.
+- A job that passes preflight can still OOM if the true peak exceeds the model.
+
+**Verification:** 20 new tests (15 unit + 5 route-wiring). The route guard was
+proven load-bearing by deleting it — 4 of 5 route tests fail. Suite: **1335
+pass, 0 fail**.
 
 ```
-Mix Studio HEAD : c25f644 (working tree clean apart from pre-existing untracked)
-Test suite      : 1304 pass, 0 fail
-ComfyUI         : DOWN (not restarted — deliberately, pending approval)
-Mix Studio      : DOWN
+Mix Studio HEAD : 1455044
+Test suite      : 1335 pass, 0 fail
+Phases complete : 0 (forensics), 2 (h3R2V), 3 (preflight), 4 (DiT cleared)
+Phase 1         : BLOCKED — TdrLevel still 0, no reboot yet
+ComfyUI         : running, port 49000
 GPU             : Intel Arc Pro B70, driver 32.0.101.8805, Status OK
 Last boot       : 2026-08-18 15:55:39
-H3 i2v fix      : verified working (27/27 vision blocks load; probe B success)
+H3 i2v loader   : FIXED (c25f644) — 27/27 vision blocks load
 ```
