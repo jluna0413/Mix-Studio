@@ -110,32 +110,29 @@ test('applyOffloadToGraph never overwrites CLIPLoader device with a backend stri
   assert.equal(result.clip.inputs.offload_device, 'cpu');
 });
 
-test('maybeAddSuperResolution uses RTX node for NVIDIA', () => {
+test('maybeAddSuperResolution uses addCompatibleVideoUpscaler when fourK is true', () => {
   const graph = {};
-  const opts = { fourK: true, gpuVendor: 'nvidia' };
+  const opts = { fourK: true };
   const deps = {
-    rtxVideoSuperResolutionNode: (images) => ({ class_type: 'RTXVideoSuperResolution', inputs: { images } }),
-    seedVR2UpscaleNode: () => ({ class_type: 'SeedVR2Upscale' }),
+    addCompatibleVideoUpscaler: (g, img, key) => {
+      g[`${key}_model`] = { class_type: 'UpscaleModelLoader' };
+      return [`${key}_scale`, 0];
+    },
   };
   const result = maybeAddSuperResolution(graph, ['decode', 0], opts, deps);
-  assert.deepEqual(result, ['vsr', 0]);
-  assert.equal(graph.vsr.class_type, 'RTXVideoSuperResolution');
-  assert.equal(graph.vsr_fallback, undefined);
+  assert.deepEqual(result, ['vsr_scale', 0]);
+  assert.equal(graph.vsr_model.class_type, 'UpscaleModelLoader');
 });
 
-test('maybeAddSuperResolution skips 4K upscaling on non-NVIDIA GPUs', () => {
+test('maybeAddSuperResolution skips 4K upscaling when fourK is false', () => {
   const graph = {};
-  const opts = { fourK: true, gpuVendor: 'intel', W: 1024, H: 1024, seed: 42 };
+  const opts = { fourK: false };
   const deps = {
-    rtxVideoSuperResolutionNode: () => ({ class_type: 'RTXVideoSuperResolution' }),
-    seedVR2UpscaleNode: () => ({ class_type: 'SeedVR2Upscale' }),
+    addCompatibleVideoUpscaler: () => { throw new Error('should not call'); },
   };
   const result = maybeAddSuperResolution(graph, ['decode', 0], opts, deps);
   assert.deepEqual(result, ['decode', 0]);
   assert.equal(graph.vsr, undefined);
-  assert.equal(graph.vsr_fallback, undefined);
-  assert.equal(graph.vsr_fallback_dit, undefined);
-  assert.equal(graph.vsr_fallback_vae, undefined);
 });
 
 test('maybeAddSuperResolution returns unchanged images when fourK is false', () => {

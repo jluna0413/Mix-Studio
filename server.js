@@ -50,6 +50,7 @@ const {
 const {
   activeH3ModelSettingKeys,
   h3EffectiveModelName,
+  h3EffectiveWeightDtype,
   h3FrameVariant,
   h3LoraCompatibility,
   h3ReferenceVariant,
@@ -105,7 +106,7 @@ const {
   installedSeedVr2Models,
   seedVr2Profile,
   targetResolutionForUpscale,
-  rtxVideoSuperResolutionNode,
+  addCompatibleVideoUpscaler,
   seedVr2UpscaleNodes,
   ULTIMATE_SD_UPSCALE_MODEL,
   buildUltimateSdUpscaleGraph,
@@ -308,8 +309,9 @@ const {
   sparkFunnelStatus,
 } = require('./lib/spark-access');
 const { SUPPORTED_PROTOCOL_VERSIONS, handleMcpPayload, mcpToolDefinitions } = require('./lib/spark-mcp');
-const { hardwareInfo } = require('./lib/hardware-info');
+const { hardwareInfo, detectGpuDevice } = require('./lib/hardware-info');
 const { applyOffloadToGraph, getOffloadConfig } = require('./lib/offload-config');
+const errorHandler = require('./lib/error-handler');
 const {
   supportsImageInput,
   imageInputNotAcceptedMessage,
@@ -581,6 +583,8 @@ const DEFAULT_SETTINGS = {
   localPromptAiClipType: 'krea2',
   galleryPassword: DEFAULT_PRIVATE_PASSWORD,
   exportDir: '',
+  offloadDir: 'E:\\tmp\\pytorch',
+  scratchDiskDir: 'E:\\tmp\\pytorch',
   smartFilenames: true,
   // Existing installs default every optional workflow on. The installer writes
   // explicit choices only for a brand-new machine.
@@ -606,6 +610,8 @@ function normalizeSettings(s) {
   s.h3TurboLora = String(s.h3TurboLora || '').trim() || DEFAULT_H3_TURBO_LORA;
   s.h3RefTurboLora = String(s.h3RefTurboLora || '').trim() || H3_TURBO_LORAS.referenceRecommended;
   s.hfEndpoint = normalizeHuggingFaceEndpoint(s.hfEndpoint);
+  s.offloadDir = String(s.offloadDir || s.scratchDiskDir || '').trim() || 'E:\\tmp\\pytorch';
+  s.scratchDiskDir = s.offloadDir;
   if (!s.klein4Unet) s.klein4Unet = s.kleinUnet || DEFAULT_SETTINGS.klein4Unet;
   if (!s.klein4Clip) s.klein4Clip = s.kleinClip || DEFAULT_SETTINGS.klein4Clip;
   if (!s.klein9Unet) s.klein9Unet = DEFAULT_SETTINGS.klein9Unet;
@@ -980,6 +986,37 @@ const CLIENT_ID = 'kreastudio-' + crypto.randomBytes(6).toString('hex');
 // network request.
 const SERVER_INSTANCE_ID = crypto.randomBytes(12).toString('hex');
 const jobs = new Map(); // promptId -> job
+
+let _idleFreeTimer = null;
+async function triggerComfyModelUnload() {
+  console.log('[queue]', 'Queue is idle. Triggering ComfyUI model unload to free VRAM.');
+  try {
+    const resetReqs = comfyResetRequests();
+    const freeReq = resetReqs.find(r => r.name === 'freeMemory');
+    if (freeReq) {
+      await comfyFetch(freeReq.path, freeReq.init);
+    }
+  } catch (error) {
+    console.warn('[queue]', 'Failed to auto-unload ComfyUI models:', error.message);
+  }
+}
+
+function notifyQueueIdle(delayMs = 3000) {
+  if (_idleFreeTimer) clearTimeout(_idleFreeTimer);
+  _idleFreeTimer = setTimeout(async () => {
+    if (jobs.size === 0 && (typeof submissionActive === 'undefined' || !submissionActive) && (typeof submissionWaiters === 'undefined' || submissionWaiters.length === 0)) {
+      await triggerComfyModelUnload();
+    }
+  }, delayMs);
+}
+
+const originalJobsDelete = jobs.delete.bind(jobs);
+jobs.delete = function (pid) {
+  const res = originalJobsDelete(pid);
+  notifyQueueIdle();
+  return res;
+};
+
 const queueHealthState = { lowGpuSince: null };
 let dependencyInstallRunning = false;
 let dependencyInstallController = null;
@@ -2034,6 +2071,78 @@ async function uploadFileToComfy(file, filename) {
   throw new Error(`Could not upload ${filename} to ComfyUI.`);
 }
 
+/* ------------------------------------------------------------------ */
+/* Serial pipeline gate — every ComfyUI prompt submission and every   */
+/* file upload funnels through the FIFO gate and waits for ComfyUI to */
+/* be idle before being admitted. Only one submission runs at a time, */
+/* and a new generation is never admitted while ComfyUI is still      */
+/* executing the previous one.                                        */
+/* This bounds peak RAM/VRAM to a single workflow step and keeps the  */
+/* whole pipeline strictly sequential.                                */
+/* ------------------------------------------------------------------ */
+
+let submissionWaiters = [];
+let submissionActive = false;
+
+function runSerialized(task, { priority = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const entry = { task, resolve, reject, priority };
+    if (priority) {
+      // Priority entries (front:true text jobs) jump ahead of any waiting
+      // non-priority generation, but never overtake another priority entry.
+      const firstNonPriority = submissionWaiters.findIndex((w) => !w.priority);
+      submissionWaiters.splice(
+        firstNonPriority === -1 ? submissionWaiters.length : firstNonPriority,
+        0,
+        entry,
+      );
+    } else {
+      submissionWaiters.push(entry);
+    }
+    pumpSubmissions();
+  });
+}
+
+function pumpSubmissions() {
+  if (submissionActive || !submissionWaiters.length) return;
+  submissionActive = true;
+  const { task, resolve, reject } = submissionWaiters.shift();
+  Promise.resolve()
+    .then(task)
+    .then(resolve, reject)
+    .finally(() => {
+      submissionActive = false;
+      pumpSubmissions();
+    });
+}
+
+/**
+ * Wait until ComfyUI has neither a running nor a pending prompt.
+ * This is what enforces strict sequential execution: the next job's
+ * upload/graph-prep does not start until the previous job has fully
+ * executed so model loads and reference buffers never stack.
+ */
+async function waitForComfyIdle({ timeoutMs = 20 * 60 * 1000, pollMs = 1500 } = {}) {
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0;
+  for (;;) {
+    let running = 0;
+    let pending = 0;
+    try {
+      const queueRes = await comfyFetch('/queue');
+      const q = await queueRes.json();
+      running = (q.queue_running || []).length;
+      pending = (q.queue_pending || []).length;
+    } catch { /* ComfyUI unreachable: let the actual submit surface the error */ }
+    if (running === 0 && pending === 0) return;
+    if (deadline && Date.now() >= deadline) {
+      const error = new Error('Timed out waiting for ComfyUI to become idle before queuing the next job.');
+      error.code = 'comfy_busy_timeout';
+      throw error;
+    }
+    await pause(pollMs);
+  }
+}
+
 const MAX_CONCURRENT_PROMPTS = Math.max(1, Math.min(4, Number(process.env.MIX_CONCURRENT_PROMPTS) || 1));
 
 let _activePromptCount = 0;
@@ -2076,13 +2185,57 @@ function removeJob(pid) {
   jobs.delete(pid);
 }
 
+/**
+ * Pre-flight VRAM check before queueing a job. Uses the cached hardware
+ * profile to detect the active GPU device and warn when free VRAM is
+ * critically low. This prevents OOM crashes on Intel Arc and other GPUs
+ * where model loads can exceed available memory.
+ */
+async function vramPreCheck(options = {}) {
+  try {
+    const rawHardware = await getSetupHardwareInfo();
+    const hardware = setupHardwareProfile(rawHardware);
+    if (!hardware.gpuAvailable || !hardware.vramGb) return null;
+    const devices = Array.isArray(rawHardware?.gpu?.devices) ? rawHardware.gpu.devices : [];
+    const device = detectGpuDevice(devices);
+    if (!device) return null;
+    // Only warn when free VRAM is below a conservative threshold. The
+    // sequential offload config already handles most low-VRAM cases.
+    const primary = devices[0] || {};
+    const freeGb = Number(primary.vramFreeGb) || 0;
+    if (freeGb > 0 && freeGb < 2) {
+      const warning = new Error(
+        `Low VRAM warning: only ${freeGb.toFixed(1)} GB free on ${device}. `
+        + 'The job may fail with an out-of-memory error. Consider closing other GPU applications.'
+      );
+      warning.code = 'low_vram_warning';
+      warning.warnOnly = true;
+      return warning;
+    }
+    return null;
+  } catch {
+    // Hardware detection is best-effort; never block generation on it.
+    return null;
+  }
+}
+
 async function queuePrompt(graph, options = {}) {
   const slotToken = await _acquirePromptSlot();
   return runSerialized(async () => {
-    await waitForComfyIdle();
-    const pid = await queuePromptRaw(graph, options);
-    _slotTokens.set(pid, slotToken);
-    return pid;
+    try {
+      await waitForComfyIdle();
+      const vramWarning = await vramPreCheck(options);
+      if (vramWarning && !vramWarning.warnOnly) {
+        slotToken.release();
+        throw vramWarning;
+      }
+      const pid = await queuePromptRaw(graph, options);
+      _slotTokens.set(pid, slotToken);
+      return pid;
+    } catch (error) {
+      slotToken.release();
+      throw error;
+    }
   }, { priority: options.front === true });
 }
 
@@ -2605,7 +2758,7 @@ async function queueNextVideoChunk(job) {
       turboReferenceSegment: nextSegment,
     });
   const graph = await buildMiniMaxH3Graph(nextOpts, settings, {
-    nodeFromOrdered, filterInputs, rtxVideoSuperResolutionNode,
+    nodeFromOrdered, filterInputs, addCompatibleVideoUpscaler,
   });
   const nextPid = await queuePrompt(graph, { profileId: job.profileId });
   trackJob(nextPid, {
@@ -4472,8 +4625,7 @@ async function buildUpscale(imageName, opts) {
     settings,
     availableModels: installedDitModels,
     gpuVendor,
-    profile: opts.profile,
-    noise: opts.noise,
+    resolvedProfile: profile,
     resolution: opts.resolution || 2160,
     batchSize: 1,
   });
@@ -4980,8 +5132,7 @@ async function buildAnimate(imageName, opts) {
   let frameSource = ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
   if (opts.fourK) {
-    graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-    frameSource = ['vsr', 0];
+    frameSource = addCompatibleVideoUpscaler(graph, frameSource, 'vsr');
   }
   graph.video = {
     class_type: 'CreateVideo',
@@ -5152,8 +5303,7 @@ async function buildAnimateFaceId(faceName, opts) {
   let frameSource = ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
   if (opts.fourK) {
-    graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-    frameSource = ['vsr', 0];
+    frameSource = addCompatibleVideoUpscaler(graph, frameSource, 'vsr');
   }
   graph.video = {
     class_type: 'CreateVideo',
@@ -5421,8 +5571,7 @@ async function buildAnimateEros(imageName, opts) {
 
   let frameSource = ['decode', 0];
   if (opts.fourK) {
-    graph.vsr = rtxVideoSuperResolutionNode(['decode', 0]);
-    frameSource = ['vsr', 0];
+    frameSource = addCompatibleVideoUpscaler(graph, ['decode', 0], 'vsr');
   }
   if (opts.makePoster) {
     const info = await getObjectInfo();
@@ -5514,8 +5663,7 @@ async function buildAnimateWan(imageName, opts) {
   let frameSource = ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
   if (opts.fourK) {
-    graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-    frameSource = ['vsr', 0];
+    frameSource = addCompatibleVideoUpscaler(graph, frameSource, 'vsr');
   }
   if (opts.makePoster) {
     const info = await getObjectInfo();
@@ -5670,8 +5818,7 @@ async function buildAnimateScail(imageName, opts) {
     let frameSource = ['scail_infinity', 0];
     frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
     if (opts.fourK) {
-      graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-      frameSource = ['vsr', 0];
+      frameSource = addCompatibleVideoUpscaler(graph, frameSource, 'vsr');
     }
     if (opts.makePoster) {
       const info = await getObjectInfo();
@@ -5790,8 +5937,7 @@ async function buildAnimateScail(imageName, opts) {
   let frameSource = imageBatchChain(graph, frameRanges, 'join') || ['decode', 0];
   frameSource = await rifeSmooth(graph, frameSource, opts.smooth);
   if (opts.fourK) {
-    graph.vsr = rtxVideoSuperResolutionNode(frameSource);
-    frameSource = ['vsr', 0];
+    frameSource = addCompatibleVideoUpscaler(graph, frameSource, 'vsr');
   }
   if (opts.makePoster) {
     const info = await getObjectInfo();
@@ -5859,8 +6005,7 @@ async function buildExistingVideoUpscale(videoName, opts) {
     Object.assign(graph, seedVr2.nodes);
     frameSource = seedVr2.output;
   } else {
-    graph.vsr = rtxVideoSuperResolutionNode(['src', 0], opts.scale || 2);
-    frameSource = ['vsr', 0];
+    frameSource = addCompatibleVideoUpscaler(graph, ['src', 0], 'vsr', opts.scale || 2);
   }
   const videoInputs = { images: frameSource, fps: opts.fps || 16 };
   if (opts.hasAudio) videoInputs.audio = ['src', 2];
@@ -6176,7 +6321,7 @@ const REQUIRED_CLASSES = {
   h3turbor2v: ['LoraLoaderModelOnly', 'MiniMaxH3SigmaShift', 'MiniMaxH3TurboSampler'],
   h3context: ['MiniMaxH3MotionContext', 'MiniMaxH3MotionContextTrim',
     'MiniMaxH3MotionContextSaveLatent', 'MiniMaxH3MotionContextLoadLatent'],
-  h3sage: ['PathchSageAttentionKJ'],
+  h3sage: [], // SageAttention removed: incompatible with Intel Arc XPU
   ltxdirector: ['LTXDirector', 'LTXDirectorGuide', 'LTXDirectorCropGuides'],
   ltxcamera: ['LTXICLoRALoaderModelOnly', 'LTXAddVideoICLoRAGuide', 'LTXVImgToVideoConditionOnly',
     'VHS_LoadVideo', 'ImageBatch'],
@@ -8383,7 +8528,7 @@ async function handleApi(req, res, url) {
       sigmasBase: LTX_SIGMAS_BASE, sigmasRefine: LTX_SIGMAS_REFINE,
     }, settings, {
       nodeFromOrdered, filterInputs, chainModelLoras, rifeSmooth,
-      rtxVideoSuperResolutionNode, getObjectInfo,
+      addCompatibleVideoUpscaler, getObjectInfo,
     });
     const pid = await queuePrompt(graph, { profileId: req.profile.id });
     const directorProject = Object.assign({}, project, {
@@ -8444,26 +8589,28 @@ async function handleApi(req, res, url) {
   }
 
   if (route === '/api/animate' && req.method === 'POST') {
-    const body = await readJsonBody(req);
-    const engine = ['ltx25', 'h3', 'wan', 'wan-animate2', 'eros', 'scail', 'ltx-edit'].includes(body.engine) ? body.engine : 'ltx';
-    const wanAnimate2 = engine === 'wan-animate2';
-    const h3Mode = engine === 'h3' && ['reference', 'replace'].includes(body.h3Mode)
-      ? body.h3Mode
-      : 'frames';
-    const h3ReferenceBacked = engine === 'h3' && (h3Mode === 'reference' || h3Mode === 'replace');
-    const h3GraphMode = h3ReferenceBacked ? 'reference' : 'frames';
-    const h3SelectedModelVariant = engine === 'h3'
-      ? (h3ReferenceBacked ? h3ReferenceVariant(settings) : h3FrameVariant(settings))
-      : null;
-    const h3ReplaceKind = body.h3ReplaceKind === 'character' ? 'character' : 'object';
-    const h3ReplaceTarget = String(body.h3ReplaceTarget || '').trim().slice(0, 240);
-    const h3TurboRequested = engine === 'h3' && body.h3Turbo === true;
-    const h3Turbo = h3TurboRequested;
-    const h3TurboCanvas = h3Turbo ? h3TurboFixedCanvas(settings, h3GraphMode) : null;
-    const ltx25Quality = engine === 'ltx25' && body.fast === false;
-    const h3LongContext = engine === 'h3' && body.h3LongContext === true;
-    const h3SageAttention = engine === 'h3' && body.sageAttention !== false;
-    const h3References = normalizeH3References(body.h3References);
+    try {
+      const body = await readJsonBody(req);
+      const engine = ['ltx25', 'h3', 'wan', 'wan-animate2', 'eros', 'scail', 'ltx-edit'].includes(body.engine) ? body.engine : 'ltx';
+      const wanAnimate2 = engine === 'wan-animate2';
+      const h3Mode = engine === 'h3' && ['reference', 'replace'].includes(body.h3Mode)
+        ? body.h3Mode
+        : 'frames';
+      const h3ReferenceBacked = engine === 'h3' && (h3Mode === 'reference' || h3Mode === 'replace');
+      const h3GraphMode = h3ReferenceBacked ? 'reference' : 'frames';
+      const h3SelectedModelVariant = engine === 'h3'
+        ? (h3ReferenceBacked ? h3ReferenceVariant(settings) : h3FrameVariant(settings))
+        : null;
+      const h3ReplaceKind = body.h3ReplaceKind === 'character' ? 'character' : 'object';
+      const h3ReplaceTarget = String(body.h3ReplaceTarget || '').trim().slice(0, 240);
+      const h3TurboRequested = engine === 'h3' && body.h3Turbo === true;
+      const h3Turbo = h3TurboRequested;
+      const h3TurboCanvas = h3Turbo ? h3TurboFixedCanvas(settings, h3GraphMode) : null;
+      const ltx25Quality = engine === 'ltx25' && body.fast === false;
+      const h3LongContext = engine === 'h3' && body.h3LongContext === true;
+      const h3SageAttention = false; // SageAttention disabled: incompatible with Intel Arc XPU
+      let unetWeightDtypeChoices;
+      const h3References = normalizeH3References(body.h3References, body.audioName);
     let requestedVideoLoras = Array.isArray(body.loras)
       ? body.loras.filter((lora) => lora && lora.on && lora.name && String(lora.name).trim())
       : [];
@@ -8488,9 +8635,16 @@ async function handleApi(req, res, url) {
         engine,
       });
     }
+    let info, coreCompatibility;
+    if (engine === 'ltx25' || engine === 'h3') {
+      try {
+        info = await getObjectInfo();
+        coreCompatibility = await getComfyCompatibility();
+      } catch (error) {
+        return json(res, 503, { error: 'ComfyUI is not accepting connections. Make sure ComfyUI is running.' });
+      }
+    }
     if (engine === 'ltx25') {
-      const info = await getObjectInfo();
-      const coreCompatibility = await getComfyCompatibility();
       const compatibility = ltx25Compatibility(info, coreCompatibility.version);
       if (compatibility.supported !== true) {
         return json(res, 409, {
@@ -8524,8 +8678,6 @@ async function handleApi(req, res, url) {
       }
     }
     if (engine === 'h3') {
-      const info = await getObjectInfo();
-      const coreCompatibility = await getComfyCompatibility();
       const h3Compatibility = minimaxH3Compatibility(info, coreCompatibility.version);
       if (h3Compatibility.supported !== true) {
         return json(res, 409, {
@@ -8533,6 +8685,11 @@ async function handleApi(req, res, url) {
           code: 'comfy_h3_update_required',
           compatibility: h3Compatibility,
         });
+      }
+      unetWeightDtypeChoices = objectInfoComboChoices(info, 'UNETLoader', 'weight_dtype');
+      const unetWeightDtype = h3EffectiveWeightDtype(settings, h3GraphMode, unetWeightDtypeChoices);
+      if (unetWeightDtype === 'int8' && (!Array.isArray(unetWeightDtypeChoices) || !unetWeightDtypeChoices.includes('int8'))) {
+        console.warn('[h3]', 'INT8 weight_dtype not supported by ComfyUI UNETLoader; falling back to default dtype for', h3EffectiveModelName(settings, h3GraphMode));
       }
       const selectedVariant = h3SelectedModelVariant;
       if (requestedVideoLoras.length) {
@@ -9147,11 +9304,12 @@ async function handleApi(req, res, url) {
       smooth,
       loras: requestedVideoLoras,
       mode: h3GraphMode,
+      unetWeightDtypeChoices: unetWeightDtypeChoices,
       turbo: h3Turbo,
       turboStrength: clampNum(body.h3TurboStrength, 0.8, 1.2, 1),
       turboLowVram: body.h3TurboLowVram === true,
       turboNativeSampler: h3TurboNativeSampler,
-      sageAttention: h3SageAttention,
+      sageAttention: false,
       firstImageName: engine === 'h3' && !bypass && h3Mode === 'frames' ? comfyName : null,
       references: h3References,
       refImageSize: body.h3RefImageSize === 'max' ? 'max' : 'match',
@@ -9171,11 +9329,11 @@ async function handleApi(req, res, url) {
       opts.turboReferenceSegment = h3TurboReferenceChunks[0];
     }
     const graph = engine === 'h3' ? await buildMiniMaxH3Graph(opts, settings, {
-      nodeFromOrdered, filterInputs, rtxVideoSuperResolutionNode,
+      nodeFromOrdered, filterInputs, addCompatibleVideoUpscaler,
     })
       : engine === 'ltx25' ? await buildLtx25Graph(comfyName, opts, settings, {
         filterInputs, chainModelLoras, textGenInputs, audioLatentNodes,
-        rifeSmooth, rtxVideoSuperResolutionNode,
+        rifeSmooth, addCompatibleVideoUpscaler,
       })
       : wanAnimate2 ? await buildWanAnimate2Graph(comfyName, opts, settings, { nodeFromOrdered, filterInputs })
       : engine === 'scail' ? await buildAnimateScail(comfyName, opts)
@@ -9183,6 +9341,7 @@ async function handleApi(req, res, url) {
         : engine === 'eros' ? await buildAnimateEros(comfyName, opts)
           : faceImageName ? await buildAnimateFaceId(faceImageName, opts)
             : await buildAnimate(comfyName, opts);
+    applyOffloadToGraph(graph, getOffloadConfig(generationHardwareProfile.gpuVendor, generationHardwareProfile.vramGb));
     let pid;
     try {
       pid = await queuePrompt(graph, { profileId: req.profile.id });
@@ -9309,7 +9468,7 @@ async function handleApi(req, res, url) {
         h3MatchSource: engine === 'h3' && h3Mode === 'frames' ? body.h3MatchSource === true : undefined,
         h3MatchReferenceVideo: engine === 'h3' && h3Mode === 'reference'
           ? body.h3MatchReferenceVideo === true : undefined,
-        attentionBackend: engine === 'h3' ? (opts.sageAttention ? 'sageattention' : 'standard') : undefined,
+        attentionBackend: engine === 'h3' ? 'pytorch' : undefined,
         h3RefImageSize: h3ReferenceBacked ? opts.refImageSize : undefined,
         h3References: h3ReferenceBacked ? h3References : undefined,
         h3ReplaceKind: engine === 'h3' && h3Mode === 'replace' ? h3ReplaceKind : undefined,
@@ -9331,17 +9490,27 @@ async function handleApi(req, res, url) {
         loras: opts.loras,
       },
     });
-    ensureWs();
-    return json(res, 200, {
-      jobId: pid,
-      frames,
-      engine,
-      h3Turbo: engine === 'h3' ? opts.turbo : undefined,
-      h3TurboChunks: h3TurboReferenceChunks.length > 1 ? h3TurboReferenceChunks.length : undefined,
-      h3LongContextClips: h3LongContextPlan.length > 1 ? h3LongContextPlan.length : undefined,
-      sequenceId: wanAnimate2VideoChunkSequence?.id || h3ChunkSequenceId || undefined,
-      attentionBackend: engine === 'h3' ? (opts.sageAttention ? 'sageattention' : 'standard') : undefined,
-    });
+      ensureWs();
+      return json(res, 200, {
+        jobId: pid,
+        frames,
+        engine,
+        h3Turbo: engine === 'h3' ? opts.turbo : undefined,
+        h3TurboChunks: h3TurboReferenceChunks.length > 1 ? h3TurboReferenceChunks.length : undefined,
+        h3LongContextClips: h3LongContextPlan.length > 1 ? h3LongContextPlan.length : undefined,
+        sequenceId: wanAnimate2VideoChunkSequence?.id || h3ChunkSequenceId || undefined,
+        attentionBackend: engine === 'h3' ? 'pytorch' : undefined,
+      });
+    } catch (error) {
+      const status = error.statusCode || error.status || (error.code === 'comfy_unreachable' || error.code === 'ECONNREFUSED' ? 503 : (error.code ? 409 : 500));
+      return json(res, status, {
+        error: String(error.message || error),
+        code: error.code || 'animate_failed',
+        component: error.component,
+        missingNodes: error.missingNodes,
+        missingModels: error.missingModels,
+      });
+    }
   }
 
   if ((route === '/api/video/upscale' || route === '/api/video/interpolate') && req.method === 'POST') {
@@ -11162,7 +11331,18 @@ const server = http.createServer(async (req, res) => {
     const cancelled = e && e.code === 'job_cancelled';
     const setupRequired = e && e.code === 'comfy_krea2_update_required';
     const loggedPath = url.pathname.startsWith('/mcp/') ? '/mcp/[redacted]' : url.pathname;
-    if (!cancelled) console.error('[error]', req.method, loggedPath, e.message);
+    if (!cancelled) {
+      // Structured error log (logs/errors.log) with request context.
+      try {
+        const errObj = (e instanceof Error) ? e : new Error(String(e.message || e));
+        errorHandler.error(errObj, {
+          route: `${req.method} ${loggedPath}`,
+          requestId: req.headers && req.headers['x-request-id'],
+        });
+      } catch (logErr) {
+        console.error('[error]', req.method, loggedPath, e.message);
+      }
+    }
     if (!res.headersSent) {
       json(res, cancelled || setupRequired ? 409 : 500, {
         error: String(e.message || e),

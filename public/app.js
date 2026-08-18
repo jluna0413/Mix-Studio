@@ -133,7 +133,7 @@ const state = {
   vidH3MatchSource: true,    // keep frame-mode output at the first frame's aspect unless explicitly overridden
   vidH3MatchReferenceVideo: false,
   vidH3Xl: false,
-  vidH3SageAttention: true,
+  vidH3SageAttention: false,
   vidH3Turbo: false,
   vidH3LongContext: false,
   vidH3TurboStrength: 1,
@@ -1871,7 +1871,7 @@ const MIX_STUDIO_124_SHOWCASE = [
   {
     eyebrow: 'Video generation',
     title: 'LTX 2.5 video generation',
-    message: 'Create LTX 2.5 videos from text, a first frame, or first and last frames with synchronized audio, user LoRAs, RIFE interpolation, and optional RTX 4K processing.',
+    message: 'Create LTX 2.5 videos from text, a first frame, or first and last frames with synchronized audio, user LoRAs, RIFE interpolation, and optional 4K AI Upscale processing.',
     media: '/update-media/v1.2.4-ltx-2.5.mp4',
     theme: 'release',
   },
@@ -3212,7 +3212,7 @@ function saveForm() {
       vidH3MatchSource: state.vidH3MatchSource,
       vidH3MatchReferenceVideo: state.vidH3MatchReferenceVideo,
       vidH3Xl: state.vidH3Xl,
-      vidH3SageAttention: state.vidH3SageAttention,
+
       vidH3Turbo: state.vidH3Turbo,
       vidH3LongContext: state.vidH3LongContext,
       vidH3TurboStrength: state.vidH3TurboStrength,
@@ -3479,7 +3479,7 @@ function loadForm() {
     state.vidH3MatchSource = f.vidH3MatchSource !== false;
     state.vidH3MatchReferenceVideo = f.vidH3MatchReferenceVideo === true;
     state.vidH3Xl = f.vidH3Xl === true;
-    state.vidH3SageAttention = f.vidH3SageAttention !== false;
+    state.vidH3SageAttention = false;
     state.vidH3Turbo = f.vidH3Turbo === true;
     state.vidH3LongContext = f.vidH3LongContext === true
       && experimentalFeaturesEnabled()
@@ -4715,29 +4715,7 @@ function renderH3LongContext() {
 }
 
 function renderH3SageAttention() {
-  const field = $('#vidH3SageField');
-  const toggle = $('#vidH3SageToggle');
-  const status = $('#vidH3SageStatus');
-  if (!field || !toggle || !status) return;
-  const visible = state.view === 'video' && state.vidEngine === 'h3';
-  field.hidden = !visible;
-  const enabled = state.vidH3SageAttention !== false;
-  const capability = lastMeta?.dependencies?.sageAttention;
-  toggle.setAttribute('aria-checked', String(enabled));
-  toggle.dataset.ready = String(capability?.ready === true);
-  if (!enabled) {
-    status.textContent = 'Off · use standard PyTorch attention';
-    toggle.title = 'H3 will use the standard attention backend.';
-  } else if (capability?.ready === true) {
-    status.textContent = `Verified in ComfyUI${capability.sageVersion ? ` · SageAttention ${capability.sageVersion}` : ''}`;
-    toggle.title = 'The matching package, Triton runtime, CUDA kernel, and KJ graph patch are verified.';
-  } else if (capability) {
-    status.textContent = capability.reason || 'Install the H3 SageAttention workflow to enable acceleration';
-    toggle.title = status.textContent;
-  } else {
-    status.textContent = 'Verifying the ComfyUI runtime…';
-    toggle.title = status.textContent;
-  }
+  // SageAttention removed: incompatible with Intel Arc XPU; pytorch attention is used instead
 }
 
 function updateVideoPanels() {
@@ -4845,12 +4823,7 @@ function updateVideoPanels() {
   schedulePromptIntentHint();
 }
 
-$('#vidH3SageToggle').addEventListener('click', () => {
-  state.vidH3SageAttention = state.vidH3SageAttention === false;
-  renderH3SageAttention();
-  $('#genLbl').textContent = genLabel();
-  saveForm();
-});
+// SageAttention toggle removed: incompatible with Intel Arc XPU
 
 $('#vidH3TurboToggle').addEventListener('click', () => {
   if ($('#vidH3TurboToggle').disabled) return;
@@ -10385,6 +10358,12 @@ function setAudioChipVisual(chip, active) {
   } else {
     chip.textContent = active ? 'Audio added' : 'Audio';
   }
+  const icon = chip.querySelector('.media-input-art i');
+  if (icon) {
+    icon.textContent = active ? '✕' : '+';
+    icon.style.background = active ? 'rgba(255, 60, 60, 0.15)' : '';
+    icon.style.color = active ? '#ff5c5c' : '';
+  }
   // Face ID mode rewrites the video audio chip with lipsync copy.
   if (chip && chip.id === 'vidAudioChip' && typeof renderVidFace === 'function') renderVidFace();
 }
@@ -12712,7 +12691,7 @@ $$('#sizeSeg button').forEach((b) => b.addEventListener('click', async () => {
     if (!state.vidH3Xl) {
       const confirmed = await askConfirm({
         title: 'Use H3 XL direct resolution?',
-        message: 'XL renders a larger canvas directly (1920 × 1088 at 16:9) and uses roughly twice the pixels of L. It can take substantially longer or run out of memory. L followed by RTX upscale is the more reliable route.',
+        message: 'XL renders a larger canvas directly (1920 × 1088 at 16:9) and uses roughly twice the pixels of L. It can take substantially longer or run out of memory. L followed by 4K AI upscale is the more reliable route.',
         confirmLabel: 'Use XL',
       });
       if (!confirmed) return;
@@ -14086,6 +14065,7 @@ function collapseRes(open) {
   const expand = open === true;
   const body = $('#resBody');
   $('#resPanel').classList.toggle('expanded', expand);
+  if (!expand && body.contains(document.activeElement)) document.activeElement.blur();
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#resHeader').setAttribute('aria-expanded', String(expand));
@@ -14102,6 +14082,7 @@ function setVideoOptionsExpanded(open) {
   const expand = open === true;
   const body = $('#vidOptsBody');
   $('#vidOptsPanel').classList.toggle('expanded', expand);
+  if (!expand && body.contains(document.activeElement)) document.activeElement.blur();
   body.inert = !expand;
   body.setAttribute('aria-hidden', String(!expand));
   $('#vidOptsHeader').setAttribute('aria-expanded', String(expand));
@@ -18371,8 +18352,8 @@ function renderVidFace() {
   const fixedMotion = wanOrScail || state.vidEngine === 'wan-animate2';
   $('#vidFpsRow').hidden = h3 || !(ltxFamily || wanOrScail);
   $('#vidFreeField').hidden = h3 || fixedMotion || ltxEdit || faceMode;
-  $('#vidAudioChip').hidden = h3;
-  $('#vidAudioTrim').hidden = h3 || !state.vidAudio;
+  $('#vidAudioChip').hidden = false;
+  $('#vidAudioTrim').hidden = !state.vidAudio;
   renderVideoFpsChoices();
   // Face ID + audio = frozen-audio lipsync: the joint AV denoise conforms the
   // face to the locked recording. Make the audio chip say so.
@@ -19485,10 +19466,6 @@ $('#generateBtn').addEventListener('click', async () => {
       if (!state.vidH3ReplaceVideo) return toast('Replace mode needs the master video', true);
       if (!state.vidH3ReplaceImage) return toast('Replace mode needs the replacement image', true);
     }
-    if (!ltxEdit && !['ltx', 'ltx25', 'h3'].includes(state.vidEngine) && !state.vidRef) {
-      const lbl = { wan: 'Wan 2.2', 'wan-animate2': 'Wan Animate 2', eros: '10Eros DMD', scail: 'SCAIL 2' }[state.vidEngine];
-      return toast(`${lbl} needs a source image — add one, or switch to LTX 2.3 or LTX 2.5 for text-to-video`, true);
-    }
     if (ltxEdit && !state.vidDrive) {
       return toast('LTX Edit needs the source video you want to edit', true);
     }
@@ -19499,8 +19476,12 @@ $('#generateBtn').addEventListener('click', async () => {
       return toast('Wan Animate 2 needs a performance video for motion and expression', true);
     }
     if (!(await ensureGenerationSetup())) return;
+    if (!ltxEdit && !['ltx', 'ltx25', 'h3'].includes(state.vidEngine) && !state.vidRef) {
+      const lbl = { wan: 'Wan 2.2', 'wan-animate2': 'Wan Animate 2', eros: '10Eros DMD', scail: 'SCAIL 2' }[state.vidEngine];
+      return toast(`${lbl} needs a source image — add one, or switch to LTX 2.3 or LTX 2.5 for text-to-video`, true);
+    }
     let vidAudioName;
-    if (state.vidAudio && (state.vidEngine === 'ltx' || state.vidEngine === 'ltx25' || state.vidEngine === 'eros')) {
+    if (state.vidAudio) {
       try { vidAudioName = await ensureAudioUploaded(state.vidAudio); }
       catch (e) { return toast('Audio upload failed: ' + e.message, true); }
     }
@@ -19558,7 +19539,7 @@ $('#generateBtn').addEventListener('click', async () => {
         ? h3MatchSourceActive() : undefined,
       h3MatchReferenceVideo: state.vidEngine === 'h3' && state.vidH3Mode === 'reference'
         ? h3MatchReferenceVideoActive() : undefined,
-      sageAttention: state.vidEngine === 'h3' ? state.vidH3SageAttention !== false : undefined,
+      sageAttention: false,
       h3RefImageSize: h3Reference ? state.vidH3RefImageSize : undefined,
       h3References: h3Reference ? Object.fromEntries(Object.entries(h3GenerationReferences).map(([kind, assets]) => [
         kind,
@@ -19838,16 +19819,16 @@ $('#generateBtn').addEventListener('click', async () => {
     if (strengthHuntCount) toast(`Strength Hunt queued as one ${strengthHuntCount}-image job`);
     else if (jobIds.length > 1) toast(`${jobIds.length} camera variations queued`);
     if (generationAdjustments.size) toast(`Low VRAM mode: ${[...generationAdjustments].join(' · ')}`);
-  } catch (e) {
-    setGenerating(false);
-    if (!firstImageTutorialJobId) retryFirstImageTutorialGeneration();
-    if (e.code === 'comfy_int8_update_required' || e.code === 'comfy_krea2_update_required') {
-      await openInitialSetup({
-        components: generationSetupComponents(),
-        message: e.message,
-      });
-    } else if (!isJobCancellation(e)) toast(e.message, true);
-  }
+    } catch (e) {
+      setGenerating(false);
+      if (!firstImageTutorialJobId) retryFirstImageTutorialGeneration();
+      if (e.code === 'comfy_int8_update_required' || e.code === 'comfy_krea2_update_required') {
+        await openInitialSetup({
+          components: generationSetupComponents(),
+          message: e.message,
+        });
+      } else if (!isJobCancellation(e)) toast(e.message, true);
+    }
 });
 
 function setGenerating(on, statusText) {
@@ -21668,7 +21649,7 @@ function resetActiveGenerationForm() {
     state.vidH3MatchSource = true;
     state.vidH3MatchReferenceVideo = false;
     state.vidH3Xl = false;
-    state.vidH3SageAttention = true;
+    state.vidH3SageAttention = false;
     state.vidH3Turbo = false;
     state.vidH3LongContext = false;
     state.vidH3TurboStrength = 1;
@@ -21838,7 +21819,7 @@ $('#desktopStageUpscale').addEventListener('click', () => {
   if (!video) return openUpscaleSheet(item);
   const choices = [
     { label: 'SeedVR2 upscale', detail: 'AI detail restoration · 2×', icon: 'process', action: () => processVideo(item, video, 'upscale', 'seedvr2') },
-    { label: 'RTX upscale', detail: 'Fast video super resolution · 2×', icon: 'process', action: () => processVideo(item, video, 'upscale', 'rtx') },
+    { label: 'AI upscale', detail: 'Fast video super resolution · 2×', icon: 'process', action: () => processVideo(item, video, 'upscale', 'rtx') },
     { label: 'Increase FPS', detail: 'RIFE interpolation', icon: 'process', action: () => processVideo(item, video, 'interpolate') },
   ];
   if (video.info?.engine === 'scail' && video.info?.driveVideoName && !video.info?.composite) choices.push({
@@ -26329,7 +26310,7 @@ function openLightbox(id, mediaSel, options = {}) {
     if (info.durationMs) meta.push(`<b>Generated in:</b> ${formatDuration(info.durationMs)}`);
     if (info.frames && info.fps) {
       const scailFlags = [info.scailMode && `SCAIL ${info.scailMode}`, info.scailFps && `${info.scailFps} fps generation`, info.scailMode === 'chunked' && info.scailStableTracking && 'stable', info.scailMode === 'chunked' && info.scailChunkFrames && `${info.scailChunkFrames}f chunks`, info.scailMode === 'chunked' && info.scailChunkOverlap && `${info.scailChunkOverlap}f overlap`].filter(Boolean).join(', ');
-      const flags = [info.composite && 'side-by-side', info.faceId && 'Face ID', info.processed === 'upscale' && `${info.upscaleEngine === 'seedvr2' ? 'SeedVR2' : 'RTX'} upscale`, info.processed === 'interpolate' && 'RIFE pass', info.processed === 'extend' && 'extended', info.h3LongContext && `${info.h3LongContextClips || 2}-clip Long context`, info.smooth && `RIFE ${info.smooth}×`, info.fourK && info.processed !== 'upscale' && 'RTX 4K', info.engine === 'wan' && info.fast && '4-step', info.sigmaPreset && `sigmas: ${info.sigmaPreset}`, scailFlags, info.drivenAudio && 'audio-driven', info.continuedAudio && 'continued sound', info.preservedAudio && 'audio kept', info.endFrame && 'end frame', info.motionVideo && !info.composite && 'motion transfer'].filter(Boolean).join(' · ');
+      const flags = [info.composite && 'side-by-side', info.faceId && 'Face ID', info.processed === 'upscale' && `${info.upscaleEngine === 'seedvr2' ? 'SeedVR2' : 'AI'} upscale`, info.processed === 'interpolate' && 'RIFE pass', info.processed === 'extend' && 'extended', info.h3LongContext && `${info.h3LongContextClips || 2}-clip Long context`, info.smooth && `RIFE ${info.smooth}×`, info.fourK && info.processed !== 'upscale' && '4K AI Upscale', info.engine === 'wan' && info.fast && '4-step', info.sigmaPreset && `sigmas: ${info.sigmaPreset}`, scailFlags, info.drivenAudio && 'audio-driven', info.continuedAudio && 'continued sound', info.preservedAudio && 'audio kept', info.endFrame && 'end frame', info.motionVideo && !info.composite && 'motion transfer'].filter(Boolean).join(' · ');
       meta.push(`<b>Playback:</b> ${(info.frames / info.fps).toFixed(1)}s @ ${info.fps}fps${flags ? ' · ' + flags : ''} &nbsp; ${copyableMeta('Seed', info.seed)}`);
       if (info.loras && info.loras.length) meta.push('<b>Video LoRAs:</b> ' + info.loras.map((l) => `${prettyLora(l.name)} (${Number(l.strength).toFixed(2)})`).join(', '));
     } else if (info.seed != null) meta.push(copyableMeta('Seed', info.seed));
@@ -26627,7 +26608,7 @@ function openLightbox(id, mediaSel, options = {}) {
     const processItems = [];
     if (!vinfo.composite) {
       processItems.push({ label: 'SeedVR2 upscale', detail: 'AI detail restoration · 2×', icon: 'process', action: () => processVideo(it, selVideo, 'upscale', 'seedvr2') });
-      processItems.push({ label: 'RTX upscale', detail: 'Fast video super resolution · 2×', icon: 'process', action: () => processVideo(it, selVideo, 'upscale', 'rtx') });
+      processItems.push({ label: 'AI upscale', detail: 'Fast video super resolution · 2×', icon: 'process', action: () => processVideo(it, selVideo, 'upscale', 'rtx') });
       processItems.push({ label: 'Increase FPS', detail: 'RIFE interpolation', icon: 'process', action: () => processVideo(it, selVideo, 'interpolate') });
     }
     if (vinfo.engine === 'scail' && vinfo.driveVideoName && !vinfo.composite) {
@@ -26753,7 +26734,7 @@ async function processVideo(it, video, kind, upscaleEngine = '') {
   const route = kind === 'upscale' ? '/api/video/upscale' : '/api/video/interpolate';
   const normalizedUpscaleEngine = upscaleEngine === 'seedvr2' ? 'seedvr2' : 'rtx';
   const label = kind === 'upscale'
-    ? `${normalizedUpscaleEngine === 'seedvr2' ? 'SeedVR2' : 'RTX'} video upscale queued`
+    ? `${normalizedUpscaleEngine === 'seedvr2' ? 'SeedVR2' : 'AI'} video upscale queued`
     : 'Frame interpolation queued';
   const requestKey = `animate:${it.id}`;
   try {
@@ -27535,7 +27516,7 @@ async function reuseVideo(it, v) {
     ? H3Resolution.restoredGenerationSize(info, state.mp)
     : state.mp;
   state.vidH3Xl = engine === 'h3' && reusedH3ResolutionSize === H3Resolution.XL_SIZE;
-  state.vidH3SageAttention = engine === 'h3' ? info.attentionBackend !== 'standard' : true;
+  state.vidH3SageAttention = false;
   state.vidH3Turbo = engine === 'h3' && info.h3Turbo === true;
   state.vidH3LongContext = engine === 'h3'
     && info.h3LongContext === true
@@ -28667,7 +28648,7 @@ function documentationVideoDetails(item, video, inputMedia = [], resultMedia = n
     info.endFrame && 'Last-frame guidance',
     info.motionVideo && 'Motion transfer',
     info.smooth > 1 && `RIFE ${info.smooth}×`,
-    info.fourK && info.processed !== 'upscale' && 'RTX 4K',
+    info.fourK && info.processed !== 'upscale' && '4K AI Upscale',
     info.engine === 'wan' && info.fast && '4-step',
     info.engine === 'h3' && info.h3Turbo && `${h3ReferenceBackedMode(info.h3Mode) ? 'Reference Turbo LoRA' : 'Turbo LoRA'} ${Number(info.h3TurboStrength || 1).toFixed(2)}`,
     info.sigmaPreset && `Sigmas: ${info.sigmaPreset}`,
@@ -28675,7 +28656,7 @@ function documentationVideoDetails(item, video, inputMedia = [], resultMedia = n
     info.engine === 'scail' && info.scailFps && `${info.scailFps} fps generation`,
     info.engine === 'wan-animate2' && `Identity ${Number(info.wanAnimate2IdentityStrength || 1).toFixed(2)} · motion ${Number(info.wanAnimate2MotionStrength || 1).toFixed(2)}`,
     info.engine === 'wan-animate2' && 'Source timing + audio',
-    info.processed === 'upscale' && `${info.upscaleEngine === 'seedvr2' ? 'SeedVR2' : 'RTX'} video upscale`,
+    info.processed === 'upscale' && `${info.upscaleEngine === 'seedvr2' ? 'SeedVR2' : 'AI'} video upscale`,
     info.processed === 'interpolate' && 'Frame interpolation',
     info.processed === 'extend' && 'Video extension',
   ].filter(Boolean).join(', ');
@@ -34313,7 +34294,7 @@ function generationSetupComponents() {
     if (state.vidEngine === 'ltx25' && videoQualityActive()) components.add('ltx25quality');
     if (h3TurboActive()) components.add(h3ReferenceBackedMode() ? 'h3turbor2v' : 'h3turbo');
     if (h3LongContextActive()) components.add('h3context');
-    if (state.vidEngine === 'h3' && state.vidH3SageAttention !== false) components.add('h3sage');
+    // h3sage component removed: SageAttention incompatible with Intel Arc XPU
     if (state.vidEngine === 'h3' && h3ReferenceBackedMode()) components.add('h3r2v');
     if (state.directorOpen) components.add('ltxdirector');
     if (state.vidEngine === 'ltx-edit') components.add('video');
@@ -36238,7 +36219,7 @@ function renderHealth() {
     return;
   }
   const rows = [`<span class="ok">● Connected</span> — ${state.metaLoras.length} LoRAs found`];
-  const labels = { core: 'Core nodes', enhance: 'Prompt enhance (TextGenerate)', klein: 'Edit (Flux 2 Klein) nodes', qwenedit: 'Edit (Qwen Image Edit) nodes', regional: 'Krea2 regional prompting nodes', krea2inpaint: 'Krea2 Fill nodes', krea2ref: 'Krea 2 Identity Edit nodes', krea2remix: 'Krea 2 Remix (Rebalance) nodes', krea2outpaint: 'Krea 2 Expand nodes', editoutpaint: 'Klein / Qwen Expand nodes', smartmask: 'Smart Mask (SAM3) nodes', upscale: 'SeedVR2 nodes', ultimateupscale: 'Ultimate SD Upscale nodes', video: 'LTX 2.3 video nodes', ltx25: 'LTX 2.5 native nodes', ltx25quality: 'LTX 2.5 Quality guidance nodes', h3: 'MiniMax H3 native nodes', h3turbo: 'MiniMax H3 Turbo creator nodes', h3turbor2v: 'MiniMax H3 Reference Turbo sampler', h3context: 'MiniMax H3 Motion Context nodes', h3r2v: 'MiniMax H3 reference-input nodes', h3sage: 'MiniMax H3 SageAttention patch', ltxdirector: 'LTX Director nodes', videoedit: 'LTX Edit guide-video nodes', video4k: 'RTX 4K pass (optional)', rife: 'RIFE frame interpolation nodes', wan: 'Wan 2.2 nodes', wananimate2: 'Wan Animate 2 native nodes', eros: '10Eros DMD nodes', scail: 'SCAIL 2 motion transfer nodes', scailinfinity: 'SCAIL 2 Infinity node', faceid: 'LTX Face ID (BFS) nodes' };
+  const labels = { core: 'Core nodes', enhance: 'Prompt enhance (TextGenerate)', klein: 'Edit (Flux 2 Klein) nodes', qwenedit: 'Edit (Qwen Image Edit) nodes', regional: 'Krea2 regional prompting nodes', krea2inpaint: 'Krea2 Fill nodes', krea2ref: 'Krea 2 Identity Edit nodes', krea2remix: 'Krea 2 Remix (Rebalance) nodes', krea2outpaint: 'Krea 2 Expand nodes', editoutpaint: 'Klein / Qwen Expand nodes', smartmask: 'Smart Mask (SAM3) nodes', upscale: 'SeedVR2 nodes', ultimateupscale: 'Ultimate SD Upscale nodes', video: 'LTX 2.3 video nodes', ltx25: 'LTX 2.5 native nodes', ltx25quality: 'LTX 2.5 Quality guidance nodes', h3: 'MiniMax H3 native nodes', h3turbo: 'MiniMax H3 Turbo creator nodes', h3turbor2v: 'MiniMax H3 Reference Turbo sampler', h3context: 'MiniMax H3 Motion Context nodes', h3r2v: 'MiniMax H3 reference-input nodes', h3sage: 'MiniMax H3 SageAttention patch', ltxdirector: 'LTX Director nodes', videoedit: 'LTX Edit guide-video nodes', video4k: '4K AI Upscale pass (optional)', rife: 'RIFE frame interpolation nodes', wan: 'Wan 2.2 nodes', wananimate2: 'Wan Animate 2 native nodes', eros: '10Eros DMD nodes', scail: 'SCAIL 2 motion transfer nodes', scailinfinity: 'SCAIL 2 Infinity node', faceid: 'LTX Face ID (BFS) nodes' };
   for (const [group, missing] of Object.entries(lastMeta.missing || {})) {
     if (group === 'smartmask') continue; // The actionable installer card above owns this status.
     const label = labels[group] || group.replace(/([a-z])([A-Z])/g, '$1 $2');

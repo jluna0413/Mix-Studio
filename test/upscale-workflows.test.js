@@ -13,7 +13,7 @@ const {
   seedVr2AttentionForVendor,
   seedVr2DeviceForVendor,
   targetResolutionForUpscale,
-  rtxVideoSuperResolutionNode,
+  addCompatibleVideoUpscaler,
   seedVr2UpscaleNodes,
   buildUltimateSdUpscaleGraph,
 } = require('../lib/upscale-workflows');
@@ -160,18 +160,23 @@ test('installed SeedVR2 model scan ignores partial downloads', () => {
   assert.deepEqual(models, [DEFAULT_SEEDVR2_DIT, 'ema_vae_fp16.safetensors']);
 });
 
-test('builds RTX 4K node with dynamic multiplier, mode, and string quality', () => {
-  const node = rtxVideoSuperResolutionNode(['decode', 0], 2, 'ULTRA');
+test('builds 4K AI Upscale nodes', () => {
+  const graph = {};
+  const out = addCompatibleVideoUpscaler(graph, ['decode', 0], 'vsr', 2);
 
-  assert.deepEqual(node, {
-    class_type: 'RTXVideoSuperResolution',
-    inputs: {
-      images: ['decode', 0],
-      multiplier: 2,
-      mode: 'scale by multiplier',
-      quality: 'ULTRA',
-    },
+  assert.deepEqual(graph.vsr_model, {
+    class_type: 'UpscaleModelLoader',
+    inputs: { model_name: 'RealESRGAN_x4plus.safetensors' },
   });
+  assert.deepEqual(graph.vsr_upscale, {
+    class_type: 'ImageUpscaleWithModel',
+    inputs: { image: ['decode', 0], upscale_model: ['vsr_model', 0] },
+  });
+  assert.deepEqual(graph.vsr_scale, {
+    class_type: 'ImageScaleBy',
+    inputs: { image: ['vsr_upscale', 0], upscale_method: 'lanczos', scale_by: 0.5, crop: 'disabled' }
+  });
+  assert.deepEqual(out, ['vsr_scale', 0]);
 });
 
 test('builds a temporally coherent SeedVR2 video post-upscale batch', () => {

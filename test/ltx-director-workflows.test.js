@@ -180,7 +180,7 @@ test('Director graph inserts prompt relay and guide nodes into the existing two-
     async filterInputs(graph) { return graph; },
     chainModelLoras(graph, model) { return model; },
     async rifeSmooth(graph, source) { return source; },
-    rtxVideoSuperResolutionNode(source) { return { class_type: 'RTXVideoSuperResolution', inputs: { images: source } }; },
+    addCompatibleVideoUpscaler(graph, img, key) { graph[`${key}_scale`] = { class_type: 'FakeVSR' }; return [`${key}_scale`, 0]; },
     async getObjectInfo() { return { ImageFromBatch: {} }; },
   };
   const settings = {
@@ -227,7 +227,7 @@ test('Director graph keeps LoRAs, guide audio override, smoothing, 4K, and poste
     async filterInputs(graph) { return graph; },
     chainModelLoras(graph, model, loras) { calls.loras = loras; return ['user_lora', 0]; },
     async rifeSmooth(graph, source, smooth) { calls.smooth = smooth; graph.rife = { class_type: 'RIFE VFI', inputs: { frames: source } }; return ['rife', 0]; },
-    rtxVideoSuperResolutionNode(source) { return { class_type: 'RTXVideoSuperResolution', inputs: { images: source } }; },
+    addCompatibleVideoUpscaler(graph, img, key) { graph[`${key}_scale`] = { class_type: 'FakeVSR' }; return [`${key}_scale`, 0]; },
     async getObjectInfo() { return { ImageFromBatch: {} }; },
   };
   const graph = await buildLtxDirectorGraph(normalized, {
@@ -243,8 +243,8 @@ test('Director graph keeps LoRAs, guide audio override, smoothing, 4K, and poste
   assert.equal(graph.director.inputs.override_audio, true);
   assert.equal(graph.director.inputs.inpaint_audio, false);
   assert.deepEqual(graph.guide_base.inputs.model, ['director', 0]);
-  assert.equal(graph.vsr.class_type, 'RTXVideoSuperResolution');
-  assert.deepEqual(graph.video.inputs.images, ['vsr', 0]);
+  assert.equal(graph.vsr_scale.class_type, 'FakeVSR');
+  assert.deepEqual(graph.video.inputs.images, ['vsr_scale', 0]);
   assert.equal(graph.video.inputs.fps, 48);
   assert.equal(graph.poster_save.class_type, 'SaveImage');
 });
@@ -266,7 +266,7 @@ test('Director extension anchors both stages and emits a seam-trimmed tail for a
     async filterInputs(graph) { return graph; },
     chainModelLoras(graph, model) { return model; },
     async rifeSmooth(graph, source) { return source; },
-    rtxVideoSuperResolutionNode(source) { return { class_type: 'RTXVideoSuperResolution', inputs: { images: source } }; },
+    addCompatibleVideoUpscaler(graph, img, key) { graph[`${key}_scale`] = { class_type: 'FakeVSR' }; return [`${key}_scale`, 0]; },
     async getObjectInfo() { return { ImageFromBatch: {}, TrimAudioDuration: {} }; },
   };
   const plan = {

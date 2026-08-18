@@ -101,18 +101,13 @@ test('MiniMax H3 Reference mode can match Video 1 aspect and labels video thumbn
   assert.match(server, /h3MatchReferenceVideo: engine === 'h3' && h3Mode === 'reference'/);
 });
 
-test('MiniMax H3 offers verified SageAttention with an explicit standard-attention bypass', () => {
-  assert.match(html, /id="vidH3SageToggle"[^>]*role="switch"[^>]*aria-checked="true"/);
-  assert.match(html, /id="vidH3SageStatus">Verifying the ComfyUI runtime/);
-  assert.match(app, /vidH3SageAttention: true/);
+test('MiniMax H3 uses pytorch attention via ModelAttentionBackend instead of SageAttention', () => {
+  assert.match(app, /vidH3SageAttention: false/);
   assert.match(app, /function renderH3SageAttention\(\)/);
-  assert.match(app, /sageAttention: state\.vidEngine === 'h3' \? state\.vidH3SageAttention !== false : undefined/);
-  assert.match(app, /if \(state\.vidEngine === 'h3' && state\.vidH3SageAttention !== false\) components\.add\('h3sage'\)/);
-  assert.match(app, /info\.attentionBackend === 'sageattention' \? 'SageAttention \(verified\)' : 'Standard PyTorch'/);
-  assert.match(css, /\.h3-sage-toggle\[data-ready="false"\]\[aria-checked="true"\]/);
-  assert.match(server, /const h3SageAttention = engine === 'h3' && body\.sageAttention !== false/);
-  assert.match(server, /code: 'h3_sage_attention_unavailable'/);
-  assert.match(server, /attentionBackend: engine === 'h3' \? \(opts\.sageAttention \? 'sageattention' : 'standard'\)/);
+  assert.match(app, /sageAttention: false,/);
+  assert.match(html, /SageAttention removed/);
+  assert.match(server, /const h3SageAttention = false/);
+  assert.match(server, /attentionBackend: engine === 'h3' \? 'pytorch' : undefined/);
 });
 
 test('MiniMax H3 exposes the shared LoRA stack and sends it to the video workflow', () => {

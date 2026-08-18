@@ -1204,7 +1204,7 @@
           </span>
         </div>
         <div class="chip-row video-output-row">
-          <button class="chip" id="vid4k">RTX 4K pass</button>
+          <button class="chip" id="vid4k">4K AI Upscale pass</button>
         </div>
       </div>
     </div>
@@ -1227,7 +1227,7 @@
             <button type="button" data-mp="1.75" aria-pressed="false">L</button>
             <button type="button" data-h3-xl="true" aria-pressed="false" hidden>XL</button>
           </div>
-          <button class="res-resource-warning caution-icon" id="h3ResolutionWarning" type="button" aria-label="XL resolution resource caution" data-icon-tooltip="XL resolution caution" data-icon-tooltip-detail="XL uses roughly twice the pixels of L. L with RTX upscale is more reliable." hidden>
+          <button class="res-resource-warning caution-icon" id="h3ResolutionWarning" type="button" aria-label="XL resolution resource caution" data-icon-tooltip="XL resolution caution" data-icon-tooltip-detail="XL uses roughly twice the pixels of L. L with 4K AI upscale is more reliable." hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 21 20H3L12 4Z"/><path d="M12 9v5m0 3h.01"/></svg>
           </button>
           <div class="res-dims">
@@ -1348,15 +1348,7 @@
                 <button class="chip" type="button" data-scail-fps="24">24 fps · experimental</button>
               </div>
             </div>
-            <div class="field field-span h3-sage-field" id="vidH3SageField" hidden>
-              <button class="settings-media-toggle h3-sage-toggle" id="vidH3SageToggle" type="button" role="switch" aria-checked="true">
-                <span class="settings-media-toggle-copy">
-                  <strong>SageAttention acceleration</strong>
-                  <small id="vidH3SageStatus">Verifying the ComfyUI runtime…</small>
-                </span>
-                <span class="settings-media-switch" aria-hidden="true"><i></i></span>
-              </button>
-            </div>
+            <!-- SageAttention removed: incompatible with Intel Arc XPU; pytorch attention is used instead -->
             <div class="h3-turbo-strength-field field-span" id="vidH3TurboStrengthField" hidden>
               <div class="h3-turbo-strength-head">
                 <span><label for="vidH3TurboStrength">Turbo LoRA strength</label><small id="vidH3TurboStrengthHelp">Advanced tuning for grainy or soft results</small></span>
@@ -2303,7 +2295,7 @@
     <div class="field"><label>Options</label></div>
     <div class="chip-row">
       <button class="chip active icon-label-btn" id="animEnhance"><svg class="action-glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m12 2 1.2 4.1L17 8l-3.8 1.9L12 14l-1.2-4.1L7 8l3.8-1.9L12 2Zm6 10 .8 2.7L21 16l-2.2 1.3L18 20l-.8-2.7L15 16l2.2-1.3L18 12Z"/></svg><span>Enhance motion prompt</span></button>
-      <button class="chip" id="anim4k">RTX 4K pass</button>
+      <button class="chip" id="anim4k">4K AI Upscale pass</button>
       <button class="chip" id="animQuality" hidden>Full quality · 20 steps</button>
     </div>
     <button class="sheet-cta" id="animateGo">Generate Video</button>

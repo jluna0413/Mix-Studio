@@ -198,13 +198,14 @@ test('MiniMax H3 applies ordered user LoRAs to the model used by its scheduler a
   });
   assert.equal(graph.user_lora_4, undefined);
   assert.deepEqual(graph.scheduler.inputs.model, ['user_lora_3', 0]);
-  assert.deepEqual(graph.guider.inputs.model, ['user_lora_3', 0]);
+  assert.deepEqual(graph.attention_backend.inputs.model, ['user_lora_3', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['attention_backend', 0]);
 });
 
-test('MiniMax H3 user LoRAs stack after Frames Turbo and before native AV sampling and SageAttention', async () => {
+test('MiniMax H3 user LoRAs stack after Frames Turbo and before native AV sampling and pytorch attention', async () => {
   const graph = await buildMiniMaxH3Graph({
     mode: 'frames', prompt: 'A singer performs.', W: 1344, H: 768, frames: 124, seed: 17,
-    turbo: true, turboNativeSampler: true, sageAttention: true,
+    turbo: true, turboNativeSampler: true,
     loras: [{ name: 'MiniMax-H3/stage-light.safetensors', strength: 1.15, on: true }],
   }, settings);
 
@@ -212,8 +213,8 @@ test('MiniMax H3 user LoRAs stack after Frames Turbo and before native AV sampli
   assert.deepEqual(graph.user_lora_1.inputs.model, ['turbo_lora', 0]);
   assert.deepEqual(graph.turbo_sampling.inputs.model, ['user_lora_1', 0]);
   assert.deepEqual(graph.scheduler.inputs.model, ['turbo_sampling', 0]);
-  assert.deepEqual(graph.sage_attention.inputs.model, ['turbo_sampling', 0]);
-  assert.deepEqual(graph.guider.inputs.model, ['sage_attention', 0]);
+  assert.deepEqual(graph.attention_backend.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['attention_backend', 0]);
 });
 
 test('MiniMax H3 user LoRAs stack after Reference Turbo and before its audio-safe sigma shift', async () => {
@@ -228,7 +229,8 @@ test('MiniMax H3 user LoRAs stack after Reference Turbo and before its audio-saf
   assert.deepEqual(graph.user_lora_1.inputs.model, ['turbo_lora', 0]);
   assert.deepEqual(graph.turbo_sampling.inputs.model, ['user_lora_1', 0]);
   assert.deepEqual(graph.scheduler.inputs.model, ['turbo_sampling', 0]);
-  assert.deepEqual(graph.guider.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.attention_backend.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['attention_backend', 0]);
 });
 
 test('MiniMax H3 rejects standard fused-QKV LoRAs with the experimental DynTime model', async () => {
@@ -321,23 +323,17 @@ test('MiniMax H3 accepts an explicit sampler step count', async () => {
   assert.equal(graph.scheduler.inputs.steps, 28);
 });
 
-test('MiniMax H3 SageAttention patches only the guider model and leaves scheduler calculation unchanged', async () => {
+test('MiniMax H3 ModelAttentionBackend patches only the guider model and leaves scheduler calculation unchanged', async () => {
   const graph = await buildMiniMaxH3Graph({
     mode: 'frames', prompt: 'A storm rolls across the sea.', W: 1344, H: 768, frames: 124, seed: 7,
-    sageAttention: true,
   }, settings);
-  assert.equal(graph.sage_attention.class_type, 'PathchSageAttentionKJ');
-  assert.deepEqual(graph.sage_attention.inputs, {
-    model: ['model', 0], sage_attention: 'auto', allow_compile: false,
+  assert.equal(graph.attention_backend.class_type, 'ModelAttentionBackend');
+  assert.deepEqual(graph.attention_backend.inputs, {
+    model: ['model', 0], attention: 'pytorch attention',
   });
-  assert.deepEqual(graph.guider.inputs.model, ['sage_attention', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['attention_backend', 0]);
   assert.deepEqual(graph.scheduler.inputs.model, ['model', 0]);
-
-  const standard = await buildMiniMaxH3Graph({
-    mode: 'frames', prompt: 'A storm rolls across the sea.', W: 1344, H: 768, frames: 124, seed: 7,
-  }, settings);
-  assert.equal(standard.sage_attention, undefined);
-  assert.deepEqual(standard.guider.inputs.model, ['model', 0]);
+  assert.equal(graph.sage_attention, undefined);
 });
 
 test('MiniMax H3 Turbo keeps the creator sampler as a legacy-core fallback with adjustable steps', async () => {
@@ -359,7 +355,8 @@ test('MiniMax H3 Turbo keeps the creator sampler as a legacy-core fallback with 
   assert.equal(graph.sampler_select, undefined);
   assert.equal(graph.scheduler.inputs.steps, 28);
   assert.deepEqual(graph.scheduler.inputs.model, ['turbo_lora', 0]);
-  assert.deepEqual(graph.guider.inputs.model, ['turbo_lora', 0]);
+  assert.deepEqual(graph.attention_backend.inputs.model, ['turbo_lora', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['attention_backend', 0]);
   assert.deepEqual(graph.sample.inputs.sampler, ['turbo_sampler', 0]);
   assert.deepEqual(graph.decode_audio.inputs, { samples: ['sample', 0], vae: ['audio_vae', 0] });
   assert.deepEqual(graph.video.inputs.audio, ['decode_audio', 0]);
@@ -383,21 +380,22 @@ test('MiniMax H3 Turbo uses native Euler sampling after ComfyUI audio scheduling
   assert.equal(graph.scheduler.inputs.scheduler, 'simple');
   assert.equal(graph.scheduler.inputs.steps, 7);
   assert.deepEqual(graph.scheduler.inputs.model, ['turbo_sampling', 0]);
-  assert.deepEqual(graph.guider.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.attention_backend.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['attention_backend', 0]);
   assert.deepEqual(graph.sample.inputs.sampler, ['sampler_select', 0]);
-  assert.equal(Object.values(graph).some((node) => /cache/i.test(node.class_type)), false);
 });
 
-test('MiniMax H3 Turbo can stack SageAttention after the Turbo LoRA', async () => {
+test('MiniMax H3 Turbo always uses pytorch attention via ModelAttentionBackend', async () => {
   const graph = await buildMiniMaxH3Graph({
     mode: 'frames', prompt: 'A singer performs under soft stage light.', W: 1344, H: 768,
-    frames: 124, seed: 17, turbo: true, sageAttention: true, turboLowVram: true,
+    frames: 124, seed: 17, turbo: true, turboLowVram: true,
   }, settings);
 
   assert.equal(graph.turbo_lora.inputs.low_vram, true);
-  assert.deepEqual(graph.sage_attention.inputs.model, ['turbo_lora', 0]);
-  assert.deepEqual(graph.guider.inputs.model, ['sage_attention', 0]);
+  assert.deepEqual(graph.attention_backend.inputs.model, ['turbo_lora', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['attention_backend', 0]);
   assert.deepEqual(graph.scheduler.inputs.model, ['turbo_lora', 0]);
+  assert.equal(graph.sage_attention, undefined);
 });
 
 test('MiniMax H3 Reference Turbo uses LightX2V with the audio-safe creator sampler', async () => {
@@ -417,7 +415,8 @@ test('MiniMax H3 Reference Turbo uses LightX2V with the audio-safe creator sampl
   assert.equal(graph.turbo_sampler.class_type, 'MiniMaxH3TurboSampler');
   assert.equal(graph.scheduler.inputs.steps, 6);
   assert.deepEqual(graph.scheduler.inputs.model, ['turbo_sampling', 0]);
-  assert.deepEqual(graph.guider.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.attention_backend.inputs.model, ['turbo_sampling', 0]);
+  assert.deepEqual(graph.guider.inputs.model, ['attention_backend', 0]);
   assert.deepEqual(graph.sample.inputs.sampler, ['turbo_sampler', 0]);
   assert.equal(Object.values(graph).some((node) => /cache/i.test(node.class_type)), false);
 });
@@ -488,7 +487,9 @@ test('MiniMax H3 Reference Turbo renders a planned long-video segment inside the
       videos: [{ name: 'live-action.mp4', hasAudio: true }],
       audios: [{ name: 'music.wav' }],
     },
-  }, settings);
+  }, settings, {
+    addCompatibleVideoUpscaler(graph, img, key) { graph[`${key}_scale`] = { class_type: 'FakeVSR' }; return [`${key}_scale`, 0]; }
+  });
 
   assert.equal(graph.condition.class_type, 'MiniMaxH3ReferenceToVideo');
   assert.equal(graph.condition.inputs.length, 124);
@@ -500,7 +501,7 @@ test('MiniMax H3 Reference Turbo renders a planned long-video segment inside the
   assert.equal(graph.ref_audio_1_0.inputs.duration, 124 / 24);
   assert.deepEqual(graph.sample.inputs.latent_image, ['condition', 1]);
   assert.deepEqual(graph.decode.inputs.samples, ['sample', 0]);
-  assert.deepEqual(graph.video.inputs.images, ['vsr', 0]);
+  assert.deepEqual(graph.video.inputs.images, ['vsr_scale', 0]);
   assert.deepEqual(graph.save.inputs.video, ['video', 0]);
   assert.deepEqual(graph.poster_pick.inputs.image, ['decode', 0]);
 });
