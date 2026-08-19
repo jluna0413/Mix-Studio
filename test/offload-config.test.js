@@ -68,8 +68,13 @@ test('applyOffloadToGraph converts loaders to LowVRAM for Intel', () => {
   assert.equal(result.model.inputs.ckpt_name, 'test.safetensors');
   assert.equal(result.model.inputs.offload_device, 'cpu');
 
-  assert.equal(result.clip.inputs.device, 'default');
-  assert.equal(result.clip.inputs.offload_device, 'cpu');
+  // CLIPLoader is moved to CPU via `device` (its only placement input — it has
+  // no `offload_device`). MEASURED on Arc Pro B70 32GB: with 'default' the
+  // ~14.6GB encoder full-loads to VRAM and even 256x256 x5 OOMs at 30.88GB;
+  // with 'cpu', 512x320 x56 succeeds at 25.15GB.
+  // See test/h3-clip-cpu-placement.test.js.
+  assert.equal(result.clip.inputs.device, 'cpu');
+  assert.equal(result.clip.inputs.offload_device, undefined);
 
   assert.equal(result.vae.inputs.offload_device, 'cpu');
 });
@@ -98,16 +103,21 @@ test('applyOffloadToGraph never overwrites LTXAVTextEncoderLoader device with a 
 });
 
 test('applyOffloadToGraph never overwrites CLIPLoader device with a backend string', () => {
-  // CLIPLoader also only accepts 'default' or 'cpu' for its device input.
-  // The graph builders set 'default' on CUDA/XPU; the offload pass must not
-  // replace it with 'xpu:0' or 'cuda:0' or ComfyUI rejects the graph.
+  // CLIPLoader only accepts 'default' or 'cpu' for its device input. The
+  // offload pass must never replace it with 'xpu:0' or 'cuda:0' or ComfyUI
+  // rejects the graph with "device: 'xpu:0' not in ['default', 'cpu']".
+  // It IS allowed to select 'cpu' — that is the intended placement, and the
+  // only way to keep the encoder off the GPU (CLIPLoader has no
+  // offload_device input). See test/h3-clip-cpu-placement.test.js.
   const graph = {
     clip: { class_type: 'CLIPLoader', inputs: { clip_name: 'test-clip', type: 'krea2', device: 'default' } },
   };
   const config = getOffloadConfig('intel');
   const result = applyOffloadToGraph(graph, config);
-  assert.equal(result.clip.inputs.device, 'default');
-  assert.equal(result.clip.inputs.offload_device, 'cpu');
+  assert.ok(['default', 'cpu'].includes(result.clip.inputs.device),
+    `CLIPLoader.device must stay in ['default','cpu'], got ${result.clip.inputs.device}`);
+  assert.equal(result.clip.inputs.device, 'cpu');
+  assert.equal(result.clip.inputs.offload_device, undefined);
 });
 
 test('maybeAddSuperResolution uses addCompatibleVideoUpscaler when fourK is true', () => {
