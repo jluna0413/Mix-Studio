@@ -2679,8 +2679,9 @@
                 <option value="nvfp4-awq">NVFP4 AWQ · 14.6 GB · works on all GPUs</option>
                 <option value="int8-convrot">INT8 ConvRot · 27.1 GB · NVIDIA only</option>
                 <option value="int8-convrot-uncensored">INT8 ConvRot uncensored · NVIDIA only</option>
+                <option value="lightweight">Lightweight 4B + projection · 2.6 GB · all GPUs · saves ~12 GB VRAM</option>
               </select>
-              <small id="setH3ClipVariantHelp" class="field-help">INT8 ConvRot needs CUDA-only kernels and fails on Intel Arc. Automatic picks NVFP4 there.</small>
+              <small id="setH3ClipVariantHelp" class="field-help">INT8 ConvRot needs CUDA-only kernels and fails on Intel Arc. Automatic picks NVFP4 there. Lightweight uses a 4B encoder plus a learned projection — quality is near-identical for most prompts but not verified on your hardware.</small>
             </div>
             <div class="field"><label for="setH3FrameModelVariant">Text + Frames model</label>
               <select id="setH3FrameModelVariant">
