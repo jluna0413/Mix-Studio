@@ -106,3 +106,22 @@ test('video UI consumes server capability gating', () => {
   assert.match(server, /function adoptDeviceCompatibleModelSettings/);
   assert.match(server, /settings\.ltxCkpt = 'ltx-2\.3-22b-dev\.safetensors'/);
 });
+
+test('Intel Arc marks LTX 2.5 unsupported due to INT8 ConvRot text encoder path mismatch', () => {
+  // Validated gap: LTX 2.5's Gemma-4 12B text encoder loads via HuggingFace
+  // transformers (Gemma3ForConditionalGeneration.load_state_dict), not ComfyUI's
+  // native CLIPLoader which honors comfy.ops int8_convrot. The ComfyUI INT8
+  // ConvRot checkpoint keys (.comfy_quant, scale tensors) are silently dropped
+  // by HF transformers' state_dict loader, so the model loads with missing/zeroed
+  // weights, producing garbage output rather than an error. The BF16 quality-tier
+  // text encoder is 36 GB, exceeding Arc's 32 GB VRAM.
+  const arcB70 = { gpuVendor: 'intel', gpuBackend: 'xpu', vramGb: 32 };
+  const caps = videoEngineCapabilities(arcB70);
+  assert.equal(caps.ltx25.supported, false);
+  assert.match(caps.ltx25.reason, /INT8 ConvRot.*HuggingFace|HuggingFace.*INT8 ConvRot/);
+  assert.equal(caps['ltx25quality'].supported, false);
+  assert.match(caps['ltx25quality'].reason, /vRAM|BF16|36 GB/);
+  assert.equal(caps.h3.supported, true);
+  assert.match(dependencyComponentBlock('ltx25', arcB70), /INT8 ConvRot|HuggingFace|Arc/);
+  assert.equal(dependencyComponentBlock('h3', arcB70), '');
+});
