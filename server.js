@@ -110,6 +110,7 @@ const {
   targetResolutionForUpscale,
   addCompatibleVideoUpscaler,
   seedVr2UpscaleNodes,
+  isSeedVr2SevenB,
   ULTIMATE_SD_UPSCALE_MODEL,
   buildUltimateSdUpscaleGraph,
 } = require('./lib/upscale-workflows');
@@ -6035,18 +6036,27 @@ async function buildExistingVideoUpscale(videoName, opts) {
   const engine = opts.engine === 'seedvr2' ? 'seedvr2' : 'rtx';
   let frameSource;
   if (engine === 'seedvr2') {
-    const gpuVendor = setupHardwareProfile(await getSetupHardwareInfo()).gpuVendor;
+    const hwProfile = setupHardwareProfile(await getSetupHardwareInfo());
+    const gpuVendor = hwProfile.gpuVendor;
+    const vramGb = hwProfile.vramGb || 0;
     const availableModels = installedSeedVr2Models(seedVr2ModelDirs());
+    // Adapt batch size and resolution to available VRAM.
+    // 7B FP8 DiT (7.67 GB) + VAE requires ~24 GB for batch 5 at 1080p.
+    // On 32 GB Arc, use batch 1 to avoid OOM. On 48 GB+, batch 5 is safe.
+    const isSevenB = isSeedVr2SevenB(settings.seedvr2Dit);
+    const maxBatchForVram = vramGb >= 48 ? 5 : (vramGb >= 24 ? 3 : 1);
+    const batchSize = Math.min(maxBatchForVram, isSevenB ? 1 : 5);
+    const resolution = opts.resolution || (vramGb < 48 ? 1080 : 2160);
     const seedVr2 = seedVr2UpscaleNodes(['src', 0], {
       settings,
       availableModels,
       gpuVendor,
       profile: opts.profile || 'sharp',
       noise: opts.noise || 'low',
-      resolution: opts.resolution || 1080,
-      batchSize: 5,
-      uniformBatchSize: true,
-      temporalOverlap: 2,
+      resolution,
+      batchSize,
+      uniformBatchSize: batchSize === 1 ? false : true,
+      temporalOverlap: batchSize === 1 ? 1 : 2,
     });
     Object.assign(graph, seedVr2.nodes);
     frameSource = seedVr2.output;
