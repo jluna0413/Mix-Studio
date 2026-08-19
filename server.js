@@ -95,6 +95,7 @@ const {
 const { comfyResetRequests } = require('./lib/comfy-reset');
 const {
   assessQueueHealth,
+  assessVramStuck,
   parseNvidiaSmiCsv,
   parseRocmSmiUseJson,
 } = require('./lib/queue-health');
@@ -1458,6 +1459,13 @@ function readGpuStats() {
         );
       }
     );
+    // Fallback: Intel Arc via xpu-smi (optional; only if installed).
+    // Your Arc B70 ships with the driver but xpu-smi may not be on PATH.
+    // If absent the VRAM guard degrades gracefully (returns null).
+    const xpuScript = 'xpu-smi --query-gpu=Util_memory.use,Util_memory.used,Util_memory.total --format=csv,noheader,nounits';
+    execFile(xpuScript, { timeout: 4000, shell: process.platform === 'win32' },
+      (xpuErr, xpuStdout) => resolve(xpuErr ? null : parseIntelXpuSmi(xpuStdout))
+    );
   });
 }
 
@@ -1474,11 +1482,25 @@ async function queueHealth(running, pending) {
     lowGpuSince: queueHealthState.lowGpuSince,
   });
   queueHealthState.lowGpuSince = assessed.lowGpuSince;
+  // VRAM guard: detects stuck VRAM after a DEVICE_LOST crash and signals
+  // the server to restart ComfyUI when the worker survives holding memory.
+  const vram = assessVramStuck(gpu, queueHealthState, now);
+  queueHealthState.vramStuckSince = vram.vramStuckSince;
+  // Trigger ComfyUI restart if VRAM is stuck (e.g. after DEVICE_LOST wedge).
+  if (vram.vramStuck && !queueHealthState.vramRestarting) {
+    queueHealthState.vramRestarting = true;
+    console.warn('[MixStudio] VRAM stuck at %d GB — restarting ComfyUI', Math.round(vram.freeMb / 1024));
+    restartComfy(RUNTIME, (phase, message) => {
+      console.warn('[MixStudio] ComfyUI VRAM-restart %s: %s', phase, message);
+    }).finally(() => { queueHealthState.vramRestarting = false; });
+  }
   return Object.assign({
     gpu,
     runningCount: running.length,
     pendingCount: pending.length,
     longestRunningMs,
+    vramStuck: vram.vramStuck,
+    vramStuckFreeMb: vram.freeMb,
   }, assessed);
 }
 
