@@ -194,6 +194,11 @@ h3VideoVae    = minimax_h3_video_vae_fp16.safetensors
 h3AudioVae    = minimax_h3_audio_vae_fp32.safetensors
 ```
 
+**Note:** `int8-convrot` was previously offered as a clip/text-encoder variant
+but has been removed — it required CUDA-only ConvRot kernels and failed on
+Intel Arc. The `int8_convrot` **UNet** models (above) are unaffected: ComfyUI
+exposes native ConvRot ops on XPU (`int8_tensorwise, convrot_w4a4`).
+
 Launch (env must be sanitized — Mix Studio's venv vars break ComfyUI's PIL):
 ```bash
 env -u PYTHONPATH -u PYTHONHOME -u VIRTUAL_ENV \
@@ -210,6 +215,8 @@ env -u PYTHONPATH -u PYTHONHOME -u VIRTUAL_ENV \
 2. **`taskkill` needs MSYS quoting.** `taskkill //F //PID n` fails under git-bash.
    Use `MSYS2_ARG_CONV_EXCL='*' taskkill /F /PID n`.
 3. **Match the repro to your settings.** The repro initially used the `int8_convrot`
-   encoder while settings specified `nvfp4_awq` — different code path, wrong conclusion.
+   clip encoder while settings specified `nvfp4_awq` — different code paths, wrong
+   conclusion. *(Since `int8_convrot` clip variant removal, this class of mismatch
+   is no longer possible — the variant simply doesn't exist.)*
 4. **`visual.*` warnings are a red herring.** Don't chase them; verify against the
    model's `state_dict()` before assuming a load failure.
