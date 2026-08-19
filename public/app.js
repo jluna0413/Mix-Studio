@@ -33959,7 +33959,7 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setLtxPixelUpscale4xLora').value = s.ltxPixelUpscale4xLora || '';
     $('#setLtxTextProjection').value = s.ltxTextProjection || '';
     $('#setLtxStoryboardLora').value = s.ltxStoryboardLora || '';
-    $('#setH3ClipVariant').value = s.h3ClipVariant || 'auto';
+    $('#setH3ClipVariant').value = s.h3ClipVariant || 'nvfp4-awq';
     $('#setH3FrameModelVariant').value = s.h3FrameModelVariant || 'standard';
     $('#setH3ReferenceModelVariant').value = s.h3ReferenceModelVariant || 'standard';
     $('#setH3Unet').value = s.h3Unet || '';
@@ -36158,7 +36158,7 @@ $('#dependencyInstallMissing').addEventListener('click', async () => {
         components,
         modelVariants: {
           krea2: $('#setKrea2ModelVariant').value,
-          h3: $('#setH3ClipVariant')?.value || 'auto',
+          h3: $('#setH3ClipVariant')?.value || 'nvfp4-awq',
         },
       }),
     });
@@ -36178,7 +36178,7 @@ $('#dependencyRepairMissing').addEventListener('click', async () => {
         repair: true,
         modelVariants: {
           krea2: $('#setKrea2ModelVariant').value,
-          h3: $('#setH3ClipVariant')?.value || 'auto',
+          h3: $('#setH3ClipVariant')?.value || 'nvfp4-awq',
         },
       }),
     });

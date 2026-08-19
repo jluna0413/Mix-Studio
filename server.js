@@ -542,9 +542,7 @@ const DEFAULT_SETTINGS = {
   h3Unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
   h3RefUnet: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
   h3Clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
-  // 'auto' resolves per-vendor at install time. Intel Arc must get nvfp4-awq:
-  // the int8-convrot encoder needs CUDA-only ConvRot kernels and fails on XPU.
-  h3ClipVariant: 'auto',
+  h3ClipVariant: 'nvfp4-awq',
   h3VideoVae: 'minimax_h3_video_vae_fp16.safetensors',
   h3AudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
   h3TurboLora: DEFAULT_H3_TURBO_LORA,
@@ -7761,9 +7759,8 @@ async function handleApi(req, res, url) {
       : '';
     const krea2Variant = effectiveKrea2Variant(requestedKrea2Variant, settings);
     // H3 text-encoder variant. Honour an explicit request, otherwise fall back
-    // to the persisted setting, otherwise 'auto' (which lets the installer pick
-    // per-vendor — Intel Arc needs nvfp4 because int8_convrot's ConvRot kernels
-    // are CUDA-only).
+    // to the persisted setting, otherwise nvfp4-awq (the universal baseline
+    // that runs on all GPUs including Intel Arc).
     const requestedH3Variant = body.modelVariants && typeof body.modelVariants === 'object'
       ? body.modelVariants.h3
       : '';

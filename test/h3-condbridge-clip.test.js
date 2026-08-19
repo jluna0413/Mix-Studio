@@ -57,14 +57,14 @@ test('distilled allows a custom student (fine-tuned prompt improver)', async () 
     'without override must use the default');
 });
 
-test('heavy variants (auto/nvfp4/int8-convrot) keep CLIPLoader', async () => {
-  for (const v of ['auto', 'nvfp4-awq', 'int8-convrot']) {
+test('heavy variants (nvfp4-awq) keep CLIPLoader', async () => {
+  for (const v of ['nvfp4-awq', undefined]) {
     const g = await buildGraph(v);
     assert.equal(g.clip.class_type, 'CLIPLoader', `variant ${v} must use CLIPLoader`);
   }
 });
 
-test('unset variant defaults to auto (CLIPLoader)', async () => {
+test('unset variant defaults to nvfp4-awq (CLIPLoader)', async () => {
   const g = await buildGraph(undefined);
   assert.equal(g.clip.class_type, 'CLIPLoader');
 });

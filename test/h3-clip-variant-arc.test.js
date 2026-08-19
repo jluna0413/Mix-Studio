@@ -1,24 +1,15 @@
 'use strict';
 
 /**
- * Regression tests: MiniMax H3 text-encoder (CLIP) selection on Intel Arc.
+ * Regression tests: MiniMax H3 text-encoder (CLIP) selection.
  *
- * Background — the bug these lock down:
- * The int8_convrot qwen3vl encoder relies on comfy_kitchen's CUDA-only ConvRot
- * kernels. On Intel Arc (XPU) those kernels do not exist, so the quantized
- * weights never materialize and the first forward pass dies with
- * `AttributeError: 'NoneType' object has no attribute 'device'`.
+ * The H3 clip variant dropdown offers three options that work on all GPUs:
+ *   - nvfp4-awq (32B encoder, 14.6 GB) — universal default
+ *   - lightweight (4B encoder + projection, ~2.6 GB)
+ *   - distilled (1.14B adapter + Qwen3.5-4B student, ~3.8 GB)
  *
- * The nvfp4-awq encoder uses the eager backend, which IS available on XPU, and
- * is verified working end-to-end (124 frames generated on an Arc Pro B70).
- *
- * Three defects had Arc pinned to the broken encoder:
- *   1. dependency-installer.js — an explicit `nvfp4-awq` request was ignored on
- *      Arc because of a `&& !isIntelArc` guard.
- *   2. dependency-installer.js — Arc was unconditionally rewritten to
- *      int8_convrot, even under `auto`.
- *   3. model-loader.js — the h3Clip fallback list contained only int8_convrot
- *      filenames, so discovery could never land on nvfp4.
+ * NVIDIA-only INT8 ConvRot variants were removed: the ClipProjLoader and
+ * CLIPLoader paths both work via backends available on Intel Arc (XPU).
  *
  * Reference: docs/comfyui-h3-arc-patch.md
  */
@@ -29,8 +20,7 @@ const assert = require('node:assert');
 const { resolveH3ClipAsset } = require('../lib/dependency-installer');
 
 const NVFP4 = 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors';
-const INT8 = 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors';
-const UNCENSORED = 'qwen3vl_32b_minimax_h3_ultra_uncensored_heretic_int8_convrot.safetensors';
+const LIGHTWEIGHT = 'qwen3vl_4b_int4_convrot.safetensors';
 
 // The catalogue entry as MODEL_ASSETS.h3 declares it (nvfp4 is the default).
 const H3_CLIP_ASSET = Object.freeze([
@@ -43,7 +33,7 @@ const H3_CLIP_ASSET = Object.freeze([
  * Resolve the encoder filename the installer would configure, exercising the
  * real `resolveH3ClipAsset` implementation rather than a local copy.
  *
- * @param {string} h3Variant  requested variant ('auto' when unset)
+ * @param {string} h3Variant  requested variant
  * @param {boolean} isIntelArc whether the host GPU is an Intel Arc (XPU)
  */
 function selectH3Clip(h3Variant, isIntelArc) {
@@ -51,51 +41,45 @@ function selectH3Clip(h3Variant, isIntelArc) {
   return String(source).split('/').pop();
 }
 
-test('Intel Arc + auto selects the nvfp4 encoder (not CUDA-only int8_convrot)', () => {
-  assert.strictEqual(
-    selectH3Clip('auto', true), NVFP4,
-    'Arc must not be routed to int8_convrot: its ConvRot kernels are CUDA-only'
-  );
-});
-
-test('explicit nvfp4-awq request is honoured on Intel Arc', () => {
-  // Regression: a `&& !isIntelArc` guard used to discard this request on Arc.
-  assert.strictEqual(
-    selectH3Clip('nvfp4-awq', true), NVFP4,
-    'an explicit nvfp4-awq request must not be overridden on Arc'
-  );
-});
-
-test('explicit nvfp4-awq request is honoured on CUDA', () => {
-  assert.strictEqual(selectH3Clip('nvfp4-awq', false), NVFP4);
-});
-
-test('explicit int8-convrot request is still honoured (user choice)', () => {
-  assert.strictEqual(selectH3Clip('int8-convrot', false), INT8);
-  assert.strictEqual(
-    selectH3Clip('int8-convrot', true), INT8,
-    'naming int8-convrot explicitly must surface the user choice, not silently swap'
-  );
-});
-
-test('uncensored variant is honoured on both vendors', () => {
-  assert.strictEqual(selectH3Clip('int8-convrot-uncensored', false), UNCENSORED);
-  assert.strictEqual(selectH3Clip('int8-convrot-uncensored', true), UNCENSORED);
-});
-
-test('no code path routes Intel Arc to int8_convrot unless explicitly asked', () => {
-  for (const variant of ['auto', 'nvfp4-awq', undefined, '', null]) {
-    const picked = selectH3Clip(variant || 'auto', true);
-    assert.notStrictEqual(
-      picked, INT8,
-      `variant=${String(variant)} must not yield int8_convrot on Arc`
+test('nvfp4-awq request returns the NVFP4 AWQ encoder on all GPUs', () => {
+  for (const isArc of [true, false]) {
+    assert.strictEqual(
+      selectH3Clip('nvfp4-awq', isArc), NVFP4,
+      `nvfp4-awq must resolve to the NVFP4 encoder regardless of vendor (arc=${isArc})`
     );
   }
 });
 
-test('h3Clip compatible names include the nvfp4 encoder', () => {
-  // Regression for model-loader.js: the candidate list held only int8_convrot
-  // filenames, so model discovery could never resolve to nvfp4.
+test('unrecognized variant falls back to nvfp4-awq (never int8_convrot)', () => {
+  for (const junk of ['nonsense', '', null, undefined, 42, {}]) {
+    assert.strictEqual(
+      selectH3Clip(junk, true), NVFP4,
+      `unrecognised value ${JSON.stringify(junk)} must fall back to nvfp4-awq`
+    );
+    assert.strictEqual(
+      selectH3Clip(junk, false), NVFP4,
+      `unrecognised value ${JSON.stringify(junk)} must fall back to nvfp4-awq on CUDA`
+    );
+  }
+});
+
+test('Intel Arc never resolves to int8_convrot', () => {
+  // All variants must resolve to a GPU-portable encoder on Arc.
+  for (const variant of ['nvfp4-awq', 'lightweight', 'distilled', undefined]) {
+    const picked = selectH3Clip(variant, true);
+    assert.ok(
+      !/int8_convrot/i.test(picked),
+      `variant=${String(variant)} must not yield int8_convrot on Arc: ${picked}`
+    );
+  }
+});
+
+test('lightweight variant returns the 4B int4 encoder', () => {
+  assert.strictEqual(selectH3Clip('lightweight', false), LIGHTWEIGHT);
+  assert.strictEqual(selectH3Clip('lightweight', true), LIGHTWEIGHT);
+});
+
+test('h3Clip candidate list contains the nvfp4 encoder', () => {
   const { COMPATIBLE_MODEL_NAMES } = require('../lib/model-loader');
   const candidates = COMPATIBLE_MODEL_NAMES.h3Clip;
 
@@ -104,68 +88,44 @@ test('h3Clip compatible names include the nvfp4 encoder', () => {
     candidates.includes(NVFP4),
     `nvfp4 encoder must be a discoverable h3Clip candidate; got ${JSON.stringify(candidates)}`
   );
+  assert.ok(
+    !candidates.some((c) => /int8_convrot/i.test(c)),
+    'h3Clip candidates must not include CUDA-only int8_convrot files'
+  );
 });
 
-test('nvfp4 is preferred over int8_convrot in the candidate ordering', () => {
-  const { COMPATIBLE_MODEL_NAMES } = require('../lib/model-loader');
-  const candidates = COMPATIBLE_MODEL_NAMES.h3Clip;
-  const nvfp4At = candidates.indexOf(NVFP4);
-  const int8At = candidates.indexOf(INT8);
-
-  assert.ok(nvfp4At !== -1, 'nvfp4 must be present');
-  if (int8At !== -1) {
-    assert.ok(
-      nvfp4At < int8At,
-      'nvfp4 must rank before int8_convrot so XPU hosts resolve to a working encoder'
-    );
-  }
-});
-
-test('h3ClipVariant normalizes known ids and rejects junk', () => {
+test('h3ClipVariant normalizes known ids and rejects to nvfp4-awq', () => {
   const { normalizeH3ClipVariant } = require('../lib/h3-model-variants');
 
-  for (const id of ['auto', 'nvfp4-awq', 'int8-convrot', 'int8-convrot-uncensored']) {
+  for (const id of ['nvfp4-awq', 'lightweight', 'distilled']) {
     assert.strictEqual(normalizeH3ClipVariant(id), id, `${id} must round-trip`);
   }
   // Case and whitespace tolerance.
   assert.strictEqual(normalizeH3ClipVariant('  NVFP4-AWQ  '), 'nvfp4-awq');
-  // Anything unrecognised must fall back to auto, never to a broken encoder.
+  // Anything unrecognised must fall back to nvfp4-awq, never to a broken encoder.
   for (const junk of ['nonsense', '', null, undefined, 42, {}]) {
     assert.strictEqual(
-      normalizeH3ClipVariant(junk), 'auto',
-      `unrecognised value ${JSON.stringify(junk)} must fall back to auto`
+      normalizeH3ClipVariant(junk), 'nvfp4-awq',
+      `unrecognised value ${JSON.stringify(junk)} must fall back to nvfp4-awq`
     );
   }
 });
 
-test('h3ClipVariant is a recognised variant id, not dead config', () => {
-  // Regression: h3ClipVariant sat in settings.json but had zero readers, so it
-  // could silently disagree with h3Clip. It must now normalize and be plumbed
-  // through modelVariants.h3 to the installer.
-  const { H3_CLIP_VARIANTS, normalizeH3ClipVariant } = require('../lib/h3-model-variants');
+test('H3_CLIP_VARIANTS exports only universal variants', () => {
+  const { H3_CLIP_VARIANTS } = require('../lib/h3-model-variants');
 
-  assert.ok(H3_CLIP_VARIANTS, 'H3_CLIP_VARIANTS must be exported');
-  assert.ok(
-    Object.prototype.hasOwnProperty.call(H3_CLIP_VARIANTS, 'nvfp4-awq'),
-    'nvfp4-awq must be a recognised variant'
-  );
-  // The value persisted in this workspace must survive normalization.
-  assert.strictEqual(normalizeH3ClipVariant('nvfp4-awq'), 'nvfp4-awq');
+  const ids = Object.keys(H3_CLIP_VARIANTS);
+  assert.ok(ids.includes('nvfp4-awq'), 'must include nvfp4-awq');
+  assert.ok(ids.includes('lightweight'), 'must include lightweight');
+  assert.ok(ids.includes('distilled'), 'must include distilled');
+  assert.ok(!ids.includes('auto'), 'must not include removed auto variant');
+  assert.ok(!ids.includes('int8-convrot'), 'must not include CUDA-only int8-convrot');
+  assert.ok(!ids.includes('int8-convrot-uncensored'), 'must not include CUDA-only int8-convrot-uncensored');
 });
 
-test('every recognised clip variant resolves to a real encoder file', () => {
-  const known = ['auto', 'nvfp4-awq', 'int8-convrot', 'int8-convrot-uncensored'];
-  const valid = new Set([NVFP4, INT8, UNCENSORED]);
-
-  for (const variant of known) {
-    for (const isArc of [true, false]) {
-      const picked = selectH3Clip(variant, isArc);
-      assert.ok(
-        valid.has(picked),
-        `variant=${variant} arc=${isArc} produced unknown encoder: ${picked}`
-      );
-    }
-  }
+test('default setting is nvfp4-awq', () => {
+  const { h3VariantSettingDefaults } = require('../lib/h3-model-variants');
+  assert.strictEqual(h3VariantSettingDefaults().h3ClipVariant, 'nvfp4-awq');
 });
 
 module.exports = { selectH3Clip };

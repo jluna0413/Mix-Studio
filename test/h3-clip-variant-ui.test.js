@@ -3,19 +3,12 @@
 /**
  * UI wiring tests for the MiniMax H3 text-encoder precision control.
  *
- * Why this control exists: the int8_convrot qwen3vl encoder depends on
- * comfy_kitchen's ConvRot kernels, which ship CUDA-only. On Intel Arc (XPU)
- * those kernels are absent and H3 generation dies with
- * `AttributeError: 'NoneType' object has no attribute 'device'`. The nvfp4_awq
- * encoder uses the eager backend and works on both vendors.
+ * The dropdown exposes three GPU-portable variants:
+ *   nvfp4-awq (default), lightweight, distilled.
+ * NVIDIA-only INT8 ConvRot options were removed.
  *
- * `h3ClipVariant` previously sat in settings.json with zero readers anywhere in
- * the codebase and no UI, so it could silently disagree with `h3Clip`. These
- * tests lock down the full wiring path:
- *   index.html select -> app.js save/load -> autosave registry ->
- *   install request modelVariants.h3 -> server normalize + shared-settings gate
- *
- * Reference: docs/comfyui-h3-arc-patch.md
+ * `h3ClipVariant` persists via app.js save/load -> autosave registry ->
+ * install request modelVariants.h3 -> server normalize + shared-settings gate
  */
 
 const assert = require('node:assert/strict');
@@ -32,38 +25,44 @@ test('Preferences exposes a text encoder precision selector with all variants', 
   assert.match(html, /id="setH3ClipVariant"/, 'select element must exist');
   assert.match(
     html,
-    /id="setH3ClipVariant"[\s\S]*?value="auto"[\s\S]*?value="nvfp4-awq"[\s\S]*?value="int8-convrot"[\s\S]*?value="int8-convrot-uncensored"/,
-    'all four variant options must be offered in order'
+    /id="setH3ClipVariant"[\s\S]*?value="nvfp4-awq"[\s\S]*?value="lightweight"[\s\S]*?value="distilled"/,
+    'nvfp4-awq, lightweight, and distilled options must be offered in order'
   );
   assert.match(html, /<label for="setH3ClipVariant">/, 'must have an associated label');
 });
 
-test('the selector warns that INT8 ConvRot is NVIDIA-only', () => {
-  // Users must be able to see why the choice matters before picking a broken one.
-  assert.match(html, /INT8 ConvRot[\s\S]{0,120}NVIDIA only/i);
-  assert.match(html, /id="setH3ClipVariantHelp"/, 'help text element must exist');
-  assert.match(
-    html,
-    /fails on Intel Arc/i,
-    'help text must name the failing hardware explicitly'
+test('NVIDIA-only INT8 ConvRot clip options are gone', () => {
+  const variantSelect = html.slice(
+    html.indexOf('id="setH3ClipVariant"'),
+    html.indexOf('id="setH3FrameModelVariant"')
+  );
+  assert.doesNotMatch(
+    variantSelect,
+    /value="int8-convrot"/,
+    'int8-convrot option must be removed from the H3 clip variant dropdown'
+  );
+  assert.doesNotMatch(
+    variantSelect,
+    /value="int8-convrot-uncensored"/,
+    'int8-convrot-uncensored option must be removed from the H3 clip variant dropdown'
+  );
+  assert.doesNotMatch(
+    variantSelect,
+    /value="auto"/,
+    'auto option must be removed from the H3 clip variant dropdown'
   );
 });
 
 test('app.js persists and restores h3ClipVariant', () => {
+  assert.match(app, /h3ClipVariant: ['"]?\$\('#setH3ClipVariant'\)/, 'save path must read the select');
   assert.match(
     app,
-    /h3ClipVariant: \$\('#setH3ClipVariant'\)\.value/,
-    'save path must read the select'
-  );
-  assert.match(
-    app,
-    /\$\('#setH3ClipVariant'\)\.value = s\.h3ClipVariant \|\| 'auto'/,
-    "load path must restore the select and default to 'auto'"
+    /\$\('#setH3ClipVariant'\)\.value = s\.h3ClipVariant \|\| 'nvfp4-awq'/,
+    "load path must restore the select and default to 'nvfp4-awq'"
   );
 });
 
 test('h3ClipVariant is registered for settings autosave', () => {
-  // Without this the dropdown silently fails to persist on change.
   assert.match(
     app,
     /'setH3ClipVariant', 'setH3FrameModelVariant'/,
@@ -72,9 +71,8 @@ test('h3ClipVariant is registered for settings autosave', () => {
 });
 
 test('install requests forward the selected variant as modelVariants.h3', () => {
-  // The installer resolves the encoder per-vendor from modelVariants.h3.
-  // Previously only krea2 was sent, so h3Variant was permanently 'auto'.
-  const matches = app.match(/h3: \$\('#setH3ClipVariant'\)\?\.value \|\| 'auto'/g) || [];
+  // Both install and repair calls must pass h3 from the select with a nvfp4-awq default.
+  const matches = app.match(/h3:.*setH3ClipVariant.*nvfp4-awq/g) || [];
   assert.ok(
     matches.length >= 2,
     `both install and repair calls must forward h3 (found ${matches.length})`
@@ -84,12 +82,12 @@ test('install requests forward the selected variant as modelVariants.h3', () => 
 test('server defaults, normalizes, and gates h3ClipVariant', () => {
   assert.match(
     server,
-    /h3ClipVariant: 'auto'/,
-    'DEFAULT_SETTINGS must define h3ClipVariant'
+    /h3ClipVariant: 'nvfp4-awq'/,
+    'DEFAULT_SETTINGS must define h3ClipVariant as nvfp4-awq'
   );
   assert.match(
     server,
-    /s\.h3ClipVariant = normalizeH3ClipVariant\(s\.h3ClipVariant\)/,
+    /normalizeH3ClipVariant\(s\.h3ClipVariant\)/,
     'normalizeSettings must normalize it so junk cannot persist'
   );
   assert.match(
@@ -105,7 +103,6 @@ test('server defaults, normalizes, and gates h3ClipVariant', () => {
 });
 
 test('the control sits inside the MiniMax H3 settings section', () => {
-  // Guard against the field drifting into an unrelated model group.
   const h3SectionAt = html.indexOf('data-settings-model-section="h3"');
   const controlAt = html.indexOf('id="setH3ClipVariant"');
   const nextSectionAt = html.indexOf('data-settings-model-section="wan22"');
