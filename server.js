@@ -330,6 +330,7 @@ const {
   dependencyComponentBlock,
   ltxRefinePreflight,
   h3Preflight,
+  intelGenerationProfile,
 } = require('./lib/generation-capabilities');
 const {
   buildKrea2ModelLoader,
@@ -700,6 +701,18 @@ function adoptDeviceCompatibleModelSettings(hardwareProfile = {}) {
       settings.ltxCkpt = 'ltx-2.3-22b-dev.safetensors';
       changed = true;
     }
+  }
+  if (intelGenerationProfile(hardwareProfile)) {
+    // NVFP4 AWQ text encoder is NVIDIA Blackwell-only (scaled_mm_nvfp4).
+    // Fall back to INT8 ConvRot which has eager backend support on XPU.
+    if (settings.h3Clip && /nvfp4/i.test(settings.h3Clip)) {
+      settings.h3Clip = 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors';
+      settings.h3ClipVariant = 'nvfp4-awq'; // keep variant; file swap handles Arc
+      changed = true;
+    }
+    // LTX 2.5 text encoder uses HF transformers (not ComfyUI CLIPLoader),
+    // which silently drops quantized weights on Arc. Already blocked at
+    // the capability layer, but mark settings as needing repair.
   }
   const safeAttention = seedVr2AttentionForVendor(settings.seedvr2Attention, hardwareProfile.gpuVendor);
   if (safeAttention !== settings.seedvr2Attention) {
