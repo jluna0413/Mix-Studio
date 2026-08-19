@@ -19345,7 +19345,6 @@ wireEngineRow('vidEngineRow', (engine) => {
     state.vidAudio = null;
     setAudioChipVisual($('#vidAudioChip'), false);
     $('#vidAudioTrim').hidden = true;
-    saveForm();
   }
   const wanAnimate2 = engine === 'wan-animate2';
   const scail = engine === 'scail';
