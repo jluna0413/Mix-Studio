@@ -9327,7 +9327,7 @@ async function handleApi(req, res, url) {
     // RIFE frame interpolation for LTX, Wan, and SCAIL video outputs.
     const smooth = (engine === 'ltx' || engine === 'ltx25' || isLtxEdit || engine === 'wan' || engine === 'scail') && [2, 3].includes(Number(body.smooth))
       ? Number(body.smooth) : 1;
-    const isLtxLike = engine === 'ltx' || engine === 'ltx25' || engine === 'eros';
+    const isLtxLike = engine === 'ltx' || engine === 'ltx25' || engine === 'ltx-edit' || engine === 'eros';
     const audioName = isLtxLike && body.audioName ? String(body.audioName) : null;
     const endImageName = (isLtxLike || (engine === 'h3' && h3Mode === 'frames'))
       && !faceImageName && body.endImageName ? String(body.endImageName) : null;

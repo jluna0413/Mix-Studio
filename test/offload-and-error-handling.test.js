@@ -31,7 +31,7 @@ test('smart VRAM unloading triggers when queue is idle', () => {
 });
 
 test('song and audio references work across video engines and map to H3 references', () => {
-  assert.match(app, /\$\('#vidAudioChip'\)\.hidden = false;/);
+  assert.match(app, /vidAudioChip.*hidden.*ltxFamily.*h3.*eros/);
   assert.match(app, /audioTitle\.textContent = hasAudio \? 'Audio added' : 'Audio';/);
   assert.match(app, /let vidAudioName;[\s\S]*?if \(state\.vidAudio\) \{[\s\S]*?ensureAudioUploaded\(state\.vidAudio\)/);
 

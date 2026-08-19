@@ -29,8 +29,8 @@ test('Face ID freezes an uploaded voice into the audio latent (identity-locked l
   assert.match(faceId, /class_type: 'LTXVSeparateAVLatent'/);
   assert.match(faceId, /class_type: 'LTXVAudioVAEDecode'/);
 
-  // The route forwards audio for the LTX engine (Face ID rides engine 'ltx').
-  assert.match(server, /const isLtxLike = engine === 'ltx' \|\| engine === 'ltx25' \|\| engine === 'eros'/);
+  // The route forwards audio for the LTX, LTX 2.5, LTX Edit, and Eros engines.
+  assert.match(server, /const isLtxLike = engine === 'ltx' \|\| engine === 'ltx25' \|\| engine === 'ltx-edit' \|\| engine === 'eros'/);
   assert.match(server, /const audioName = isLtxLike && body\.audioName/);
 });
 

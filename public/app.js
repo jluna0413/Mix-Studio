@@ -10377,6 +10377,9 @@ async function restorePersistedWorkspaceMedia() {
   const saved = persistedWorkspaceAudio;
   persistedWorkspaceAudio = null;
   if (!saved || !saved.name) return;
+  // Only restore external audio for engines that actually consume it
+  const supportsExternalAudio = ['ltx', 'ltx25', 'ltx-edit', 'eros', 'h3'].includes(state.vidEngine);
+  if (!supportsExternalAudio) return;
   try {
     const response = await fetch('/api/input?name=' + encodeURIComponent(saved.name));
     if (!response.ok) throw new Error('saved audio is unavailable');
@@ -18352,7 +18355,7 @@ function renderVidFace() {
   const fixedMotion = wanOrScail || state.vidEngine === 'wan-animate2';
   $('#vidFpsRow').hidden = h3 || !(ltxFamily || wanOrScail);
   $('#vidFreeField').hidden = h3 || fixedMotion || ltxEdit || faceMode;
-  $('#vidAudioChip').hidden = false;
+  $('#vidAudioChip').hidden = !(ltxFamily || h3 || state.vidEngine === 'eros');
   $('#vidAudioTrim').hidden = !state.vidAudio;
   renderVideoFpsChoices();
   // Face ID + audio = frozen-audio lipsync: the joint AV denoise conforms the
@@ -19332,6 +19335,18 @@ wireEngineRow('vidEngineRow', (engine) => {
   state.vidEngine = engine;
   const h3 = engine === 'h3';
   const wan = engine === 'wan';
+  // External audio (state.vidAudio → body.audioName) is consumed by LTX 2.3,
+  // LTX 2.5, 10Eros, and H3 (via normalizeH3References). Other engines source
+  // audio from the driving video (state.vidDrive) only. Clear stale audio when
+  // switching to an engine that won't use it.
+  const supportsExternalAudio = engine === 'ltx' || engine === 'ltx25' || engine === 'eros' || engine === 'h3';
+  if (!supportsExternalAudio && state.vidAudio) {
+    if (state.vidAudio) stopPreview();
+    state.vidAudio = null;
+    setAudioChipVisual($('#vidAudioChip'), false);
+    $('#vidAudioTrim').hidden = true;
+    saveForm();
+  }
   const wanAnimate2 = engine === 'wan-animate2';
   const scail = engine === 'scail';
   const ltxEdit = engine === 'ltx-edit';
