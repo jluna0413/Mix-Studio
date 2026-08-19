@@ -19336,10 +19336,10 @@ wireEngineRow('vidEngineRow', (engine) => {
   const h3 = engine === 'h3';
   const wan = engine === 'wan';
   // External audio (state.vidAudio → body.audioName) is consumed by LTX 2.3,
-  // LTX 2.5, 10Eros, and H3 (via normalizeH3References). Other engines source
+  // LTX 2.5, LTX Edit, 10Eros, and H3 (via normalizeH3References). Other engines source
   // audio from the driving video (state.vidDrive) only. Clear stale audio when
   // switching to an engine that won't use it.
-  const supportsExternalAudio = engine === 'ltx' || engine === 'ltx25' || engine === 'eros' || engine === 'h3';
+  const supportsExternalAudio = engine === 'ltx' || engine === 'ltx25' || engine === 'ltx-edit' || engine === 'eros' || engine === 'h3';
   if (!supportsExternalAudio && state.vidAudio) {
     if (state.vidAudio) stopPreview();
     state.vidAudio = null;
@@ -19392,6 +19392,15 @@ wireEngineRow('animEngineRow', (engine) => {
   state.animEngine = engine;
   const h3 = engine === 'h3';
   const wan = engine === 'wan';
+  // External audio (state.animAudio → body.audioName) is consumed by LTX 2.3,
+  // LTX 2.5, 10Eros, and H3. Wan 2.2 animation sources audio from the driving
+  // video only. Clear stale audio when switching to Wan.
+  if (wan && state.animAudio) {
+    if (state.animAudio) stopPreview();
+    state.animAudio = null;
+    setAudioChipVisual($('#animAudioChip'), false);
+    $('#animAudioTrim').hidden = true;
+  }
   $('#animFreeField').hidden = wan || h3;
   $('#animQuality').hidden = !wan;
   $('#animSigmaRow').hidden = engine !== 'eros';
