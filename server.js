@@ -710,9 +710,11 @@ function adoptDeviceCompatibleModelSettings(hardwareProfile = {}) {
       settings.h3ClipVariant = 'nvfp4-awq'; // keep variant; file swap handles Arc
       changed = true;
     }
-    // LTX 2.5 text encoder uses HF transformers (not ComfyUI CLIPLoader),
-    // which silently drops quantized weights on Arc. Already blocked at
-    // the capability layer, but mark settings as needing repair.
+    // LTX 2.5 text encoder (Gemma 4 12B int8_convrot) is Arc-compatible via
+    // ComfyUI's native CLIPLoader (type="ltxv") → mixed_precision_ops path.
+    // VRAM: 15.4 GB TE + 21.5 GB DiT + 2 GB VAE > 32 GB — TE must be loaded
+    // with device:"cpu" and offloaded after embedding generation. This is
+    // handled in the graph builder (lib/ltx25-workflow.js).
   }
   const safeAttention = seedVr2AttentionForVendor(settings.seedvr2Attention, hardwareProfile.gpuVendor);
   if (safeAttention !== settings.seedvr2Attention) {
