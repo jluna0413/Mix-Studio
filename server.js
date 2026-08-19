@@ -7113,7 +7113,9 @@ async function handleApi(req, res, url) {
   }
 
   if (route === '/api/settings' && req.method === 'GET') {
-    await getSetupHardwareInfo().catch(() => null);
+    const hardwareInfoValue = await getSetupHardwareInfo().catch(() => null);
+    const hardwareProfile = setupHardwareProfile(hardwareInfoValue || {});
+    adoptDeviceCompatibleModelSettings(hardwareProfile);
     return json(res, 200, settingsResponse());
   }
   if (route === '/api/h3/models/status' && req.method === 'GET') {
