@@ -108,6 +108,9 @@ const state = {
   createDepthPreviewShown: false,
   krea2Turbo: true,          // merged Turbo checkpoint vs Raw checkpoint
   krea2RawTurboLora: null,   // managed Raw-mode Turbo LoRA, preserved while hidden
+  createEngine: 'krea2',     // create T2I engine: krea2 | qwen_image
+  createModelVariant: 'qwen-image-3.0-pro', // qwen_image variant
+  createPrecision: 'bf16',   // qwen_image precision: bf16 | fp8_lightning
   regions: [],
   activeRegionId: null,
   kreaMask: null,
@@ -339,6 +342,40 @@ const EDIT_MASK_ENGINES = new Set(['klein4', 'klein9', 'qwen', 'krea2']);
 const EDIT_FEATURES = { klein4: 'edit.klein4', klein9: 'edit.klein9', qwen: 'edit.qwen', krea2: 'edit.krea2', krea2ref: 'edit.krea2ref', krea2remix: 'edit.krea2remix' };
 const VIDEO_FEATURES = { ltx: 'video.ltx', ltx25: 'video.ltx25', h3: 'video.h3', 'ltx-edit': 'video.ltxEdit', eros: 'video.eros', wan: 'video.wan', 'wan-animate2': 'video.wanAnimate2', scail: 'video.scail' };
 const VIDEO_ENGINES = Object.keys(VIDEO_FEATURES);
+const CREATE_ENGINES = Object.freeze(['krea2', 'qwen_image']);
+const CREATE_ENGINES_FEATURES = Object.freeze({ krea2: 'create.krea2', qwen_image: 'create.qwen_image' });
+const CREATE_ENGINES_WITH_LORAS = new Set(['krea2']);
+const CREATE_ENGINES_MODEL_VARIANTS = Object.freeze({
+  qwen_image: [
+    { value: 'qwen-image-3.0-pro', label: 'Qwen Image 3.0 Pro' },
+    { value: 'qwen-image-3.0', label: 'Qwen Image 3.0' },
+  ],
+});
+const CREATE_ENGINES_PRECISION = Object.freeze({
+  qwen_image: [
+    { value: 'bf16', label: 'BF16' },
+    { value: 'fp8_lightning', label: 'FP8 Lightning' },
+  ],
+});
+const QWEN_IMAGE_MAX_TOTAL_PIXELS = 2560 * 2560;
+
+function qwenImageCanvasConstraints() {
+  const engine = state.createEngine;
+  if (engine !== 'qwen_image') return null;
+  return {
+    minDim: 256,
+    maxDim: 2560,
+    step: 16,
+    maxTotalPixels: QWEN_IMAGE_MAX_TOTAL_PIXELS,
+    clampWidth: (w) => Math.max(256, Math.min(2560, Math.round(w / 16) * 16)),
+    clampHeight: (h) => Math.max(256, Math.min(2560, Math.round(h / 16) * 16)),
+    isValid: (w, h) => {
+      const wc = Math.max(256, Math.min(2560, w));
+      const hc = Math.max(256, Math.min(2560, h));
+      return wc >= 256 && hc >= 256 && wc <= 2560 && hc <= 2560 && wc * hc <= QWEN_IMAGE_MAX_TOTAL_PIXELS;
+    },
+  };
+}
 
 function normalizeEngineOrder(order, engines) {
   const valid = Array.isArray(order) ? order.filter((engine) => engines.includes(engine)) : [];
@@ -3070,6 +3107,23 @@ function computeDims() {
   const px = state.mp * 1e6;
   state.width = round32(Math.sqrt(px * a.ar));
   state.height = round32(Math.sqrt(px / a.ar));
+  if (state.view === 'create' && state.createMode === 'image' && state.createEngine === 'qwen_image') {
+    const constraints = qwenImageCanvasConstraints();
+    if (constraints) {
+      state.width = Math.max(constraints.minDim, Math.min(constraints.maxDim, state.width));
+      state.height = Math.max(constraints.minDim, Math.min(constraints.maxDim, state.height));
+      const total = state.width * state.height;
+      if (total > constraints.maxTotalPixels) {
+        const ratio = Math.sqrt(constraints.maxTotalPixels / total);
+        state.width = Math.round(state.width * ratio / 16) * 16;
+        state.height = Math.round(state.height * ratio / 16) * 16;
+        if (state.width < constraints.minDim) state.width = constraints.minDim;
+        if (state.height < constraints.minDim) state.height = constraints.minDim;
+      }
+      state.width = Math.max(constraints.minDim, Math.min(constraints.maxDim, Math.round(state.width / 16) * 16));
+      state.height = Math.max(constraints.minDim, Math.min(constraints.maxDim, Math.round(state.height / 16) * 16));
+    }
+  }
 }
 
 /* Form state is per profile (prompts/regions/LoRAs shouldn't leak
@@ -3314,6 +3368,9 @@ function saveForm() {
       qwenAngleDistances: state.qwenAngleDistances,
       qwenQuality: state.qwenQuality,
       krea2RefBoost: state.krea2RefBoost,
+      createEngine: state.createEngine,
+      createModelVariant: state.createModelVariant,
+      createPrecision: state.createPrecision,
       generationTuning: state.generationTuning,
     }));
   } catch { /* noop */ }
@@ -3364,6 +3421,11 @@ function loadForm() {
     state.qwenQuality = f.qwenQuality === 'fast' ? 'fast' : 'quality';
     state.krea2RefBoost = Number.isFinite(Number(f.krea2RefBoost))
       ? Math.max(0, Math.min(12, Number(f.krea2RefBoost))) : 4;
+    state.createEngine = CREATE_ENGINES.includes(f.createEngine) ? f.createEngine : 'krea2';
+    state.createModelVariant = CREATE_ENGINES_MODEL_VARIANTS.qwen_image?.some((v) => v.value === f.createModelVariant)
+      ? f.createModelVariant : 'qwen-image-3.0-pro';
+    state.createPrecision = CREATE_ENGINES_PRECISION.qwen_image?.some((p) => p.value === f.createPrecision)
+      ? f.createPrecision : 'bf16';
     state.loras = Array.isArray(f.loras) ? f.loras : [];
     state.videoLoras = Array.isArray(f.videoLoras) ? f.videoLoras : [];
     state.loraTriggers = f.loraTriggers && typeof f.loraTriggers === 'object' ? Object.fromEntries(
@@ -4818,7 +4880,11 @@ function updateVideoPanels() {
     : `CFG follows the selected video model. Fixed schedules are read-only; MiniMax H3 steps stay adjustable${h3TurboUsesLightx4_768p() ? ', with 4 and 1344 × 768 required for LightX2V v1.0 768p' : (h3TurboUsesLightx8() ? ', with 8 recommended for LightX2V v1.0' : `, with ${h3FramesTurboIsLegacy() ? '4 recommended for legacy Frames Turbo' : '6–8 recommended for Frames Turbo v4'} and 6 for Reference Turbo`)}.`;
   renderNegativePromptControl();
   if (isVideo) { renderVidAttach(); renderVidDrive(); }
-  $('#loraPanel').closest('.panel').hidden = false;
+  if (state.view === 'create' && state.createEngine === 'qwen_image' && !CREATE_ENGINES_WITH_LORAS.has('qwen_image')) {
+    $('#loraPanel').closest('.panel').hidden = true;
+  } else {
+    $('#loraPanel').closest('.panel').hidden = false;
+  }
   renderLoras();
   schedulePromptIntentHint();
 }
@@ -12163,8 +12229,11 @@ function renderDims() {
   const h3FixedTurboCanvas = h3TurboFixed768pActive();
   const h3FrameMatch = h3MatchSourceActive();
   const h3VideoMatch = h3MatchReferenceVideoActive();
+  const qwenConstraints = qwenImageCanvasConstraints();
+  const qwenActive = qwenConstraints && state.createEngine === 'qwen_image';
   const widthInput = $('#wInput');
   const heightInput = $('#hInput');
+  // Clone of state.width/height at call time for the Qwen constraints path.
   widthInput.value = state.width;
   heightInput.value = state.height;
   widthInput.readOnly = h3Resolution;
@@ -12177,6 +12246,37 @@ function renderDims() {
   heightInput.title = widthInput.title;
   $('#sizeSeg').hidden = false;
   $('#h3ResolutionWarning').hidden = !h3Resolution || !state.vidH3Xl;
+  // Qwen Image canvas constraints: 256-2560px, step 16, max 2560x2560 pixels
+  if (qwenActive && !h3Resolution) {
+    const w = Number(state.width) || 1024;
+    const h = Number(state.height) || 1024;
+    const clampedW = qwenConstraints.clampWidth(w);
+    const clampedH = qwenConstraints.clampHeight(h);
+    if (clampedW !== w || clampedH !== h) {
+      state.width = clampedW;
+      state.height = clampedH;
+      widthInput.value = clampedW;
+      heightInput.value = clampedH;
+    }
+    widthInput.setAttribute('min', '256');
+    heightInput.setAttribute('min', '256');
+    widthInput.setAttribute('max', '2560');
+    heightInput.setAttribute('max', '2560');
+    widthInput.setAttribute('step', '16');
+    heightInput.setAttribute('step', '16');
+    widthInput.removeAttribute('aria-readonly');
+    heightInput.removeAttribute('aria-readonly');
+    widthInput.readOnly = false;
+    heightInput.readOnly = false;
+    $('#h3ResolutionWarning').hidden = true;
+  } else {
+    widthInput.removeAttribute('min');
+    heightInput.removeAttribute('min');
+    widthInput.removeAttribute('max');
+    heightInput.removeAttribute('max');
+    widthInput.removeAttribute('step');
+    heightInput.removeAttribute('step');
+  }
   $('#resSummary').textContent = h3Resolution
     ? `${h3FrameMatch
       ? `First frame · ${derivedAspectLabel(state.vidRef.w, state.vidRef.h)}`
@@ -12723,8 +12823,27 @@ for (const id of ['#wInput', '#hInput']) {
     state.createMatchSource = false;
     state.createMatchNative = false;
     state.customDims = true;
-    state.width = round32(Number($('#wInput').value) || 1024);
-    state.height = round32(Number($('#hInput').value) || 1024);
+    let w = round32(Number($('#wInput').value) || 1024);
+    let h = round32(Number($('#hInput').value) || 1024);
+    if (state.view === 'create' && state.createMode === 'image' && state.createEngine === 'qwen_image') {
+      const constraints = qwenImageCanvasConstraints();
+      if (constraints) {
+        w = Math.max(constraints.minDim, Math.min(constraints.maxDim, w));
+        h = Math.max(constraints.minDim, Math.min(constraints.maxDim, h));
+        const total = w * h;
+        if (total > constraints.maxTotalPixels) {
+          const ratio = Math.sqrt(constraints.maxTotalPixels / total);
+          w = Math.round(w * ratio / 16) * 16;
+          h = Math.round(h * ratio / 16) * 16;
+          if (w < constraints.minDim) w = constraints.minDim;
+          if (h < constraints.minDim) h = constraints.minDim;
+        }
+        w = Math.max(constraints.minDim, Math.min(constraints.maxDim, Math.round(w / 16) * 16));
+        h = Math.max(constraints.minDim, Math.min(constraints.maxDim, Math.round(h / 16) * 16));
+      }
+    }
+    state.width = w;
+    state.height = h;
     renderAspects();
     renderDims();
     saveForm();
@@ -12746,6 +12865,7 @@ function loraCategory(name) {
 }
 
 function compatibleLoraCategories() {
+  if (state.view === 'create' && state.createEngine === 'qwen_image') return [];
   if (state.view === 'video') return state.vidEngine === 'h3'
     ? ['h3', 'unknown']
     : ['video', 'unknown'];
@@ -19424,6 +19544,28 @@ wireEngineRow('editEngineRow', (engine) => {
   saveForm();
   setTimeout(() => setEditModelExpanded(false), 120);
 });
+wireEngineRow('createEngineRow', (engine) => {
+  if (engine === 'krea2') {
+    state.krea2Turbo = true;
+    detachKrea2RawTurboLora();
+    $('#kreaTurboToggle').hidden = false;
+    $('#kreaModelSummary').textContent = 'Krea 2 · fast';
+  } else {
+    $('#kreaTurboToggle').hidden = true;
+  }
+  $('#createEngineVariantPanel').hidden = engine !== 'qwen_image';
+  $('#createEnginePrecisionPanel').hidden = engine !== 'qwen_image';
+  if (engine === 'qwen_image') {
+    renderCreateModelVariantRow();
+    renderCreatePrecisionRow();
+  }
+  renderDims();
+  saveForm();
+  setTimeout(() => {
+    const panel = $('#createModelVariantPanel');
+    if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, 50);
+});
 wireModelOrder('vidEngineRow');
 wireModelOrder('editEngineRow');
 $('#editComposite').addEventListener('click', () => {
@@ -19683,7 +19825,7 @@ $('#generateBtn').addEventListener('click', async () => {
   const createImageGuide = mode === 't2i' && state.createMode === 'image' && state.createGuideActive
     ? state.createRef : null;
   const createImageGuideName = createImageGuide ? createGuideInput(createImageGuide).name : undefined;
-  const krea2Raw = mode === 't2i' && state.createMode === 'image' && state.krea2Turbo === false;
+  const krea2Raw = mode === 't2i' && state.createMode === 'image' && state.createEngine === 'krea2' && state.krea2Turbo === false;
   const seedRaw = $('#seedInput').value.trim();
   const nativePreserve = mode === 'edit'
     && !$('#editComposite').hidden
@@ -19712,6 +19854,9 @@ $('#generateBtn').addEventListener('click', async () => {
   const body = {
     mode,
     editEngine: mode === 'edit' ? state.editEngine : undefined,
+    createEngine: mode === 't2i' ? state.createEngine : undefined,
+    createModelVariant: mode === 't2i' && state.createEngine === 'qwen_image' ? state.createModelVariant : undefined,
+    createPrecision: mode === 't2i' && state.createEngine === 'qwen_image' ? state.createPrecision : undefined,
     qwenQuality: mode === 'edit' && state.editEngine === 'qwen' ? state.qwenQuality : undefined,
     krea2RefBoost: mode === 'edit'
       && (state.editEngine === 'krea2ref' || (state.editEngine === 'krea2' && outpaintActive))
@@ -19749,7 +19894,7 @@ $('#generateBtn').addEventListener('click', async () => {
     denoise: mode === 'edit' ? Number($('#denoiseInput').value)
       : (createImageGuide && state.createGuideMode === 'image' ? createDenoiseFromInfluence() : 1),
     seed: seedRaw === '' ? undefined : Number(seedRaw),
-    loras: mode === 'edit' ? state.editLoras : state.loras,
+    loras: mode === 'edit' ? state.editLoras : (state.createEngine === 'qwen_image' ? [] : state.loras),
     refImages: mode === 'edit'
       ? state.refs.slice(0, editReferenceCapacity()).filter(Boolean).map((r) => r.name)
       : [],

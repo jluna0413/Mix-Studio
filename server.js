@@ -188,6 +188,7 @@ const {
 } = require('./lib/uploaded-assets');
 const { normalizeEditSequence, supportsSequentialEdit } = require('./lib/edit-sequence');
 const { normalizeQwenEditQuality, qwenEditPreset } = require('./lib/qwen-edit');
+const T2I_ENGINES = ['qwen'];
 const { normalizeEditAngle, supportsEditAngles, editAnglePrompt } = require('./lib/edit-angle');
 const {
   cameraMotionById,
@@ -4046,6 +4047,32 @@ async function buildT2I(p) {
   return filterInputs(graph);
 }
 
+async function buildQwenT2I(p) {
+  const graph = {};
+  const textSource = p.enhancedText || p.prompt;
+  const modelName = settings.qwenImageModel || 'qwen-image-3.0-pro';
+  graph.api = {
+    class_type: 'QwenImageTextToImageApi',
+    inputs: {
+      model: modelName,
+      'model.prompt': textSource,
+      'model.negative_prompt': p.negativePrompt || '',
+      'model.width': p.width,
+      'model.height': p.height,
+      seed: p.seed,
+      steps: p.steps,
+      cfg: p.cfg,
+      prompt_extend: true,
+      watermark: '(Powered by Qwen-Image)',
+    },
+  };
+  graph.save = {
+    class_type: 'SaveImage',
+    inputs: { images: ['api', 0], filename_prefix: 'KreaStudio/qwen' },
+  };
+  return filterInputs(graph);
+}
+
 async function buildRegionalT2I(p) {
   return filterInputs(buildRegionalT2IGraph(Object.assign({}, p, { settings })));
 }
@@ -4576,7 +4603,8 @@ async function buildGenerationGraph(p, refNames) {
     if (p.editEngine === 'krea2') return hasActiveRegions(p.regions) ? buildRegionalT2I(p) : buildT2I(p);
     return buildEdit(p, refNames);
   }
-  return hasActiveRegions(p.regions) ? buildRegionalT2I(p) : buildT2I(p);
+  const t2iBuilder = p.engine === 'qwen' ? buildQwenT2I : buildT2I;
+  return hasActiveRegions(p.regions) ? buildRegionalT2I(p) : t2iBuilder(p);
 }
 
 async function queueGenerationJob(p, profileId, refNames, refinedPrompt = null) {
@@ -8148,6 +8176,9 @@ async function handleApi(req, res, url) {
     if (p.mode === 'edit') {
       const editEngines = ['qwen', 'klein9', 'krea2', 'krea2ref', 'krea2remix'];
       p.editEngine = editEngines.includes(p.editEngine) ? p.editEngine : 'klein4';
+    }
+    if (p.mode !== 'edit') {
+      p.engine = T2I_ENGINES.includes(p.engine) ? p.engine : undefined;
     }
     const usesKrea2Model = p.mode !== 'edit' || ['krea2', 'krea2ref', 'krea2remix'].includes(p.editEngine);
     if (usesKrea2Model) {
