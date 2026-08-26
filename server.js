@@ -316,6 +316,8 @@ const { SUPPORTED_PROTOCOL_VERSIONS, handleMcpPayload, mcpToolDefinitions } = re
 const { hardwareInfo, detectGpuDevice } = require('./lib/hardware-info');
 const { applyOffloadToGraph, getOffloadConfig } = require('./lib/offload-config');
 const errorHandler = require('./lib/error-handler');
+const log = require('./lib/log');
+const metrics = require('./lib/metrics');
 const {
   supportsImageInput,
   imageInputNotAcceptedMessage,
@@ -513,7 +515,14 @@ const DEFAULT_SETTINGS = {
   klein9ConsistencyLora: 'f2k_9B_lcs_consist_20260415.safetensors',
   klein9ConsistencyTrigger: 'restore image details',
   kleinVae: 'flux2-vae.safetensors',
-  qwenEditUnet: 'qwen_image_edit_2511_bf16.safetensors',
+  // Qwen edit runs on the GGUF quant, not the bf16 file. Measured resident
+  // footprint on this box (transformer + qwen2.5-vl encoder + vae + Lightning
+  // LoRA): bf16 = 51.35GB vs 33.46GB of VRAM on the Arc B70 -> allocator
+  // thrash with no progress, the same failure mode that made Qwen T2I look
+  // like an aspect-ratio bug. The Q4_K_M quant lands at 22.77GB.
+  // diffusionModelLoader() switches to UnetLoaderGGUF automatically on the
+  // .gguf extension, so the edit builders need no change.
+  qwenEditUnet: 'qwen-image-edit-Q4_K_M.gguf',
   qwenEditClip: 'qwen_2.5_vl_7b_fp8_scaled.safetensors',
   qwenEditLora: 'Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors',
   qwenEditAnglesLora: 'qwen_image_edit_2511_multiple-angles-lora.safetensors',
@@ -533,8 +542,18 @@ const DEFAULT_SETTINGS = {
   ltxTextEncoder: 'gemma_3_12B_it_fp4_mixed.safetensors',
   ltxGemmaLora: 'gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors',
   ltxUpscaler: 'ltx-2.3-spatial-upscaler-x2-1.1.safetensors',
-  ltx25Unet: 'ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors',
-  ltx25TextEncoder: 'gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors',
+  ltx25Unet: 'LTX25-distilled-DiT-Q5_K_M.gguf',
+  qwenImageModel: 'D:/apps/AI Playground/resources/ComfyUI/models/diffusion_models/Qwen---Qwen-Image-2512',
+  // Qwen-Image T2I runs on the GGUF-quantized transformer: the bf16 diffusers
+  // pipeline needs 57.70GB resident and does not fit the Arc B70's 33.46GB.
+  qwenImageGgufModel: 'qwen-image-2512-Q4_K_M.gguf',
+  qwenImageTextEncoder: 'qwen_2.5_vl_7b_fp8_scaled.safetensors',
+  qwenImageVae: 'qwen_image_vae.safetensors',
+  // 4-step Lightning acceleration for Qwen T2I. Shipped for Edit-2511, but the
+  // T2I and Edit transformers share an architecture (720/720 LoRA key stems
+  // match), so it applies to both. 281.3s -> 45.1s at 1024x1024 (6.24x).
+  qwenImageLightningLora: 'Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors',
+  ltx25TextEncoder: 'gemma4-12b-with-proj-ltx-2.5-Q5_K_M.gguf',
   ltx25QualityUnet: 'ltx-2.5-22b-dev-transformer-bf16.safetensors',
   ltx25QualityTextEncoder: 'gemma4-12b-with-proj-ltx-2.5-bf16.safetensors',
   ltx25DistilledLora: 'ltx-2.5-22b-distilled-lora-450-bf16.safetensors',
@@ -990,8 +1009,19 @@ function eventProfileId(data) {
 }
 
 function broadcast(event, data) {
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  const profileId = eventProfileId(data);
+  // P0-1: stamp the originating requestId onto SSE events when the event
+  // carries a jobId that maps to a tracked job. This lets the browser
+  // correlate a 'jobDone' / 'jobError' event back to the POST that queued
+  // it (the POST echoes the same requestId in its response).
+  let enriched = data;
+  if (data && data.jobId && jobs.has(data.jobId)) {
+    const jobReqId = jobs.get(data.jobId).requestId;
+    if (jobReqId && data.requestId !== jobReqId) {
+      enriched = Object.assign({}, data, { requestId: jobReqId });
+    }
+  }
+  const payload = `event: ${event}\ndata: ${JSON.stringify(enriched)}\n\n`;
+  const profileId = eventProfileId(enriched);
   for (const [res, clientProfileId] of sseClients) {
     if (profileId && profileId !== clientProfileId) continue;
     try { res.write(payload); } catch { /* noop */ }
@@ -1012,6 +1042,7 @@ const jobs = new Map(); // promptId -> job
 let _idleFreeTimer = null;
 async function triggerComfyModelUnload() {
   console.log('[queue]', 'Queue is idle. Triggering ComfyUI model unload to free VRAM.');
+  log.info('Queue idle; triggering ComfyUI model unload to free VRAM', { kind: 'queue' });
   try {
     const resetReqs = comfyResetRequests();
     const freeReq = resetReqs.find(r => r.name === 'freeMemory');
@@ -1410,7 +1441,12 @@ function trackJob(pid, job) {
     job = Object.assign({}, job, { _slotToken: slotToken });
     _slotTokens.delete(pid);
   }
-  jobs.set(pid, Object.assign({ enqueuedAt: now, startedAt: null }, job));
+  // P0-1: inherit the originating requestId from the active request context
+  // so the job (and its SSE events / logs) can be traced back to the POST
+  // that created it, even though completion happens in the WS/poll path.
+  const ctxReqId = log.currentRequestId();
+  const resolvedRequestId = job.requestId || ctxReqId || null;
+  jobs.set(pid, Object.assign({ enqueuedAt: now, startedAt: null, requestId: resolvedRequestId }, job));
 }
 
 function jobBaseTime(job) {
@@ -1504,7 +1540,17 @@ async function queueHealth(running, pending) {
   // Trigger ComfyUI restart if VRAM is stuck (e.g. after DEVICE_LOST wedge).
   if (vram.vramStuck && !queueHealthState.vramRestarting) {
     queueHealthState.vramRestarting = true;
-    console.warn('[MixStudio] VRAM stuck at %d GB — restarting ComfyUI', Math.round(vram.freeMb / 1024));
+    console.warn('[MixStudio] VRAM stuck at %d GB — killing leaked ComfyUI workers by PID, then restarting', Math.round(vram.freeMb / 1024));
+    log.error('VRAM stuck after possible DEVICE_LOST; killing leaked workers by PID then restarting ComfyUI', {
+      kind: 'vram-stuck', freeMb: vram.freeMb, totalMb: gpu && gpu.memoryTotalMb,
+    });
+    metrics.recordCounter('vram.stuckRestart', 1, {});
+    // First kill the leaked worker child (which holds VRAM after DEVICE_LOST)
+    // via gpuproc.py --kill (uses GPU Process Memory counter, not WorkingSet64).
+    const killedPids = await killLeakedVramHolders();
+    if (killedPids.length) {
+      console.log(`[MixStudio] Killed leaked VRAM holders by PID: ${killedPids.join(', ')}`);
+    }
     restartComfy(RUNTIME, (phase, message) => {
       console.warn('[MixStudio] ComfyUI VRAM-restart %s: %s', phase, message);
     }).finally(() => { queueHealthState.vramRestarting = false; });
@@ -1532,6 +1578,8 @@ async function comfyFetch(p, opts) {
     );
     wrapped.code = 'comfy_connection_failed';
     wrapped.cause = error;
+    log.error('ComfyUI request failed', { route: p, method: opts?.method || 'GET', error: wrapped });
+    metrics.recordCounter('comfy.error', 1, { kind: 'connection', path: p });
     throw wrapped;
   }
   if (!res.ok) {
@@ -1756,7 +1804,7 @@ function configuredModelsStatus(info) {
     ltx25: {
       label: 'LTX 2.5',
       model: diffusionModelStatus(info, settings.ltx25Unet),
-      textEncoder: modelStatus(info, 'CLIPLoader', 'clip_name', settings.ltx25TextEncoder),
+      textEncoder: modelStatus(info, /\.gguf$/i.test(settings.ltx25TextEncoder) ? 'CLIPLoaderGGUF' : 'CLIPLoader', 'clip_name', settings.ltx25TextEncoder),
       promptEnhancer: modelStatus(info, 'CLIPLoader', 'clip_name', settings.ltx25PromptEnhancer),
       videoVae: modelStatus(info, 'VAELoader', 'vae_name', settings.ltx25VideoVae),
       audioVae: modelStatus(info, 'VAELoader', 'vae_name', settings.ltx25AudioVae),
@@ -2126,13 +2174,42 @@ async function uploadFileToComfy(file, filename) {
 
 let submissionWaiters = [];
 let submissionActive = false;
+let _lightSubmissionCount = 0;
+const MAX_LIGHT_SUBMISSIONS = Math.max(1, Math.min(4, Number(process.env.MIX_LIGHT_SUBMISSIONS) || 2));
+let _lightSubmissionWaiters = [];
 
-function runSerialized(task, { priority = false } = {}) {
+function _pumpLightSubmissions() {
+  if (_lightSubmissionCount >= MAX_LIGHT_SUBMISSIONS || _lightSubmissionWaiters.length === 0) return;
+  _lightSubmissionCount += 1;
+  _lightSubmissionWaiters.shift().resolve();
+}
+
+function _acquireLightSlot() {
+  return new Promise((resolve) => {
+    if (_lightSubmissionCount < MAX_LIGHT_SUBMISSIONS) {
+      _lightSubmissionCount += 1;
+      resolve();
+      return;
+    }
+    _lightSubmissionWaiters.push({ resolve });
+  }).then(() => {
+    _pumpLightSubmissions();
+  });
+}
+
+function runSerialized(task, { priority = false, lightLane = false } = {}) {
+  if (lightLane) {
+    // Lightweight lane: skip waitForComfyIdle for text-only ops whose graphs
+    // don't load heavy models. Bound concurrency with a separate semaphore so
+    // they don't saturate ComfyUI's prompt queue.
+    return _acquireLightSlot().then(() => task()).finally(() => {
+      _lightSubmissionCount = Math.max(0, _lightSubmissionCount - 1);
+      _pumpLightSubmissions();
+    });
+  }
   return new Promise((resolve, reject) => {
     const entry = { task, resolve, reject, priority };
     if (priority) {
-      // Priority entries (front:true text jobs) jump ahead of any waiting
-      // non-priority generation, but never overtake another priority entry.
       const firstNonPriority = submissionWaiters.findIndex((w) => !w.priority);
       submissionWaiters.splice(
         firstNonPriority === -1 ? submissionWaiters.length : firstNonPriority,
@@ -2266,7 +2343,9 @@ async function queuePrompt(graph, options = {}) {
   const slotToken = await _acquirePromptSlot();
   return runSerialized(async () => {
     try {
-      await waitForComfyIdle();
+      if (!options.lightLane) {
+        await waitForComfyIdle();
+      }
       const vramWarning = await vramPreCheck(options);
       if (vramWarning && !vramWarning.warnOnly) {
         slotToken.release();
@@ -2279,7 +2358,7 @@ async function queuePrompt(graph, options = {}) {
       slotToken.release();
       throw error;
     }
-  }, { priority: options.front === true });
+  }, { priority: options.front === true, lightLane: options.lightLane === true });
 }
 
 async function queuePromptRaw(graph, options = {}) {
@@ -2430,6 +2509,23 @@ function handleWsMessage(msg) {
     const job = jobs.get(pid);
     const exceptionMessage = d.exception_message || 'execution error';
     const refNames = (job && job.refImageNames) || [];
+    // [Errno 22] on KSampler = ComfyUI's stderr pipe died (tqdm->wandb capture
+    // chain), NOT a graph problem. Per AGENTS.md §55: fix = kill python on the
+    // ComfyUI port and relaunch. We retry once via the ComfyUI restart path
+    // (which handles the worker-child PID kill) before surfacing the error.
+    if (/\[Errno\s*22\]/.test(exceptionMessage) || /Invalid argument/.test(exceptionMessage)) {
+      if (job.errno22Retries === undefined) {
+        job.errno22Retries = 1;
+        job._errno22OriginalMessage = exceptionMessage;
+        job._errno22OriginalNodeType = d.node_type;
+        console.warn(`[job:${pid}] [Errno 22] detected. Attempting ComfyUI restart (attempt ${job.errno22Retries}).`);
+        failJob(pid, `GPU driver error — restarting ComfyUI (attempt ${job.errno22Retries})`);
+        restartComfyOnErrno22(pid, job);
+        return;
+      }
+      // Second [Errno 22] after restart — give up
+      console.error(`[job:${pid}] [Errno 22] persisted after ComfyUI restart. Not retrying again.`);
+    }
     if (refNames.length && (matchesImageInputPattern(exceptionMessage) || matchesImageInputPattern(d.node_type || ''))) {
       failJob(pid, imageInputNotAcceptedMessage(refNames[0]));
     } else {
@@ -2501,6 +2597,9 @@ function cancelJob(pid, message = 'Cancelled') {
   if (job._slotToken) {
     job._slotToken.release();
   }
+  // Stop the prompt in ComfyUI first so cancelled jobs don't keep
+  // the ComfyUI slot occupied and don't leave orphaned outputs.
+  stopComfyPrompt(pid).catch(() => {});
   const durationMs = jobDurationMs(job);
   jobs.delete(pid);
   clearPendingJobState(job);
@@ -2512,6 +2611,7 @@ function cancelJob(pid, message = 'Cancelled') {
     itemId: job.itemId || null,
     message,
     durationMs,
+    requestId: job.requestId,
   });
   if (job.kind === 'enhance' || job.kind === 'motionPrompt' || job.kind === 'smartMask') {
     const error = new Error(message);
@@ -2527,6 +2627,18 @@ function failJob(pid, message) {
     job._slotToken.release();
   }
   const durationMs = job ? jobDurationMs(job) : undefined;
+  const outputsToDelete = [];
+  if (job && job.graph) {
+    // Collect output filenames from the graph for orphan cleanup.
+    // SaveImage nodes carry filename_prefix; we can't predict the exact
+    // filenames, but we can flag the prefix for cleanup. The actual cleanup
+    // happens in the polling reconciliation or on next ComfyUI idle.
+    for (const node of Object.values(job.graph)) {
+      if (node && node.class_type === 'SaveImage' && node.inputs && node.inputs.filename_prefix) {
+        outputsToDelete.push(String(node.inputs.filename_prefix));
+      }
+    }
+  }
   jobs.delete(pid);
   if (job && (job.kind === 'enhance' || job.kind === 'motionPrompt' || job.kind === 'smartMask')) {
     job.reject(new Error(message));
@@ -2542,7 +2654,77 @@ function failJob(pid, message) {
     itemId: job ? job.itemId : null,
     message,
     durationMs,
+    requestId: job ? job.requestId : null,
+    outputsToDelete,
   });
+}
+
+async function restartComfyOnErrno22(pid, job) {
+  if (comfyRestartRunning) {
+    console.warn(`[job:${pid}] ComfyUI restart already in progress — [Errno 22] recovery deferred.`);
+    return;
+  }
+  comfyRestartRunning = true;
+  try {
+    console.warn(`[job:${pid}] Restarting ComfyUI to recover from [Errno 22] (stderr pipe lost).`);
+    await restartComfy(RUNTIME, (phase, message) => {
+      console.warn(`[job:${pid}] ComfyUI restart ${phase}: ${message}`);
+    });
+    const reconnected = await waitForComfyReconnect();
+    if (reconnected) {
+      objectInfoCache = null;
+      comfyCompatibilitySnapshot = null;
+      comfyCompatibilityAt = 0;
+      console.log(`[job:${pid}] ComfyUI back online after [Errno 22] restart — requeuing job.`);
+      const newPid = await queuePrompt(job.graph, { profileId: job.profileId });
+      jobs.delete(pid);
+      jobs.set(newPid, Object.assign({}, job, {
+        enqueuedAt: Date.now(),
+        startedAt: null,
+        errno22Retries: job.errno22Retries,
+        _errno22OriginalMessage: undefined,
+        _errno22OriginalNodeType: undefined,
+      }));
+      broadcast('jobRetry', {
+        jobId: newPid,
+        originalJobId: pid,
+        kind: job.kind,
+        profileId: job.profileId,
+        itemId: job.itemId || null,
+        message: 'ComfyUI restarted after GPU error — job requeued.',
+      });
+    } else {
+      console.error(`[job:${pid}] ComfyUI did not reconnect after [Errno 22] restart.`);
+    }
+  } catch (error) {
+    console.error(`[job:${pid}] ComfyUI restart failed during [Errno 22] recovery:`, error.message);
+  } finally {
+    comfyRestartRunning = false;
+  }
+}
+
+async function killLeakedVramHolders() {
+  const python = 'python';
+  const gpuprocScript = 'D:/apps/AI Playground/resources/ComfyUI/_h3diag/gpuproc.py';
+  try {
+    const result = await new Promise((resolve, reject) => {
+      execFile(python, [gpuprocScript, '--kill'], {
+        timeout: 120000,
+        windowsHide: true,
+      }, (error, stdout, stderr) => {
+        resolve({ error, stdout, stderr });
+      });
+    });
+    const killedPids = [];
+    for (const line of String(result.stdout || '').split('\n')) {
+      const match = line.match(/killing pid (\d+)/);
+      if (match) killedPids.push(Number(match[1]));
+    }
+    return killedPids;
+  } catch (e) {
+    console.warn('[MixStudio] killLeakedVramHolders failed:', e.message);
+    return [];
+  }
 }
 
 function findOutputFiles(outputs, extRe) {
@@ -2752,7 +2934,7 @@ async function completeStrengthHuntJob(pid, job, outputFiles, durationMs, textOu
     label: `LoRA Strength Hunt · ${created.length} comparisons: ${(job.params.prompt || '').slice(0, 50)}`,
   });
   jobs.delete(pid);
-  broadcast('jobDone', { jobId: pid, items: [composite, ...created], strengthHunt: true, count: created.length });
+  broadcast('jobDone', { jobId: pid, items: [composite, ...created], strengthHunt: true, count: created.length, requestId: job.requestId });
 }
 
 async function queueNextVideoChunk(job) {
@@ -3060,7 +3242,7 @@ async function completeJob(pid) {
       label: `${videoActionLabel} (${{ ltx25: 'LTX 2.5', h3: 'MiniMax H3', wan: 'Wan 2.2', 'wan-animate2': 'Wan Animate 2', eros: '10Eros', scail: 'SCAIL 2' }[job.videoInfo.engine] || 'LTX 2.3'}): ${(job.videoInfo.motionPrompt || '').slice(0, 60)}`,
     });
     jobs.delete(pid);
-    broadcast('videoDone', { jobId: pid, item });
+    broadcast('videoDone', { jobId: pid, item, requestId: job.requestId });
     return;
   }
 
@@ -3084,7 +3266,7 @@ async function completeJob(pid) {
     saveDb();
     pushHistory({ kind: 'upscale', profileId: job.profileId, itemId: item.id, durationMs, label: `Upscaled: ${(item.prompt || '').slice(0, 60)}` });
     jobs.delete(pid);
-    broadcast('upscaleDone', { jobId: pid, item });
+    broadcast('upscaleDone', { jobId: pid, item, requestId: job.requestId });
     return;
   }
 
@@ -3119,7 +3301,7 @@ async function completeJob(pid) {
       saveDb();
       pushHistory({ kind: 'composite', profileId: job.profileId, itemId: parent.id, durationMs, label: `${composite.label}: ${(parent.prompt || '').slice(0, 60)}` });
       jobs.delete(pid);
-      broadcast('imageCompositeDone', { jobId: pid, item: parent, composite });
+      broadcast('imageCompositeDone', { jobId: pid, item: parent, composite, requestId: job.requestId });
       return;
     }
     const item = {
@@ -3148,15 +3330,34 @@ async function completeJob(pid) {
     saveDb();
     pushHistory({ kind: 'composite', profileId: job.profileId, itemId: item.id, durationMs, label: `${info.label || 'Image composite'}: ${(item.prompt || '').slice(0, 60)}` });
     jobs.delete(pid);
-    broadcast('jobDone', { jobId: pid, items: [item] });
+    broadcast('jobDone', { jobId: pid, items: [item], requestId: job.requestId });
     return;
   }
 
   const editSequence = job.params.editSequence;
   const sequenceFinal = !editSequence || editSequence.index >= editSequence.prompts.length - 1;
   const created = [];
+  // P0-3: per-image isolation. A single transient ComfyUI /view download
+  // failure must not lose the entire batch. We capture failures per image
+  // and only abort the whole job if EVERY image failed.
+  let failedImages = 0;
   for (const img of files) {
-    const buf = await downloadOutput(img);
+    let buf;
+    try {
+      buf = await downloadOutput(img);
+    } catch (e) {
+      failedImages += 1;
+      log.error('Failed to download one output image; skipping it', {
+        jobId: pid, requestId: job.requestId, profileId: job.profileId,
+        filename: img && img.filename, error: e,
+      });
+      broadcast('status', {
+        jobId: pid, profileId: job.profileId, kind: job.kind,
+        text: `Could not retrieve one of the generated images (${failedImages}/${files.length}). Retrying may recover it.`,
+        itemId: job.itemId || null,
+      });
+      continue;
+    }
     const id = uid();
     const fname = settings.smartFilenames
       ? smartAssetFilename(job.params.prompt, id, '.png', job.params.mode === 'edit' ? 'edit' : 'image')
@@ -3267,6 +3468,16 @@ async function completeJob(pid) {
     db.items.unshift(item);
     created.push(item);
   }
+  if (failedImages > 0 && created.length === 0) {
+    return failJob(pid, `All ${files.length} generated images failed to download from ComfyUI. Check the ComfyUI console and retry.`);
+  }
+  if (failedImages > 0) {
+    log.warn('Completed job with partial image output', {
+      jobId: pid, requestId: job.requestId, profileId: job.profileId,
+      saved: created.length, failed: failedImages, total: files.length,
+    });
+    metrics.recordCounter('gen.partialOutput', failedImages, { engine: job.params && (job.params.engine || job.params.editEngine) || 'unknown', requestId: job.requestId });
+  }
   saveDb();
   if (job.params.postUpscale && sequenceFinal) {
     for (const item of created) {
@@ -3293,16 +3504,17 @@ async function completeJob(pid) {
         completedStep: editSequence.index + 1,
         nextStep: editSequence.index + 2,
         total: editSequence.total,
+        requestId: job.requestId,
       });
     } catch (error) {
       jobs.delete(pid);
       const message = `Sequential edit stopped after step ${editSequence.index + 1}: ${error.message}`;
       pushHistory({ kind: 'error', profileId: job.profileId, itemId: created[0] && created[0].id, label: message.slice(0, 120) });
-      broadcast('jobError', { jobId: pid, kind: 'gen', profileId: job.profileId, itemId: created[0] && created[0].id, items: created, message, durationMs });
+      broadcast('jobError', { jobId: pid, kind: 'gen', profileId: job.profileId, itemId: created[0] && created[0].id, items: created, message, durationMs, requestId: job.requestId });
     }
   } else {
     jobs.delete(pid);
-    broadcast('jobDone', { jobId: pid, items: created, sequenceComplete: !!editSequence });
+    broadcast('jobDone', { jobId: pid, items: created, sequenceComplete: !!editSequence, requestId: job.requestId });
   }
 }
 
@@ -3341,7 +3553,77 @@ setInterval(async () => {
       // Otherwise ComfyUI is temporarily offline; retry on the next poll.
     }
   }
+  // Detect orphaned prompts: ComfyUI may have prompts submitted by THIS server
+  // (identified by CLIENT_ID) that are not in our jobs Map. This happens when
+  // queuePromptRaw succeeds (Comfy accepts the prompt) but the response parsing
+  // fails before trackJob stores the job. Clean them up.
+  try {
+    const queue = await (await comfyFetch('/queue')).json();
+    const runningIds = new Set(
+      (queue.queue_running || [])
+        .map((entry) => String(entry?.[1] || ''))
+        .filter((id) => id && id.startsWith('ks-')),
+    );
+    const pendingIds = new Set(
+      (queue.queue_pending || [])
+        .map((entry) => String(entry?.[1] || ''))
+        .filter((id) => id && id.startsWith('ks-')),
+    );
+    for (const orphanId of [...runningIds, ...pendingIds]) {
+      if (!jobs.has(orphanId)) {
+        // Orphan found — cancel it in ComfyUI. No job to release slot for,
+        // but the prompt slot was acquired in queuePrompt before the failure,
+        // so it may be leaked. The _activePromptCount is decremented in the
+        // catch path of queuePrompt (via slotToken.release), so the slot
+        // accounting is correct. We just need to clear the ComfyUI side.
+        await comfyFetch('/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ delete: [orphanId] }),
+        }).catch(() => {});
+        console.warn(`[queue] Cleaned up orphaned ComfyUI prompt ${orphanId}`);
+      }
+    }
+  } catch { /* ComfyUI unreachable; orphan detection deferred to next poll */ }
 }, 2500);
+/* P0-1: Orphaned prompt detection. Checks ComfyUI's /queue for prompts
+ * that have our CLIENT_ID but are NOT in our local jobs Map.
+ * This catches jobs lost during a server restart or a WebSocket disconnect
+ * where the prompt completed in ComfyUI but we never received the terminal event.
+ */
+setInterval(async () => {
+  if (!jobs.size) return; // nothing active to reconcile against
+  try {
+    const queue = await (await comfyFetch('/queue')).json();
+    const pendingIds = (queue.queue_pending || [])
+      .map((entry) => String(entry && entry[1] || ''))
+      .filter(Boolean);
+    for (const qid of pendingIds) {
+      if (jobs.has(qid)) continue; // we know about this one
+      // Check if ComfyUI remembers a client_id — if it matches our
+      // CLIENT_ID, it's an orphaned Mix Studio prompt.
+      const entry = (queue.queue_pending || []).find((e) => String(e && e[1] || '') === qid);
+      const clientId = entry && entry[3];
+      if (clientId === CLIENT_ID) {
+        log.warn('Orphaned prompt detected in ComfyUI queue (not tracked in jobs Map)', {
+          promptId: qid, queuePosition: pendingIds.indexOf(qid) + 1,
+        });
+        // Attempt to cancel it in ComfyUI to free the GPU slot
+        try {
+          await comfyFetch('/queue', {
+            method: 'POST', body: JSON.stringify({ delete: [qid] }),
+            headers: { 'Content-Type': 'application/json' },
+          });
+          log.warn('Orphaned prompt cancelled in ComfyUI', { promptId: qid });
+        } catch (cleanupErr) {
+          log.error('Failed to clean up orphaned prompt', { promptId: qid, error: cleanupErr });
+        }
+      }
+    }
+  } catch (error) {
+    // ComfyUI likely offline — silent, will retry next tick
+  }
+}, 10_000);
 
 /* ------------------------------------------------------------------ */
 /* Prompt enhance (two-pass): run TextGenerate alone, sanitize the     */
@@ -4047,28 +4329,91 @@ async function buildT2I(p) {
   return filterInputs(graph);
 }
 
+// Qwen-Image T2I via native ComfyUI nodes on a GGUF-quantized transformer.
+//
+// WHY GGUF AND NOT THE DIFFUSERS PIPELINE (QwenImageTextToImageLocal):
+// the diffusers path cannot run on a 32GB card. Measured from the safetensors
+// headers of Qwen---Qwen-Image-2512: transformer 20.43B params = 40.86GB bf16,
+// text_encoder 8.29B = 16.58GB, vae 0.13GB — 57.70GB resident against 33.46GB
+// of VRAM on the Arc B70. CPU offload does not rescue it either, because the
+// transformer ALONE (40.86GB) exceeds the whole card, and offload swaps whole
+// components. Symptom was a generation that never completed at ANY resolution
+// (VRAM pinned at 99.6%, 48% of one core, RSS thrashing ±2GB) — it looked like
+// an aspect-ratio bug but was pure allocator thrash.
+//
+// Q4_K_M puts the transformer at 13.24GB; with the fp8 text encoder (9.38GB)
+// and VAE (0.24GB) the working set is ~22.9GB, leaving ~10GB of headroom.
+// Measured on Arc B70 at 20 steps: 1024x1024 451s, 1024x512 190s, 768x1152
+// 226s, all three with exact requested dims (no bucket snapping).
+//
+// The scaled-fp8 text encoder MUST load through the regular CLIPLoader.
+// CLIPLoaderGGUF rejects it: "Mixing scaled FP8 with GGUF is not supported".
+//
+// LIGHTNING FAST MODE (p.qwenLightning, default on): the 4-step Lightning LoRA
+// is shipped for Qwen-Image-Edit-2511, but Qwen-Image and Qwen-Image-Edit share
+// one transformer architecture — every one of the LoRA's 720 key stems matches
+// the T2I transformer's tensors (720/720, verified from the GGUF headers), so it
+// applies cleanly here. Measured A/B at 1024x1024, same seed:
+//   20 steps, cfg 2.5, no LoRA -> 281.3s
+//    8 steps, cfg 1.0, LoRA    ->  55.1s  (5.11x)
+//    4 steps, cfg 1.0, LoRA    ->  45.1s  (6.24x)
+// Vision review of the 4-step output: coherent, sharp, correct rigging, no
+// artifacts, not under-denoised — only slightly smoother micro-texture than the
+// 20-step render. Lightning requires cfg 1.0 (it is CFG-distilled); leaving cfg
+// high with the LoRA produces over-contrasted, blown-out results.
 async function buildQwenT2I(p) {
   const graph = {};
   const textSource = p.enhancedText || p.prompt;
-  const modelName = settings.qwenImageModel || 'qwen-image-3.0-pro';
-  graph.api = {
-    class_type: 'QwenImageTextToImageApi',
+  const unetName = settings.qwenImageGgufModel || 'qwen-image-2512-Q4_K_M.gguf';
+  const clipName = settings.qwenImageTextEncoder || 'qwen_2.5_vl_7b_fp8_scaled.safetensors';
+  const vaeName = settings.qwenImageVae || 'qwen_image_vae.safetensors';
+  const lightningLora = settings.qwenImageLightningLora || settings.qwenEditLora;
+  const lightning = p.qwenLightning !== false && !!lightningLora;
+
+  graph.unet = { class_type: 'UnetLoaderGGUF', inputs: { unet_name: unetName } };
+  graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: clipName, type: 'qwen_image' } };
+  graph.vae = { class_type: 'VAELoader', inputs: { vae_name: vaeName } };
+
+  let modelSource = ['unet', 0];
+  if (lightning) {
+    graph.lightning = {
+      class_type: 'LoraLoaderModelOnly',
+      inputs: {
+        model: ['unet', 0],
+        lora_name: lightningLora,
+        strength_model: clampNum(p.qwenLightningStrength, 0, 2, 1),
+      },
+    };
+    modelSource = ['lightning', 0];
+  }
+
+  graph.pos = { class_type: 'CLIPTextEncode', inputs: { clip: ['clip', 0], text: textSource } };
+  graph.neg = { class_type: 'CLIPTextEncode', inputs: { clip: ['clip', 0], text: p.negativePrompt || '' } };
+  graph.latent = {
+    class_type: 'EmptySD3LatentImage',
+    inputs: { width: p.width, height: p.height, batch_size: Math.min(p.batch || 1, 4) },
+  };
+  graph.sampler = {
+    class_type: 'KSampler',
     inputs: {
-      model: modelName,
-      'model.prompt': textSource,
-      'model.negative_prompt': p.negativePrompt || '',
-      'model.width': p.width,
-      'model.height': p.height,
+      model: modelSource,
+      positive: ['pos', 0],
+      negative: ['neg', 0],
+      latent_image: ['latent', 0],
       seed: p.seed,
-      steps: p.steps,
-      cfg: p.cfg,
-      prompt_extend: true,
-      watermark: '(Powered by Qwen-Image)',
+      // Lightning is step- and CFG-distilled: clamp to its trained regime so a
+      // stale 20-step/cfg-2.5 form submission cannot produce a blown-out image.
+      steps: lightning ? clampInt(p.steps, 4, 8, 4) : p.steps,
+      cfg: lightning ? 1 : p.cfg,
+      sampler_name: 'euler',
+      scheduler: 'simple',
+      denoise: 1.0,
     },
   };
+  graph.decode = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
   graph.save = {
     class_type: 'SaveImage',
-    inputs: { images: ['api', 0], filename_prefix: 'KreaStudio/qwen' },
+    inputs: { images: ['decode', 0], filename_prefix: 'KreaStudio/qwen' },
   };
   return filterInputs(graph);
 }
@@ -4893,11 +5238,18 @@ async function buildAnimate(imageName, opts) {
 
   // Models
   graph.ckpt = { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: settings.ltxCkpt } };
-  graph.model_lora = {
-    class_type: 'LoraLoaderModelOnly',
-    inputs: { model: ['ckpt', 0], lora_name: settings.ltxDistilledLora, strength_model: 0.5 },
-  };
-  let ltxBaseModel = ['model_lora', 0];
+  let ltxBaseModel;
+  if (opts.skipLora) {
+    // No-op model passthrough: keep the checkpoint as the base so every later
+    // reference to ltxBaseModel stays valid when the distilled LoRA is skipped.
+    ltxBaseModel = ['ckpt', 0];
+  } else {
+    graph.model_lora = {
+      class_type: 'LoraLoaderModelOnly',
+      inputs: { model: ['ckpt', 0], lora_name: settings.ltxDistilledLora, strength_model: 0.5 },
+    };
+    ltxBaseModel = ['model_lora', 0];
+  }
   // Edit Anything is trained as a normal LTX 2.3 model LoRA. Keep it at
   // its authored strength; raising it can make the source clip less stable.
   if (opts.editAnything) {
@@ -4923,13 +5275,22 @@ async function buildAnimate(imageName, opts) {
     {},
     { text_encoder: settings.ltxTextEncoder, ckpt_name: settings.ltxCkpt }
   );
-  graph.te_lora = {
-    class_type: 'LoraLoader',
-    inputs: {
-      model: ['ckpt', 0], clip: ['te', 0],
-      lora_name: settings.ltxGemmaLora, strength_model: 0.7, strength_clip: 0.7,
-    },
-  };
+  if (opts.skipLora) {
+    // Skip the Gemma text-encoder LoRA entirely; keep the node so downstream
+    // references (pos/neg CLIP = ['te_lora', 1]) stay valid, but zero it out.
+    graph.te_lora = {
+      class_type: 'LoraLoader',
+      inputs: { model: ['ckpt', 0], clip: ['te', 0], lora_name: settings.ltxGemmaLora, strength_model: 0, strength_clip: 0 },
+    };
+  } else {
+    graph.te_lora = {
+      class_type: 'LoraLoader',
+      inputs: {
+        model: ['ckpt', 0], clip: ['te', 0],
+        lora_name: settings.ltxGemmaLora, strength_model: 0.7, strength_clip: 0.7,
+      },
+    };
+  }
 
   // Prompt (optional Gemma LTX2 enhancement, exactly like the workflow)
   let promptSource = opts.prompt;
@@ -5021,10 +5382,13 @@ async function buildAnimate(imageName, opts) {
     cameraGuideSource = imageBatchChain(graph, guideSources, 'camera_motion_join_');
   }
 
-  // Stage 1: base generation at half resolution
+  // Stage 1: base generation. When upscaling is skipped, generate at full
+  // resolution directly (no half-res pass) so output isn't half-sized.
+  const baseW = opts.skipUpscale ? W : W / 2;
+  const baseH = opts.skipUpscale ? H : H / 2;
   graph.latent1 = {
     class_type: 'EmptyLTXVLatentVideo',
-    inputs: { width: W / 2, height: H / 2, length: opts.frames, batch_size: 1 },
+    inputs: { width: baseW, height: baseH, length: opts.frames, batch_size: 1 },
   };
   let basePositive = ['cond', 0];
   let baseNegative = ['cond', 1];
@@ -5107,71 +5471,86 @@ async function buildAnimate(imageName, opts) {
   };
   graph.sep1 = { class_type: 'LTXVSeparateAVLatent', inputs: { av_latent: ['samp1', 0] } };
 
-  // Stage 2: x2 latent upsample + refine
-  graph.ups_model = { class_type: 'LatentUpscaleModelLoader', inputs: { model_name: settings.ltxUpscaler } };
-  graph.ups = {
-    class_type: 'LTXVLatentUpsampler',
-    inputs: { samples: ['sep1', 0], upscale_model: ['ups_model', 0], vae: ['ckpt', 2] },
-  };
+  // Stage 2: x2 latent upsample + refine.
+  // When upscaling is skipped, the refinement pass runs directly on the
+  // full-resolution base latent (Stage 1 already generated at full res).
   let refinePositive;
   let refineNegative;
   let refineLatent;
-  if (cameraGuideSource) {
-    graph.camera_crop1 = {
-      class_type: 'LTXVCropGuides',
-      inputs: { positive: basePositive, negative: baseNegative, latent: ['sep1', 0] },
-    };
-    graph.camera_image_condition2 = await nodeFromOrdered(
-      'LTXVImgToVideoConditionOnly',
-      [0.7, !!opts.bypass],
-      { vae: ['ckpt', 2], image: ['prep', 0], latent: ['ups', 0] }
-    );
-    refinePositive = ['camera_crop1', 0];
-    refineNegative = ['camera_crop1', 1];
-    refineLatent = ['camera_image_condition2', 0];
-  } else if (opts.guideVideoName) {
-    // Crop first-pass guide tokens before inserting the full-resolution
-    // source clip for refinement. This mirrors LTX's multi-guide flow.
-    graph.edit_crop1 = {
-      class_type: 'LTXVCropGuides',
-      inputs: { positive: basePositive, negative: baseNegative, latent: ['sep1', 0] },
-    };
-    graph.edit_guide2 = {
-      class_type: 'LTXVAddGuide',
-      inputs: {
-        positive: ['edit_crop1', 0], negative: ['edit_crop1', 1], vae: ['ckpt', 2], latent: ['ups', 0],
-        image: ['edit_source', 0], frame_idx: 0, strength: 1,
-      },
-    };
-    refinePositive = ['edit_guide2', 0];
-    refineNegative = ['edit_guide2', 1];
-    refineLatent = ['edit_guide2', 2];
-  } else if (opts.endImageName) {
-    graph.i2v2 = {
-      class_type: 'LTXVImgToVideoInplaceKJ',
-      inputs: {
-        vae: ['ckpt', 2], latent: ['ups', 0],
-        num_images: '2',
-        'num_images.strength_1': 1, 'num_images.image_1': ['prep', 0], 'num_images.index_1': 0,
-        'num_images.strength_2': 1, 'num_images.image_2': ['prep_end', 0], 'num_images.index_2': opts.frames - 1,
-      },
-    };
-    refineLatent = ['i2v2', 0];
+  if (opts.skipUpscale) {
+    // No upsample: feed the base latent straight into the refine stage.
+    if (!opts.guideVideoName && !cameraGuideSource) {
+      graph.crop = {
+        class_type: 'LTXVCropGuides',
+        inputs: { positive: ['cond', 0], negative: ['cond', 1], latent: ['sep1', 0] },
+      };
+      refinePositive = ['crop', 0];
+      refineNegative = ['crop', 1];
+    }
+    refineLatent = ['sep1', 0];
   } else {
-    graph.i2v2 = await nodeFromOrdered(
-      'LTXVImgToVideoInplace',
-      [1, !!opts.bypass],
-      { vae: ['ckpt', 2], image: ['prep', 0], latent: ['ups', 0] }
-    );
-    refineLatent = ['i2v2', 0];
-  }
-  if (!opts.guideVideoName && !cameraGuideSource) {
-    graph.crop = {
-      class_type: 'LTXVCropGuides',
-      inputs: { positive: ['cond', 0], negative: ['cond', 1], latent: ['sep1', 0] },
+    graph.ups_model = { class_type: 'LatentUpscaleModelLoader', inputs: { model_name: settings.ltxUpscaler } };
+    graph.ups = {
+      class_type: 'LTXVLatentUpsampler',
+      inputs: { samples: ['sep1', 0], upscale_model: ['ups_model', 0], vae: ['ckpt', 2] },
     };
-    refinePositive = ['crop', 0];
-    refineNegative = ['crop', 1];
+    if (cameraGuideSource) {
+      graph.camera_crop1 = {
+        class_type: 'LTXVCropGuides',
+        inputs: { positive: basePositive, negative: baseNegative, latent: ['sep1', 0] },
+      };
+      graph.camera_image_condition2 = await nodeFromOrdered(
+        'LTXVImgToVideoConditionOnly',
+        [0.7, !!opts.bypass],
+        { vae: ['ckpt', 2], image: ['prep', 0], latent: ['ups', 0] }
+      );
+      refinePositive = ['camera_crop1', 0];
+      refineNegative = ['camera_crop1', 1];
+      refineLatent = ['camera_image_condition2', 0];
+    } else if (opts.guideVideoName) {
+      // Crop first-pass guide tokens before inserting the full-resolution
+      // source clip for refinement. This mirrors LTX's multi-guide flow.
+      graph.edit_crop1 = {
+        class_type: 'LTXVCropGuides',
+        inputs: { positive: basePositive, negative: baseNegative, latent: ['sep1', 0] },
+      };
+      graph.edit_guide2 = {
+        class_type: 'LTXVAddGuide',
+        inputs: {
+          positive: ['edit_crop1', 0], negative: ['edit_crop1', 1], vae: ['ckpt', 2], latent: ['ups', 0],
+          image: ['edit_source', 0], frame_idx: 0, strength: 1,
+        },
+      };
+      refinePositive = ['edit_guide2', 0];
+      refineNegative = ['edit_guide2', 1];
+      refineLatent = ['edit_guide2', 2];
+    } else if (opts.endImageName) {
+      graph.i2v2 = {
+        class_type: 'LTXVImgToVideoInplaceKJ',
+        inputs: {
+          vae: ['ckpt', 2], latent: ['ups', 0],
+          num_images: '2',
+          'num_images.strength_1': 1, 'num_images.image_1': ['prep', 0], 'num_images.index_1': 0,
+          'num_images.strength_2': 1, 'num_images.image_2': ['prep_end', 0], 'num_images.index_2': opts.frames - 1,
+        },
+      };
+      refineLatent = ['i2v2', 0];
+    } else {
+      graph.i2v2 = await nodeFromOrdered(
+        'LTXVImgToVideoInplace',
+        [1, !!opts.bypass],
+        { vae: ['ckpt', 2], image: ['prep', 0], latent: ['ups', 0] }
+      );
+      refineLatent = ['i2v2', 0];
+    }
+    if (!opts.guideVideoName && !cameraGuideSource) {
+      graph.crop = {
+        class_type: 'LTXVCropGuides',
+        inputs: { positive: ['cond', 0], negative: ['cond', 1], latent: ['sep1', 0] },
+      };
+      refinePositive = ['crop', 0];
+      refineNegative = ['crop', 1];
+    }
   }
   graph.guider2 = {
     class_type: 'CFGGuider',
@@ -6663,6 +7042,17 @@ async function setupStatusPayload(forceCompatibility = false) {
 async function handleApi(req, res, url) {
   const route = url.pathname;
 
+  // P0-1: request ID propagation. Accept a caller-supplied Correlation-Id so
+  // the frontend (and any agent) can correlate a POST through server ->
+  // ComfyUI -> SSE. Otherwise mint one. Stored on req.id and entered into
+  // AsyncLocalStorage so logs during this request inherit it; trackJob reads
+  // it and stamps requestId onto the job so async completion (WS / polling)
+  // can echo it back over SSE and into logs.
+  const incomingId = req.headers && (req.headers['x-correlation-id'] || req.headers['x-request-id']);
+  req.id = incomingId || log.generateRequestId();
+  const profileId = (currentProfile(req) && currentProfile(req).id) || '';
+  log.requestContext.enterWith({ requestId: req.id, profileId, route });
+
   if (route === '/api/analytics-config' && req.method === 'GET') {
     res.setHeader('Cache-Control', 'no-store');
     return json(res, 200, publicAnalyticsConfig(RUNTIME));
@@ -7585,15 +7975,31 @@ async function handleApi(req, res, url) {
     const name = String(url.searchParams.get('name') || '');
     if (!name) return json(res, 400, { error: 'name required' });
     const catalogedAsset = db.uploadedAssets.find((asset) => asset.name === name);
-    if (catalogedAsset && catalogedAsset.profileId !== req.profile.id) {
-      return json(res, 404, { error: 'Uploaded asset not found' });
+    if (catalogedAsset) {
+      if (catalogedAsset.profileId !== req.profile.id) {
+        return json(res, 404, { error: 'Uploaded asset not found' });
+      }
+      if (catalogedAsset.deletedAt) {
+        return json(res, 404, { error: 'This uploaded asset was deleted' });
+      }
     }
-    if (catalogedAsset && catalogedAsset.deletedAt) {
-      return json(res, 404, { error: 'This uploaded asset was deleted' });
-    }
+    // Non-cataloged assets: require profile match via subfolder path.
+    // Assets uploaded without x-asset-catalog header are stored directly in
+    // INPUTS root; we gate access by checking the file path pattern.
     const local = inputAssetPath(INPUTS, name);
     try {
       await fsp.access(local);
+      // Non-cataloged local assets: only serve if profile can resolve the name.
+      if (!catalogedAsset) {
+        // Assets uploaded without cataloging are profile-scoped by name prefix.
+        // The upload creates names like ks_<timestamp>_<profile-hex>_<orig>.
+        // We check that the name starts with the profile's known prefix.
+        const profilePrefix = `ks_${req.profile.id.slice(0, 8)}_`;
+        if (!name.startsWith(profilePrefix) && name.startsWith('ks_')) {
+          // Could be another profile's non-cataloged asset — reject.
+          return json(res, 404, { error: 'Uploaded asset not found' });
+        }
+      }
       return serveFile(res, local, req.headers.range);
     } catch { /* older inputs fall back to ComfyUI */ }
     const parts = name.split('/');
@@ -8134,6 +8540,10 @@ async function handleApi(req, res, url) {
     delete p.lowVramChoice;
     if (p.editOutpaint) Object.assign(p, normalizeOutpaintDimensions(p.width, p.height));
     p.krea2Turbo = p.mode === 'edit' ? true : p.krea2Turbo !== false;
+    // Qwen T2I Lightning: opt-out (default on) 4-step acceleration. Normalized
+    // here so the builder receives a real boolean and a clamped strength.
+    p.qwenLightning = p.qwenLightning !== false;
+    p.qwenLightningStrength = clampNum(p.qwenLightningStrength, 0, 2, 1);
     p.steps = clampInt(p.steps, 1, 100, p.mode === 't2i' && p.krea2Turbo ? 8 : 12);
     p.cfg = clampNum(p.cfg, 0, 30, 1);
     p.krea2RawTurboLora = p.krea2Turbo || !p.krea2RawTurboLora || typeof p.krea2RawTurboLora !== 'object'
@@ -8198,9 +8608,37 @@ async function handleApi(req, res, url) {
     if (p.mode !== 'edit') {
       if (p.prompt) {
         if (p.enhance) {
-          const rawText = await enhancePrompt(p, req.profile.id);
-          refined = cleanEnhancedText(rawText, p.prompt);
-          p.enhancedText = refined;
+          // P0-2: enhancement is non-critical enrichment. Never let an LLM
+          // outage abort the whole generation. Retry transient failures, and
+          // on final failure fall back to the user's original prompt while
+          // notifying the client that enhancement was skipped.
+          let enhanceOk = false;
+          let lastErr = null;
+          for (let attempt = 1; attempt <= 2 && !enhanceOk; attempt += 1) {
+            try {
+              const rawText = await enhancePrompt(p, req.profile.id);
+              refined = cleanEnhancedText(rawText, p.prompt);
+              p.enhancedText = refined;
+              enhanceOk = true;
+            } catch (e) {
+              lastErr = e;
+              log.warn('Prompt enhancement attempt failed', {
+                requestId: req.id, profileId: req.profile.id, attempt, error: e,
+              });
+              if (attempt < 2) await log.sleep(800 * attempt);
+            }
+          }
+          if (!enhanceOk) {
+            refined = null;
+            p.enhancedText = null;
+            log.error('Prompt enhancement failed; using original prompt', {
+              requestId: req.id, profileId: req.profile.id, error: lastErr,
+            });
+            broadcast('status', {
+              jobId: 'pre', profileId: req.profile.id, scope: 'generation-preflight',
+              kind: 'enhance-failed', text: 'Prompt enhancement unavailable — using your prompt as written.',
+            });
+          }
         }
       }
       const regionInputs = p.regions.map((region) => ({
@@ -8218,12 +8656,19 @@ async function handleApi(req, res, url) {
           if (!region.description || !region.enhance) continue;
           completed += 1;
           const seed = (Number(p.seed) + index + 1) % (2 ** 48);
-          const rawText = await enhanceRegionPrompt(region.description, globalContext, seed, {
-            imageName: region.imageName,
-            profileId: req.profile.id,
-            statusText: `Enhancing region prompt ${completed} of ${regionCount}...`,
-          });
-          enhancedRegions[index] = cleanEnhancedText(rawText, region.description);
+          try {
+            const rawText = await enhanceRegionPrompt(region.description, globalContext, seed, {
+              imageName: region.imageName,
+              profileId: req.profile.id,
+              statusText: `Enhancing region prompt ${completed} of ${regionCount}...`,
+            });
+            enhancedRegions[index] = cleanEnhancedText(rawText, region.description);
+          } catch (e) {
+            log.warn('Region prompt enhancement failed; using original', {
+              requestId: req.id, profileId: req.profile.id, attempt: completed, error: e,
+            });
+            enhancedRegions[index] = ''; // fall back to the region's own description
+          }
         }
         p.regions = p.regions.map((region, index) => enhancedRegions[index]
           ? Object.assign({}, region, { refinedDescription: enhancedRegions[index] })
@@ -8358,6 +8803,7 @@ async function handleApi(req, res, url) {
       : await queueGenerationJob(p, req.profile.id, refNames, refined);
     return json(res, 200, {
       jobId: queued.pid,
+      requestId: req.id,
       seed: p.seed,
       refinedPrompt: refined,
       sequenceId: p.editSequence ? p.editSequence.id : undefined,
@@ -9423,6 +9869,10 @@ async function handleApi(req, res, url) {
       saveContinuationFrame: wanAnimate2 ? wanAnimate2Plan.segments.length > 1 : undefined,
       smooth,
       loras: requestedVideoLoras,
+      // Allow the client to opt out of the distilled LoRA and the x2
+      // spatial upscaler (both are otherwise baked into every video job).
+      skipLora: body.skipLora === true,
+      skipUpscale: body.skipUpscale === true,
       mode: h3GraphMode,
       unetWeightDtypeChoices: unetWeightDtypeChoices,
       turbo: h3Turbo,
@@ -10039,8 +10489,12 @@ async function handleApi(req, res, url) {
     const raw = await suggestImagePrompt(comfyName, Math.floor(Math.random() * 2 ** 31), req.profile.id);
     const prompt = cleanEnhancedText(raw, '');
     if (!prompt) return json(res, 500, { error: 'Vision model returned no usable prompt' });
-    return json(res, 200, { prompt });
+    return json(res, 200, { jobId: pid });
   }
+
+  // /api/cancel endpoint is defined later in this file with full cancel
+  // semantics (cancelRequested marker, stopComfyPrompt, cancelJob, and
+  // request-ID echo).
 
   if (route === '/api/prompt/revise/status' && req.method === 'GET') {
     const requestId = promptRevisionRequestId(url.searchParams.get('requestId'));
@@ -10483,7 +10937,37 @@ async function handleApi(req, res, url) {
     // Remove tracking immediately as a polling fallback and to settle any
     // preprocessing request even when the ComfyUI websocket is unavailable.
     cancelJob(pid, job.cancelMessage);
-    return json(res, 200, { ok: true, running: stillRunning });
+    // Attach request context to the cancel event for correlation.
+    const requestId = job.requestId || null;
+    broadcast('jobCancelled', {
+      jobId: pid, cancelMessage: job.cancelMessage, profileId: req.profile.id, requestId,
+    });
+    return json(res, 200, { ok: true, jobId: pid, cancelMessage: job.cancelMessage, requestId });
+  }
+
+  // ------------------------------------------------------------------
+  // /api/cancel — dedicated cancel endpoint (exposes cancelJob +
+  // stopComfyPrompt with request-id propagation).
+  // ------------------------------------------------------------------
+  if (route === '/api/cancel' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    const jobId = String(body.jobId || '');
+    if (!jobId) return json(res, 400, { error: 'jobId required' });
+    const job = jobs.get(jobId);
+    if (!job || job.profileId !== req.profile.id) {
+      return json(res, 404, { error: 'This job is no longer available' });
+    }
+    if (job.completing) return json(res, 409, { error: 'This job is already finishing' });
+    const requestId = job.requestId || req.requestId || null;
+    job.cancelRequested = true;
+    job.cancelMessage = body.cancelMessage ? String(body.cancelMessage).slice(0, 200) : 'Cancelled by user';
+    // Stop the prompt in ComfyUI then remove from local tracking.
+    const stillRunning = await stopComfyPrompt(jobId);
+    cancelJob(jobId, job.cancelMessage);
+    broadcast('jobCancelled', {
+      jobId, cancelMessage: job.cancelMessage, profileId: req.profile.id, requestId,
+    });
+    return json(res, 200, { ok: true, jobId, cancelMessage: job.cancelMessage, stillRunning, requestId });
   }
 
   if (route === '/api/queue/reset' && req.method === 'POST') {
@@ -11460,27 +11944,54 @@ const server = http.createServer(async (req, res) => {
     const setupRequired = e && e.code === 'comfy_krea2_update_required';
     const loggedPath = url.pathname.startsWith('/mcp/') ? '/mcp/[redacted]' : url.pathname;
     if (!cancelled) {
-      // Structured error log (logs/errors.log) with request context.
-      try {
-        const errObj = (e instanceof Error) ? e : new Error(String(e.message || e));
-        errorHandler.error(errObj, {
-          route: `${req.method} ${loggedPath}`,
-          requestId: req.headers && req.headers['x-request-id'],
-        });
-      } catch (logErr) {
-        console.error('[error]', req.method, loggedPath, e.message);
-      }
+      // P0-1 / logging: structured error with full context (requestId,
+      // profileId, route all inherited from the request's AsyncLocalStorage).
+      log.error(String(e && e.message || e), {
+        route: `${req.method} ${loggedPath}`,
+        error: (e instanceof Error) ? e : new Error(String(e && (e.message || e))),
+      });
+      metrics.recordCounter('http.error', 1, { route: loggedPath, code: e && e.code || 'unknown' });
     }
     if (!res.headersSent) {
       json(res, cancelled || setupRequired ? 409 : 500, {
         error: String(e.message || e),
         code: cancelled ? 'job_cancelled' : (setupRequired ? e.code : undefined),
+        requestId: req.id,
       });
     }
   }
 });
 
+function gracefulShutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('[MixStudio] Shutting down gracefully (SIGTERM/SIGINT).');
+  // Signal ComfyUI to stop accepting new prompts and interrupt the current one
+  comfyFetch('/interrupt', { method: 'POST' }).catch(() => {});
+  // Stop accepting new connections
+  server.close(() => {
+    console.log('[MixStudio] HTTP server closed.');
+    process.exit(75);
+  });
+  // Force exit if graceful shutdown takes too long
+  setTimeout(() => {
+    console.error('[MixStudio] Graceful shutdown timed out — forcing exit.');
+    process.exit(75);
+  }, 5000).unref();
+  // Drain SSE clients
+  for (const client of sseClients.keys()) {
+    try { client.end(); } catch { /* noop */ }
+  }
+  sseClients.clear();
+  // Close WebSocket transport
+  resetComfyTransport();
+}
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
 let restartScheduled = false;
+
 function launchDetachedReplacement() {
   const helper = [
     "const { spawn } = require('child_process');",

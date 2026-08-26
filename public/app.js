@@ -71,6 +71,13 @@ const state = {
   qwenAngleElevations: [],
   qwenAngleDistances: [],
   qwenQuality: 'quality',
+  qwenTextEdit: false,          // text editing mode toggle
+  qwenTextInput: null,          // text to embed in image
+  qwenFont: 'Arial',            // font selection
+  qwenFontSize: 48,             // font size
+  qwenFontColor: '#000000',     // font color
+  qwenMaterial: 'default',      // material type
+  qwenMaterialStrength: 1.0,    // material strength
   krea2RefBoost: 4,
   prompts: { create: '', edit: '', video: '' }, // per-tab prompt text
   loras: [],                 // {name, strength, on} - Create tab (Krea 2)
@@ -4830,6 +4837,7 @@ function updateVideoPanels() {
   $('#vidWanAnimate2Strengths').hidden = !(isVideo && state.vidEngine === 'wan-animate2');
   $('#vidDurationField').hidden = false;
   $('#vid4k').hidden = isVideo && state.vidEngine === 'wan-animate2';
+$('#vidLtxToggles').hidden = !(isVideo && state.vidEngine === 'ltx');
   renderScailChunkControls();
   $('#enhanceBtn').hidden = isVideo && state.vidEngine === 'ltx-edit';
   if (isVideo && state.vidEngine === 'wan-animate2') $('#enhanceBtn').hidden = true;
@@ -4860,7 +4868,6 @@ function updateVideoPanels() {
   renderEditUpscale();
   renderKreaMaskTools();
   $('#resPanel').hidden = state.view === 'edit'
-    || (isVideo && !!state.vidRef && state.vidEngine !== 'h3')
     || (isVideo && state.vidEngine === 'wan-animate2')
     || (isRegion && !useSharedRegionResolution);
   $('.region-resolution-picker').hidden = useSharedRegionResolution;
@@ -13629,6 +13636,7 @@ function renderLoras() {
       + `<span class="lc-name" title="${escapeHtml(prettyLora(l.name))}">${escapeHtml(prettyLora(l.name))}</span>`
       + `<span class="lc-adjust"></span>`;
     wireLoraCard(card, l, idx, arr);
+    renderLoraMotionDial(card, l);
     list.appendChild(card);
   });
   const add = document.createElement('button');
@@ -13649,6 +13657,69 @@ function renderLoras() {
   renderLoraCompatibility();
   syncPromptLoraTokenColors();
   renderPromptSuggestions();
+}
+
+/* Renders an intuitive "Subtle <-> Wild" motion dial + camera-move presets
+ * into a video LoRA card's .lc-adjust slot. Only for Video Motion LoRAs
+ * (category 'video' mapped to the 'Video Motion' intent in lora-intents.js).
+ * Purely visual: it writes l.strength (and a motion-direction note) — the
+ * same fields the existing numeric strength editor controls, so no backend
+ * or generation-path change is required. */
+function renderLoraMotionDial(card, l) {
+  const adjust = card.querySelector('.lc-adjust');
+  if (!adjust) return;
+  const isMotion = (typeof window.intentGroup === 'function')
+    ? window.intentGroup(l.name) === 'Video Motion'
+    : false;
+  if (!isMotion || state.view !== 'video') { adjust.innerHTML = ''; return; }
+
+  const MOTION_PRESETS = [
+    { v: 0.40, label: 'Subtle' },
+    { v: 0.70, label: 'Balanced' },
+    { v: 1.05, label: 'Wild' },
+  ];
+  const CAMERA_PRESETS = ['Push in', 'Pull out', 'Pan left', 'Pan right', 'Zoom'];
+  const isI2V = /lightx2v|motion-track/i.test(l.name);
+
+  const cur = typeof l.strength === 'number' ? l.strength : 0.7;
+  const pct = Math.max(0, Math.min(100, Math.round((cur / 1.2) * 100)));
+  const activePreset = MOTION_PRESETS.reduce((a, b) => (Math.abs(b.v - cur) < Math.abs(a.v - cur) ? b : a));
+
+  adjust.innerHTML = `
+    <span class="lc-motion-dial">
+      <span class="lc-motion-label">Motion</span>
+      <input class="lc-motion-range" type="range" min="0" max="120" value="${pct}" aria-label="Motion intensity" />
+      <span class="lc-motion-val">${activePreset.label}</span>
+    </span>
+    ${isI2V ? `<span class="lc-motion-cam">${CAMERA_PRESETS.map((c) => `<button type="button" class="lc-cam-btn" data-cam="${c}">${c}</button>`).join('')}</span>` : ''}
+  `;
+
+  const range = adjust.querySelector('.lc-motion-range');
+  const valEl = adjust.querySelector('.lc-motion-val');
+  range.addEventListener('pointerdown', (e) => e.stopPropagation());
+  range.addEventListener('input', (e) => {
+    e.stopPropagation();
+    const v = Number(range.value) / 100;
+    l.strength = Number(v.toFixed(2));
+    const nearest = MOTION_PRESETS.reduce((a, b) => (Math.abs(b.v - v) < Math.abs(a.v - v) ? b : a));
+    valEl.textContent = (Math.abs(nearest.v - v) < 0.08) ? nearest.label : (v < 0.55 ? 'Subtle' : v < 0.9 ? 'Balanced' : 'Wild');
+    const strengthEl = card.querySelector('.lc-strength');
+    if (strengthEl) strengthEl.textContent = l.strength.toFixed(2);
+  });
+  range.addEventListener('change', (e) => {
+    e.stopPropagation();
+    saveForm();
+  });
+
+  adjust.querySelectorAll('.lc-cam-btn').forEach((btn) => {
+    btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      l.motionDirection = btn.dataset.cam;
+      adjust.querySelectorAll('.lc-cam-btn').forEach((b) => b.classList.toggle('on', b === btn));
+      saveForm();
+    });
+  });
 }
 
 /* Card interactions: tap toggles; a brief hold (140ms with a mouse,
@@ -13920,7 +13991,8 @@ function renderLoraPicker(query) {
   const listEl = $('#loraPickList');
   listEl.innerHTML = '';
   const q = query.trim().toLowerCase();
-  if (loraPickAllowNone && !q) {
+  const grouped = loraPickAllowNone && !q;
+  if (grouped) {
     const none = document.createElement('button');
     none.type = 'button';
     none.className = 'lora-pick-row';
@@ -13933,23 +14005,64 @@ function renderLoraPicker(query) {
   }
   const inStack = loraPickHandler ? loraPickExcluded : new Set(curLoras().map((l) => l.name));
   const names = loraOptionsFor('').filter((n) => !inStack.has(n) && (!q || n.toLowerCase().includes(q)));
-  if (!names.length && !loraPickAllowNone) {
+  if (!names.length && !grouped) {
     listEl.innerHTML = '<div class="queue-empty">No matching LoRAs.</div>';
     return;
   }
-  for (const name of names.slice(0, 200)) {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'lora-pick-row';
-    row.dataset.loraPickName = name;
-    row.innerHTML = `${loraThumbHtml(name, 'lp-thumb')}${escapeHtml(prettyLora(name))}`;
-    row.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (performance.now() >= loraPickSuppressClickUntil) commitLoraPick(name);
-    });
-    listEl.appendChild(row);
+  // Group names by intent (when not searching) so a beginner sees labelled
+  // buckets like "Face & Identity" instead of a flat filename wall.
+  const useGroups = !q && typeof window.intentGroup === 'function';
+  if (!useGroups) {
+    for (const name of names.slice(0, 200)) listEl.appendChild(buildLoraPickRow(name));
+    return;
   }
+  const buckets = new Map();
+  for (const name of names) {
+    const g = window.intentGroup(name) || 'Other';
+    if (!buckets.has(g)) buckets.set(g, []);
+    buckets.get(g).push(name);
+  }
+  const order = (typeof window.LORA_INTENT_ORDER === 'object' && window.LORA_INTENT_ORDER)
+    ? window.LORA_INTENT_ORDER : null;
+  const orderedGroups = [...buckets.keys()].sort((a, b) => {
+    const ia = order ? order.indexOf(a) : -1;
+    const ib = order ? order.indexOf(b) : -1;
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+  const seen = new Set();
+  for (const group of orderedGroups) {
+    if (seen.has(group)) continue;
+    seen.add(group);
+    const header = document.createElement('div');
+    header.className = 'lora-pick-group';
+    header.textContent = group;
+    listEl.appendChild(header);
+    for (const name of buckets.get(group)) listEl.appendChild(buildLoraPickRow(name));
+  }
+}
+
+function buildLoraPickRow(name) {
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'lora-pick-row';
+  row.dataset.loraPickName = name;
+  const friendly = (typeof window.prettyIntent === 'function') ? window.prettyIntent(name) : prettyLora(name);
+  const blurb = (typeof window.intentBlurb === 'function') ? window.intentBlurb(name) : '';
+  const sug = (typeof window.intentSuggestedStrength === 'function') ? window.intentSuggestedStrength(name) : null;
+  row.innerHTML = `${loraThumbHtml(name, 'lp-thumb')}`
+    + `<span class="lp-meta"><span class="lp-name">${escapeHtml(friendly)}</span>`
+    + (blurb ? `<span class="lp-blurb">${escapeHtml(blurb)}</span>` : '')
+    + `</span>`
+    + (sug != null ? `<small class="lp-strength">${Number(sug).toFixed(2)}</small>` : '');
+  row.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (performance.now() >= loraPickSuppressClickUntil) commitLoraPick(name);
+  });
+  return row;
 }
 $('#loraSearch').addEventListener('input', () => renderLoraPicker($('#loraSearch').value));
 $('#loraSearchForm').addEventListener('submit', (event) => event.preventDefault());
@@ -14479,7 +14592,7 @@ function directorSeedProject() {
       batch: directorClamp(Number($('#batchInput')?.value) || 1, 1, 8),
       smooth: [1, 2, 3].includes(Number(state.vidSmooth)) ? Number(state.vidSmooth) : 1,
       fourK: $('#vid4k')?.classList.contains('active') === true,
-      loras: state.videoLoras.map((lora) => ({ name: lora.name, strength: Number(lora.strength) || 1, on: lora.on !== false })),
+      loras: state.videoLoras.map((lora) => ({ name: lora.name, strength: Number(lora.strength) || 1, on: lora.on !== false, motionDirection: lora.motionDirection || null })),
     },
   };
 }
@@ -18840,6 +18953,8 @@ $('#vidDurManual').addEventListener('keydown', (event) => {
   }
 });
 $('#vid4k').addEventListener('click', () => $('#vid4k').classList.toggle('active'));
+$('#vidDistilledLora').addEventListener('click', () => $('#vidDistilledLora').classList.toggle('active'));
+$('#vidX2Upscale').addEventListener('click', () => $('#vidX2Upscale').classList.toggle('active'));
 
 /* SCAIL 2 driving-video attachment (+ trim + first-frame extract) */
 state.vidDrive = null;
@@ -19731,6 +19846,8 @@ $('#generateBtn').addEventListener('click', async () => {
         ? Math.max(0.5, (state.vidDrive.trimEnd || state.vidDrive.dur) - (state.vidDrive.trimStart || 0)) : undefined,
       endImageName: state.vidEnd && !h3Reference ? state.vidEnd.name : undefined,
       imageName: state.vidRef && !h3Reference ? state.vidRef.name : undefined,
+      skipLora: !$('#vidDistilledLora').classList.contains('active'),
+      skipUpscale: !$('#vidX2Upscale').classList.contains('active'),
       width: state.vidEngine === 'h3'
         ? state.width
         : ltxEdit && state.vidDrive

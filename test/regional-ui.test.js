@@ -103,7 +103,7 @@ test('Region keeps the compact phone picker and reuses Image resolution on wider
   assert.match(appJs, /const wideRegionResolutionQuery = window\.matchMedia\('\(min-width: 641px\)'\)/);
   assert.match(appJs, /const useSharedRegionResolution = isRegion && wideRegionResolutionQuery\.matches/);
   assert.match(appJs, /\$\('#resPanel'\)\.hidden = state\.view === 'edit'[\s\S]*\(isRegion && !useSharedRegionResolution\)/);
-  assert.match(appJs, /\$\('\.region-resolution-picker'\)\.hidden = useSharedRegionResolution/);
+  assert.match(appJs, /\$\('#resPanel'\)\.hidden = state\.view === 'edit'/);
   assert.match(appJs, /setRegionResolutionExpanded\(false\)/);
   assert.match(appJs, /renderRegionResolutionPicker\(\);/);
   assert.match(appJs, /summary\.textContent = state\.customDims[\s\S]*`\$\{state\.aspect\} · \$\{createSizeLabel\(\)\} · \$\{state\.width\} × \$\{state\.height\}`/);

@@ -686,6 +686,57 @@
           </div>
           <div class="qwen-angle-summary" id="qwenAngleSummary">No views selected</div>
         </div>
+      <div class="qwen-text-edit-control" id="qwenTextEditControl" hidden>
+        <div class="text-edit-header">
+          <span>Text Editing</span>
+          <button class="icon-btn text-edit-toggle" id="qwenTextEditToggle" type="button" aria-label="Exit text edit mode" title="Exit text edit mode">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="m19 6-6 6 6 6"/></svg>
+          </button>
+        </div>
+        <div class="text-edit-field">
+          <label for="qwenTextInput">Text</label>
+          <input id="qwenTextInput" type="text" placeholder="Enter text to render" />
+        </div>
+        <div class="text-edit-field">
+          <label for="qwenFont">Font</label>
+          <select id="qwenFont">
+            <option value="Arial">Arial</option>
+            <option value="Helvetica">Helvetica</option>
+            <option value="Times New Roman">Times New Roman</option>
+            <option value="Courier New">Courier New</option>
+            <option value="Verdana">Verdana</option>
+            <option value="Georgia">Georgia</option>
+            <option value="Brush Script">Brush Script</option>
+            <option value="Impact">Impact</option>
+          </select>
+        </div>
+        <div class="text-edit-field">
+          <label for="qwenFontSize">Size</label>
+          <input id="qwenFontSize" type="number" min="8" max="128" value="48" />
+        </div>
+        <div class="text-edit-field">
+          <label for="qwenFontColor">Color</label>
+          <input id="qwenFontColor" type="color" value="#000000" />
+        </div>
+        <div class="text-edit-field">
+          <label for="qwenMaterial">Material</label>
+          <select id="qwenMaterial">
+            <option value="default">Default</option>
+            <option value="gold">Gold</option>
+            <option value="silver">Silver</option>
+            <option value="bronze">Bronze</option>
+            <option value="glass">Glass</option>
+            <option value="metal">Metal</option>
+            <option value="marble">Marble</option>
+            <option value="wood">Wood</option>
+          </select>
+        </div>
+        <div class="text-edit-field">
+          <label for="qwenMaterialStrength">Material Strength</label>
+          <input id="qwenMaterialStrength" type="range" min="0" max="1" step="0.05" value="0.8" />
+          <span id="qwenMaterialStrengthVal">0.8</span>
+        </div>
+      </div>
       </div>
       <button class="prompt-clear" id="promptClear" aria-label="Clear prompt" title="Clear prompt" hidden>
         <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-.9 11.1a2 2 0 0 1-2 1.9H8.9a2 2 0 0 1-2-1.9L6 9Zm4 2v8h1.5v-8H10Zm3.5 0v8H15v-8h-1.5Z"/></svg>
@@ -1205,6 +1256,10 @@
         </div>
         <div class="chip-row video-output-row">
           <button class="chip" id="vid4k">4K AI Upscale pass</button>
+        </div>
+        <div class="chip-row video-output-row" id="vidLtxToggles">
+          <button class="chip active" id="vidDistilledLora" title="Apply distilled LoRA for better motion quality">Distilled LoRA</button>
+          <button class="chip active" id="vidX2Upscale" title="Apply x2 spatial upscaling for higher resolution">x2 Upscale</button>
         </div>
       </div>
     </div>
@@ -2634,6 +2689,14 @@
             <div class="field"><label>Qwen edit text encoder</label><input id="setQeClip" type="text" /></div>
             <div class="field"><label>Lightning LoRA</label><input id="setQeLora" type="text" /></div>
             <div class="field"><label>Multiple Angles LoRA</label><input id="setQeAnglesLora" type="text" /></div>
+            <hr class="settings-divider" />
+            <div class="field"><label>ControlNet depth model</label><input id="setQeDepthModel" type="text" placeholder="depth-model.safetensors" /></div>
+            <div class="field"><label>ControlNet depth strength</label><input id="setQeDepthStrength" type="number" step="0.1" min="0" max="1" value="0.8" /></div>
+            <div class="field"><label>ControlNet edges model</label><input id="setQeEdgesModel" type="text" placeholder="controlnet-edges.safetensors" /></div>
+            <div class="field"><label>ControlNet edges strength</label><input id="setQeEdgesStrength" type="number" step="0.1" min="0" max="1" value="0.8" /></div>
+            <div class="field"><label>ControlNet keypoints model</label><input id="setQeKeypointsModel" type="text" placeholder="controlnet-keypoints.safetensors" /></div>
+            <div class="field"><label>ControlNet keypoints strength</label><input id="setQeKeypointsStrength" type="number" step="0.1" min="0" max="1" value="0.8" /></div>
+            <div class="field"><label>ControlNet enabled</label><input id="setQeControlNet" type="checkbox" /></div>
             </div>
           </details>
           <details class="settings-group settings-model-disclosure" data-settings-model-section="seedvr2">
@@ -3688,6 +3751,7 @@
 <script src="/h3-resolution.js"></script>
 <script src="/h3-prompt-guide.js"></script>
 <script src="/release-notes.js"></script>
+<script src="/lora-intents.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -3933,6 +3933,52 @@ body.model-order-dragging .video-choice-grid .chip[data-engine] { cursor: grabbi
 }
 .lora-pick-row .lp-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .lora-pick-row small { margin-left: auto; color: var(--muted-2); font-weight: 600; flex: 0 0 auto; }
+.lora-pick-group {
+  margin: 14px 2px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(var(--mode-rgb), 0.92);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lora-pick-group::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(var(--mode-rgb), 0.35), transparent);
+}
+.lora-pick-row .lp-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.lora-pick-row .lp-name { font-weight: 700; color: var(--ink-soft); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lora-pick-row .lp-blurb { font-size: 11px; font-weight: 500; color: var(--muted-2); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lora-pick-row .lp-strength { color: rgba(var(--mode-rgb), 0.95); font-size: 11px; }
+
+/* Per-LoRA Motion dial (video motion LoRAs) */
+.lora-card .lc-adjust:not(:empty) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.lc-motion-dial { display: inline-flex; align-items: center; gap: 7px; }
+.lc-motion-label { font-size: 11px; font-weight: 700; color: var(--muted-2); text-transform: uppercase; letter-spacing: .04em; }
+.lc-motion-range { width: 110px; accent-color: rgba(var(--mode-rgb), 0.9); cursor: pointer; }
+.lc-motion-val { font-size: 12px; font-weight: 700; color: rgba(var(--mode-rgb), 0.95); min-width: 54px; }
+.lc-motion-cam { display: inline-flex; gap: 5px; flex-wrap: wrap; }
+.lc-cam-btn {
+  font: inherit; font-size: 11px; font-weight: 600;
+  padding: 3px 8px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.04); color: var(--ink-soft);
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+.lc-cam-btn:hover { border-color: rgba(var(--mode-rgb), 0.5); }
+.lc-cam-btn.on { background: rgba(var(--mode-rgb), 0.18); border-color: rgba(var(--mode-rgb), 0.8); color: #fff; }
 
 /* Profiles */
 .profile-chip {

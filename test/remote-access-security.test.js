@@ -37,7 +37,7 @@ test('live events require authentication and are delivered only to their profile
   assert.match(authGate, /sseClients\.set\(res, profile\.id\)/);
 
   const broadcast = sourceSection('function eventProfileId(', '/* ------------------------------------------------------------------ */\n/* ComfyUI bridge');
-  assert.match(broadcast, /const profileId = eventProfileId\(data\)/);
+  assert.match(broadcast, /const profileId = eventProfileId\(enriched\)/);
   assert.match(broadcast, /if \(profileId && profileId !== clientProfileId\) continue/);
 
   const statusCalls = [...server.matchAll(/broadcast\('status',\s*\{([\s\S]*?)\}\);/g)];

@@ -1,10 +1,10 @@
 # AGENTS.md — working on KreaStudio
 
-Handbook for AI agents (and humans) continuing development. Read this before touching anything. The app is in daily production use by Nathan (Black Mixture) — his real gallery lives in `data/`.
+Handbook for AI agents (and humans) continuing development. Read this before touching anything. The app is in daily production use by Nathan (Black Mixture) — his real gallery lives in the **configured data directory**, which on this install is `E:\MixStudioData`, **not** the repo's `data/` folder (see the warning below).
 
 ## What this is
 
-A zero-dependency Node.js (≥22) server (`server.js`) that builds **ComfyUI API-format graphs** server-side and relays progress to a vanilla-JS mobile frontend (`public/`). No npm packages, no build step, no framework. ComfyUI runs on the same Windows machine (URL in `data/settings.json`, `comfyUrl`).
+A zero-dependency Node.js (≥22) server (`server.js`) that builds **ComfyUI API-format graphs** server-side and relays progress to a vanilla-JS mobile frontend (`public/`). No npm packages, no build step, no framework. ComfyUI runs on the same Windows machine (URL in `<dataDir>/settings.json`, `comfyUrl`; on this install also in `install.json` under `comfy.url` — currently `http://127.0.0.1:49000`).
 
 ```
 server.js                 ~3.7k lines: routes, graph builders, job tracking, SSE
@@ -12,14 +12,32 @@ lib/                      focused modules (regional-workflows, video-workflows,
                           upscale-workflows, profiles, private-gallery, queue-health, …)
 public/index.html|app.js|style.css   the whole frontend
 test/*.test.js            node:test suites — `node --test` must stay green
-data/                     LIVE USER DATA — never in git, never test destructively
+data/                     STALE FOSSIL on this install — see "Data directory" below
 docs/superpowers/plans/   old planning docs (gitignored)
 ```
+
+## Data directory — read this before inspecting any gallery state
+
+This install is **portable**: `install.json` sets `dataDir` to `E:\MixStudioData`, and that is where the live `db.json`, `images/`, and `videos/` are. The repo's `data/` folder is a **pre-migration fossil** (198 items frozen at 2026-08-11 vs 751 live; every one of its items and media files is duplicated in the live dir, so it holds nothing unique).
+
+Reading `data/db.json` makes working generations look broken: a successful job writes its PNG and gallery item to the live directory, while the fossil still shows the old state, so the new item looks "missing" and the job looks like a silent failure. This already burned one full debugging session chasing a `completeJob` bug that did not exist.
+
+Always resolve the path from config — never hardcode `data/`, and never hardcode `E:\MixStudioData` either:
+
+```js
+const { resolveRuntimeConfig } = require('./lib/runtime-config.js');
+const runtime = resolveRuntimeConfig(__dirname);
+const DB_FILE = path.join(runtime.dataDir, 'db.json');
+```
+
+Precedence: `MIXBOX_DATA_DIR` env → `install.json` `dataDir` → `./data`. `server.js:415` already does this via `RUNTIME.dataDir`. A regression test enforces it (`test/qwen-image-t2i.test.js` → *"the live data dir comes from config…"*), and `data/STALE-DO-NOT-USE.md` marks the fossil in place.
+
+When you need to confirm what the running server actually sees, ask the server rather than the filesystem: `GET /api/gallery` reads its live in-memory `db`.
 
 ## Architecture in five sentences
 
 1. The frontend POSTs to routes like `/api/generate`, `/api/animate`, `/api/upscale`; the server builds a ComfyUI graph (per engine), POSTs it to `/prompt`, and stores a job in the `jobs` Map keyed by `prompt_id`.
-2. A WebSocket to ComfyUI (with polling fallback) tracks progress and fires `completeJob`, which downloads outputs from ComfyUI's `/history` + `/view`, writes them into `data/images|videos`, creates/updates gallery items in `db.json`, and broadcasts over SSE (`/api/events`).
+2. A WebSocket to ComfyUI (with polling fallback) tracks progress and fires `completeJob`, which downloads outputs from ComfyUI's `/history` + `/view`, writes them into `<dataDir>/images|videos`, creates/updates gallery items in `db.json`, and broadcasts over SSE (`/api/events`).
 3. Everything user-visible is scoped to a **profile** (signed cookie `ks_profile`; see `lib/profiles.js`); the first profile in `db.profiles` is the owner/admin.
 4. Uploaded inputs (refs, masks, audio, driving videos, faces) go to ComfyUI's input dir via `/api/upload` → `uploadToComfy`; `/api/input?name=` proxies them back for reuse previews.
 5. Graph builders use two safety layers: `nodeFromOrdered(class, orderedWidgets, links, overrides)` maps workflow-JSON widget arrays onto the real `/object_info` input order, and `filterInputs(graph)` drops keys the installed node version doesn't know.
@@ -62,7 +80,7 @@ Enhancement passes: LTX enhances **in-graph** (`TextGenerateLTX2Prompt` / `TextG
 - **Restarting ComfyUI**: kill the python listening on the ComfyUI port **and** `Comfy Desktop.exe`, relaunch the Desktop app, click the instance card. Killing only the Desktop can orphan the python server.
 - **Agent shell access is via Run-dialog + .bat files** writing results to `D:\output\*.txt` (the sandbox mount of `E:` serves stale caches — write probe outputs to fresh filenames on `D:\output`). In the Run dialog always click the field and **Ctrl+A before typing** (text inserts into leftover content otherwise).
 - **NEVER run destructive tests against live data.** A profile-deletion smoke test once wiped the owner's entire gallery; it was recovered from ComfyUI outputs. Destructive routes require server-side typed confirmation (`confirmName`) by design — keep it that way. Verify with read-only checks; use throwaway fixtures only, and never assume db state (other profiles/folders may exist).
-- **Backups**: `backupDb()` runs at boot + every 30 min (last 40 in `data/backups/`), plus `pre-delete` snapshots. Deleted-profile media goes to `data/trash/`, never unlinked.
+- **Backups**: `backupDb()` runs at boot + every 30 min (last 40 in `<dataDir>/backups/`), plus `pre-delete` snapshots. Deleted-profile media goes to `<dataDir>/trash/`, never unlinked.
 - Tests: `node --test` (from repo root). All lib modules are covered; keep new logic in `lib/` with a test where practical.
 
 ## MCP / agent surface (`lib/mcp/`, off by default)

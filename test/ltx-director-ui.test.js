@@ -372,7 +372,7 @@ test('Director settings use centered app-native animated switches', () => {
     assert.match(control, /role="switch"/);
     assert.match(control, /aria-checked="(?:true|false)"/);
   }
-  assert.doesNotMatch(html.match(/<div class="sheet director-sheet director-modal-sheet" id="directorSettingsSheet">[\s\S]*?<\/div>\s*<\/div>\s*<div class="sheet/s)?.[0] || '', /type="checkbox"/);
+  assert.doesNotMatch(html, /<div class="sheet director-sheet director-modal-sheet" id="directorSettingsSheet">[\s\S]*?<\/div>\s*<\/div>\s*<div class="sheet[\s\S]*?type="checkbox"/);
   assert.match(app, /function wireDirectorToggle\(id, onChange\)/);
   assert.match(css, /\.director-modal-sheet\s*\{[^}]*align-items:\s*center/);
   assert.match(css, /\.director-setting-toggle\[aria-checked="true"\]/);

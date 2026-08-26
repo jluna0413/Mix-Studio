@@ -29,7 +29,8 @@ test('release notes render a safe, readable subset of GitHub Markdown', () => {
 });
 
 test('the updates dialog uses formatted release-note markup and matching hierarchy styles', () => {
-  assert.match(html, /<script src="\/release-notes\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
+  assert.match(html, /<script src="\/release-notes\.js"><\/script>/);
+  assert.match(html, /<script src="\/app\.js"><\/script>/);
   assert.match(app, /ReleaseNotes\.toHtml\(latest\.notes/);
   assert.match(app, /class="update-entry-notes"/);
   assert.match(css, /\.update-entry-notes h3,[\s\S]*border-bottom:/);

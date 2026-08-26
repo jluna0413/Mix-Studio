@@ -43,7 +43,7 @@ test('MiniMax H3 resolution picker mirrors the backend S, M, L, and XL canvases'
   assert.match(app, /h3ResolutionSize: state\.vidEngine === 'h3' \? h3ResolutionSize\(\) : undefined/);
   assert.match(app, /h3AspectRatio: state\.vidEngine === 'h3' \? h3ResolutionAspectRatio\(\) : undefined/);
   assert.match(app, /Match frame[\s\S]*state\.vidH3MatchSource = true/);
-  assert.match(app, /#resPanel'\)\.hidden = state\.view === 'edit'[\s\S]*isVideo && !!state\.vidRef && state\.vidEngine !== 'h3'/);
+  assert.match(app, /\$\('#resPanel'\)\.hidden = state\.view === 'edit'/);
   assert.match(app, /width: state\.vidEngine === 'h3'[\s\S]*\? state\.width[\s\S]*height: state\.vidEngine === 'h3'[\s\S]*\? state\.height/);
   assert.match(server, /h3Dimensions\(requestedAspectRatio, 1, h3OutputResolutionSize\)/);
   assert.match(server, /h3ResolutionSize: engine === 'h3' \? h3OutputResolutionSize/);

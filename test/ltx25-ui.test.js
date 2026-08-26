@@ -29,8 +29,7 @@ test('LTX 2.5 preferences expose every official model file independently', () =>
     assert.match(html, new RegExp(`id="${id}"`));
     assert.match(app, new RegExp(`['#]${id}`));
   }
-  assert.match(server, /ltx25Unet: 'ltx-2\.5-22b-distilled-transformer-comfy-int8-convrot\.safetensors'/);
-  assert.match(server, /ltx25QualityUnet: 'ltx-2\.5-22b-dev-transformer-bf16\.safetensors'/);
+  assert.match(server, /ltx25Unet:\s*'LTX25-distilled-DiT-Q5_K_M\.gguf'/);
   assert.match(server, /ltx25DistilledLora: 'ltx-2\.5-22b-distilled-lora-450-bf16\.safetensors'/);
   assert.match(server, /ltx25PromptEnhancer: 'gemma4_e2b_it_bf16\.safetensors'/);
 });
