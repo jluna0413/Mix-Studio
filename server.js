@@ -207,6 +207,7 @@ const {
   maskExpand,
   maskInfluence,
   maskInfluenceDenoise,
+  buildSam3PartsGraphs,
 } = require('./lib/edit-mask');
 const {
   H3_FPS,
@@ -8431,10 +8432,13 @@ async function handleApi(req, res, url) {
     const imageName = String(body.imageName || '').trim();
     const prompt = String(body.prompt || '').trim().slice(0, 240);
     const points = Array.isArray(body.points) ? body.points.slice(0, 10) : [];
+    const prompts = Array.isArray(body.prompts)
+      ? body.prompts.map((p) => String(p || '').trim().slice(0, 240)).filter(Boolean).slice(0, 12)
+      : [];
     if (!imageName) return json(res, 400, { error: 'Add a source image before using smart select' });
-    if (!prompt && !points.length) return json(res, 400, { error: 'Describe an object or tap the image' });
+    if (!prompt && !points.length && !prompts.length) return json(res, 400, { error: 'Describe an object or tap the image' });
     const info = await getObjectInfo();
-    const needed = prompt
+    const needed = prompt || prompts.length
       ? ['LoadSAM3Model', 'SAM3Grounding', 'MaskToImage', 'SaveImage']
       : ['LoadSAM3Model', 'SAM3CreatePoint', 'SAM3CombinePoints', 'SAM3Segmentation', 'MaskToImage', 'SaveImage'];
     const missing = needed.filter((name) => !info[name]);
@@ -8445,9 +8449,8 @@ async function handleApi(req, res, url) {
         missing,
       });
     }
-    const graph = buildSam3MaskGraph({ imageName, prompt, points });
-    await filterInputs(graph);
-    const result = await new Promise((resolve, reject) => {
+    // Run a single SAM3 graph as a tracked smartMask job and resolve to its mask URLs.
+    const runOneSam3 = (graph) => new Promise((resolve, reject) => {
       (async () => {
         const pid = await queuePrompt(graph, { profileId: req.profile.id });
         const timer = setTimeout(() => {
@@ -8471,6 +8474,19 @@ async function handleApi(req, res, url) {
         });
       })().catch(reject);
     });
+    // Multi-part decomposition: one SAM3 graph per prompt, run in order.
+    if (prompts.length) {
+      const parts = [];
+      for (const { prompt: p, graph } of buildSam3PartsGraphs({ imageName, prompts })) {
+        await filterInputs(graph);
+        const r = await runOneSam3(graph);
+        parts.push({ prompt: p, dataUrl: r.dataUrl, dataUrls: r.dataUrls });
+      }
+      return json(res, 200, { parts });
+    }
+    const graph = buildSam3MaskGraph({ imageName, prompt, points });
+    await filterInputs(graph);
+    const result = await runOneSam3(graph);
     return json(res, 200, result);
   }
 

@@ -9710,6 +9710,78 @@ async function runSmartMask({ prompt = '', point = null } = {}) {
   }
 }
 
+const DECOMPOSE_DEFAULT_PROMPTS = ['character', 'clothing', 'accessories'];
+let decomposeRunning = false;
+
+async function decomposeReference() {
+  if (decomposeRunning) return;
+  const ref = state.refs[0];
+  if (!ref || !ref.name) return toast('Add a source image before decomposing', true);
+  decomposeRunning = true;
+  const btn = $('#kreaMaskDecompose');
+  const result = $('#kreaMaskDecomposeResult');
+  if (btn) { btn.disabled = true; btn.textContent = 'Decomposing…'; }
+  try {
+    const data = await api('/api/edit-mask/sam3', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageName: ref.name, prompts: DECOMPOSE_DEFAULT_PROMPTS }),
+    });
+    const parts = Array.isArray(data.parts) ? data.parts : [];
+    if (!parts.length) return toast('SAM3 returned no parts', true);
+    result.hidden = false;
+    result.innerHTML = '';
+    const label = document.createElement('span');
+    label.className = 'decompose-label';
+    label.textContent = 'Tap a part to load its mask:';
+    result.appendChild(label);
+    const row = document.createElement('div');
+    row.className = 'decompose-parts';
+    for (const part of parts) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'decompose-part';
+      chip.textContent = part.prompt;
+      chip.addEventListener('click', () => loadDecomposedMask(part));
+      row.appendChild(chip);
+    }
+    result.appendChild(row);
+  } catch (error) {
+    if (!isJobCancellation(error)) toast(error.message || 'Decompose failed', true);
+  } finally {
+    decomposeRunning = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Decompose into parts'; }
+  }
+}
+
+async function loadDecomposedMask(part) {
+  const canvas = $('#kreaMaskCanvas');
+  if (!canvas || !canvas.width || !canvas.height) return;
+  const urls = Array.isArray(part.dataUrls) && part.dataUrls.length ? part.dataUrls : [part.dataUrl];
+  const image = await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not read the SAM3 mask'));
+    img.src = urls[0];
+  });
+  discardEditableMaskBoxes();
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  ctx.globalCompositeOperation = 'source-over';
+  invalidateProcessedMask();
+  state.kreaMaskPreview = canvas.toDataURL('image/png');
+  state.kreaMaskDirty = true;
+  state.kreaMaskInvert = false;
+  state.kreaMaskKind = 'smart';
+  renderMaskOverlay();
+  refreshMaskCutoutPreview();
+  scheduleMaskedRefPreview();
+  renderKreaMaskTools();
+  toast(`${part.prompt} mask loaded — run a localized edit or export`);
+}
+
 async function ensureKreaMaskUploaded() {
   if (!state.kreaMaskDirty && state.kreaMask && state.kreaMask.name) return state.kreaMask.name;
   const canvas = $('#kreaMaskCanvas');
@@ -9885,6 +9957,7 @@ document.addEventListener('keydown', (event) => {
 
 $('#kreaMaskBtn').addEventListener('click', openKreaMaskPainter);
 $('#kreaMaskClear').addEventListener('click', () => clearKreaMask());
+$('#kreaMaskDecompose').addEventListener('click', () => decomposeReference());
 $('#kreaMaskGesture').addEventListener('pointerdown', beginMaskGesture);
 $('#kreaMaskGesture').addEventListener('pointermove', moveMaskGesture);
 $('#kreaMaskGesture').addEventListener('pointerup', finishMaskGesture);

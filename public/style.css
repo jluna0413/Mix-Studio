@@ -8078,6 +8078,38 @@ body.lightbox-meta-resizing * { cursor: ns-resize !important; user-select: none 
   margin-bottom: 10px;
 }
 .smart-mask-controls[hidden] { display: none; }
+.smart-mask-decompose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.smart-mask-decompose > button {
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--foreground);
+  font-weight: 750;
+  cursor: pointer;
+}
+.smart-mask-decompose > button:hover:not(:disabled) { border-color: var(--accent); }
+.smart-mask-decompose > button:disabled { opacity: .6; cursor: default; }
+.smart-mask-decompose-result { display: flex; flex-direction: column; gap: 6px; }
+.decompose-label { color: var(--muted); font-size: 11px; font-weight: 750; }
+.decompose-parts { display: flex; flex-wrap: wrap; gap: 6px; }
+.decompose-part {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.decompose-part:hover { border-color: var(--accent); }
 .mask-box-controls {
   display: flex;
   align-items: center;
