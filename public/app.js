@@ -9712,6 +9712,27 @@ async function runSmartMask({ prompt = '', point = null } = {}) {
 
 const DECOMPOSE_DEFAULT_PROMPTS = ['character', 'clothing', 'accessories'];
 let decomposeRunning = false;
+let isolateRunning = false;
+let lastDecomposedParts = [];
+let isolatedAssets = [];
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not load image: ' + src));
+    img.src = src;
+  });
+}
+
+function slugify(text) {
+  return String(text || 'part')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'part';
+}
 
 async function decomposeReference() {
   if (decomposeRunning) return;
@@ -9729,6 +9750,8 @@ async function decomposeReference() {
     });
     const parts = Array.isArray(data.parts) ? data.parts : [];
     if (!parts.length) return toast('SAM3 returned no parts', true);
+    lastDecomposedParts = parts;
+    isolatedAssets = [];
     result.hidden = false;
     result.innerHTML = '';
     const label = document.createElement('span');
@@ -9780,6 +9803,100 @@ async function loadDecomposedMask(part) {
   scheduleMaskedRefPreview();
   renderKreaMaskTools();
   toast(`${part.prompt} mask loaded — run a localized edit or export`);
+}
+
+// Composite a single part mask with the source to a transparent-background PNG,
+// then upload it as an isolated asset. This is the "isolate the asset" step that
+// feeds the per-asset variation / sheet pipeline (Slice 3). Pure client-side;
+// reuses the same destination-in alpha composite as the cutout preview.
+async function isolateAssetToPng(part, ref) {
+  if (!ref || !ref.name) throw new Error('Source image missing');
+  const urls = Array.isArray(part.dataUrls) && part.dataUrls.length ? part.dataUrls : [part.dataUrl];
+  if (!urls[0]) throw new Error('No mask for this part');
+  const baseSrc = (ref && (ref.url || (state.refs[0] && state.refs[0].url)))
+    || `/api/input?name=${encodeURIComponent(ref.name)}`;
+  const [baseImg, maskImg] = await Promise.all([
+    loadImage(baseSrc),
+    loadImage(urls[0]),
+  ]);
+  const w = baseImg.naturalWidth || maskImg.naturalWidth;
+  const h = baseImg.naturalHeight || maskImg.naturalHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(baseImg, 0, 0, w, h);
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.drawImage(maskImg, 0, 0, w, h);
+  ctx.globalCompositeOperation = 'source-over';
+  const blob = await new Promise((ok, bad) => canvas.toBlob((b) => (b ? ok(b) : bad(new Error('Isolation failed'))), 'image/png'));
+  const filename = `${slugify(part.prompt)}-isolated.png`;
+  // The /api/upload endpoint reads a raw binary stream (x-filename header), not
+  // multipart. Send the blob directly and register it in the asset catalog.
+  const res = await api('/api/upload', {
+    method: 'POST',
+    headers: { 'x-filename': filename, 'content-type': 'image/png', 'x-asset-catalog': '1' },
+    body: blob,
+  });
+  if (!res || !res.name) throw new Error('Upload failed');
+  return { prompt: part.prompt, name: res.name, url: res.url || res.path || `/api/input?name=${encodeURIComponent(res.name)}` };
+}
+
+// Isolate every decomposed part of the current reference into transparent PNGs.
+async function isolateAllParts() {
+  if (isolateRunning) return;
+  const parts = lastDecomposedParts;
+  if (!Array.isArray(parts) || !parts.length) return toast('Run "Decompose into parts" first', true);
+  const ref = state.refs[0];
+  if (!ref || !ref.name) return toast('Add a source image first', true);
+  isolateRunning = true;
+  const btn = $('#kreaMaskIsolate');
+  if (btn) { btn.disabled = true; btn.textContent = 'Isolating…'; }
+  try {
+    const assets = [];
+    for (const part of parts) {
+      const asset = await isolateAssetToPng(part, ref);
+      assets.push(asset);
+      toast(`Isolated ${asset.prompt}`);
+    }
+    isolatedAssets = assets;
+    renderIsolatedAssets();
+    toast(`${assets.length} assets isolated — ready for sheets`);
+  } catch (error) {
+    if (!isJobCancellation(error)) toast(error.message || 'Isolation failed', true);
+  } finally {
+    isolateRunning = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Isolate all parts'; }
+  }
+}
+
+function renderIsolatedAssets() {
+  const panel = $('#kreaMaskIsolatedAssets');
+  if (!panel) return;
+  panel.hidden = !isolatedAssets.length;
+  panel.innerHTML = '';
+  const label = document.createElement('span');
+  label.className = 'decompose-label';
+  label.textContent = 'Isolated assets:';
+  panel.appendChild(label);
+  const row = document.createElement('div');
+  row.className = 'decompose-parts';
+  for (const a of isolatedAssets) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'decompose-part';
+    chip.textContent = a.prompt;
+    chip.title = 'Use as reference for variations';
+    chip.addEventListener('click', () => useIsolatedAssetAsRef(a));
+    row.appendChild(chip);
+  }
+  panel.appendChild(row);
+}
+
+function useIsolatedAssetAsRef(asset) {
+  if (!asset || !asset.name) return;
+  setRegionReference(asset.name, asset.url);
+  toast(`${asset.prompt} set as reference — generate variations in Create ▸ Region`);
 }
 
 async function ensureKreaMaskUploaded() {
@@ -9958,6 +10075,7 @@ document.addEventListener('keydown', (event) => {
 $('#kreaMaskBtn').addEventListener('click', openKreaMaskPainter);
 $('#kreaMaskClear').addEventListener('click', () => clearKreaMask());
 $('#kreaMaskDecompose').addEventListener('click', () => decomposeReference());
+$('#kreaMaskIsolate').addEventListener('click', () => isolateAllParts());
 $('#kreaMaskGesture').addEventListener('pointerdown', beginMaskGesture);
 $('#kreaMaskGesture').addEventListener('pointermove', moveMaskGesture);
 $('#kreaMaskGesture').addEventListener('pointerup', finishMaskGesture);
