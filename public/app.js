@@ -115,6 +115,7 @@ const state = {
   createDepthPreviewShown: false,
   krea2Turbo: true,          // merged Turbo checkpoint vs Raw checkpoint
   krea2RawTurboLora: null,   // managed Raw-mode Turbo LoRA, preserved while hidden
+  sheetBasePrompt: '',       // base prompt used when generating asset variation sheets
   createEngine: 'krea2',     // create T2I engine: krea2 | qwen_image
   createModelVariant: 'qwen-image-3.0-pro', // qwen_image variant
   createPrecision: 'bf16',   // qwen_image precision: bf16 | fp8_lightning
@@ -9713,6 +9714,7 @@ async function runSmartMask({ prompt = '', point = null } = {}) {
 const DECOMPOSE_DEFAULT_PROMPTS = ['character', 'clothing', 'accessories'];
 let decomposeRunning = false;
 let isolateRunning = false;
+let buildSheetsRunning = false;
 let lastDecomposedParts = [];
 let isolatedAssets = [];
 
@@ -9732,6 +9734,11 @@ function slugify(text) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 40) || 'part';
+}
+
+function capitalize(text) {
+  const s = String(text || '');
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
 async function decomposeReference() {
@@ -9897,6 +9904,129 @@ function useIsolatedAssetAsRef(asset) {
   if (!asset || !asset.name) return;
   setRegionReference(asset.name, asset.url);
   toast(`${asset.prompt} set as reference — generate variations in Create ▸ Region`);
+}
+
+// --- Slice 3: asset variation generation + labeled sheet compositor --------
+// Generates N variations of an isolated asset using the existing Region
+// reference-conditioned generation path, then composites them into a labeled
+// sheet. Reuses the real #generateBtn flow (no guessed request body) by
+// configuring state and dispatching the click, then polling the gallery for
+// the new results.
+
+async function generateAssetVariations(asset, count, basePrompt) {
+  if (!asset || !asset.name) throw new Error('Asset missing');
+  const countN = Math.max(1, Math.min(12, Number(count) || 4));
+  // Capture gallery length so we can detect the newly generated items.
+  const before = (await api('/api/gallery')).items?.length || 0;
+  const variations = [];
+  for (let i = 0; i < countN; i += 1) {
+    // Configure a single-region reference generation for this asset.
+    state.view = 'create';
+    state.createMode = 'region';
+    if (!selectedRegion()) createRegion();
+    const region = selectedRegion();
+    region.refImageName = asset.name;
+    region.refUrl = asset.url;
+    region.description = `${basePrompt} — ${asset.prompt} variation ${i + 1}`;
+    $('#prompt').value = basePrompt || `a clean studio render of ${asset.prompt}`;
+    renderRegionEditor();
+    // Fire the real generation pipeline.
+    $('#generateBtn').click();
+    // Wait for this generation to land in the gallery.
+    const url = await waitForNewGalleryItem(before + variations.length + 1, 120000);
+    if (url) variations.push(url);
+  }
+  asset.variations = variations;
+  return variations;
+}
+
+function waitForNewGalleryItem(targetCount, timeoutMs) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const tick = async () => {
+      try {
+        const gallery = await api('/api/gallery');
+        const items = Array.isArray(gallery.items) ? gallery.items : [];
+        if (items.length >= targetCount) {
+          const newest = items[0];
+          const url = newest?.url || (newest?.name ? `/api/input?name=${encodeURIComponent(newest.name)}` : '');
+          return resolve(url);
+        }
+      } catch (_) { /* keep polling */ }
+      if (Date.now() - start > timeoutMs) return resolve('');
+      setTimeout(tick, 1500);
+    };
+    tick();
+  });
+}
+
+// Composite a labeled grid sheet from a set of image URLs.
+async function composeAssetSheet(title, images) {
+  const cell = 512;
+  const cols = Math.min(4, Math.max(1, images.length));
+  const rows = Math.ceil(images.length / cols);
+  const pad = 24;
+  const labelH = 28;
+  const headerH = 56;
+  const w = cols * cell + (cols + 1) * pad;
+  const h = headerH + rows * (cell + labelH) + (rows + 1) * pad;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#101013';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#f4f4f5';
+  ctx.font = '700 26px system-ui, sans-serif';
+  ctx.fillText(title, pad, 38);
+  const loaded = await Promise.all(images.map((src) => loadImage(src).catch(() => null)));
+  loaded.forEach((img, idx) => {
+    const col = idx % cols;
+    const row = Math.floor(idx / cols);
+    const x = pad + col * (cell + pad);
+    const y = headerH + row * (cell + labelH + pad);
+    ctx.fillStyle = '#1c1c20';
+    ctx.fillRect(x, y, cell, cell);
+    if (img) {
+      const scale = Math.min(cell / img.naturalWidth, cell / img.naturalHeight) || 1;
+      const dw = img.naturalWidth * scale;
+      const dh = img.naturalHeight * scale;
+      ctx.drawImage(img, x + (cell - dw) / 2, y + (cell - dh) / 2, dw, dh);
+    }
+    ctx.fillStyle = '#a1a1aa';
+    ctx.font = '600 16px system-ui, sans-serif';
+    ctx.fillText(`#${idx + 1}`, x + 6, y + cell + 20);
+  });
+  return new Promise((ok, bad) => canvas.toBlob((b) => (b ? ok(b) : bad(new Error('Sheet compositing failed'))), 'image/png'));
+}
+
+async function buildAssetSheets() {
+  if (buildSheetsRunning) return;
+  if (!isolatedAssets.length) return toast('Isolate parts first', true);
+  buildSheetsRunning = true;
+  const btn = $('#kreaMaskBuildSheets');
+  if (btn) { btn.disabled = true; btn.textContent = 'Building sheets…'; }
+  try {
+    for (const asset of isolatedAssets) {
+      toast(`Generating ${asset.prompt} variations…`);
+      await generateAssetVariations(asset, asset.variationCount || 4, state.sheetBasePrompt || '');
+      if (asset.variations && asset.variations.length) {
+        const blob = await composeAssetSheet(`${capitalize(asset.prompt)} sheet`, asset.variations);
+        const filename = `${slugify(asset.prompt)}-sheet.png`;
+        const res = await api('/api/upload', {
+          method: 'POST',
+          headers: { 'x-filename': filename, 'content-type': 'image/png', 'x-asset-catalog': '1' },
+          body: blob,
+        });
+        if (res && res.name) toast(`${capitalize(asset.prompt)} sheet saved`);
+      }
+    }
+    toast('Asset sheets complete');
+  } catch (error) {
+    if (!isJobCancellation(error)) toast(error.message || 'Sheet build failed', true);
+  } finally {
+    buildSheetsRunning = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Build asset sheets'; }
+  }
 }
 
 async function ensureKreaMaskUploaded() {
@@ -10076,6 +10206,7 @@ $('#kreaMaskBtn').addEventListener('click', openKreaMaskPainter);
 $('#kreaMaskClear').addEventListener('click', () => clearKreaMask());
 $('#kreaMaskDecompose').addEventListener('click', () => decomposeReference());
 $('#kreaMaskIsolate').addEventListener('click', () => isolateAllParts());
+$('#kreaMaskBuildSheets').addEventListener('click', () => buildAssetSheets());
 $('#kreaMaskGesture').addEventListener('pointerdown', beginMaskGesture);
 $('#kreaMaskGesture').addEventListener('pointermove', moveMaskGesture);
 $('#kreaMaskGesture').addEventListener('pointerup', finishMaskGesture);
