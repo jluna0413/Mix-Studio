@@ -3774,7 +3774,7 @@ function textGenInputs(seed, maxLength) {
 
 function localPromptAiLoaderInputs() {
   const promptAi = localPromptAiConfig(settings);
-  return { clip_name: promptAi.model, type: promptAi.type, device: 'default' };
+  return { clip_name: promptAi.model, type: promptAi.type, device: 'xpu:0' };
 }
 
 function armPromptJobDeadline(pid, reject, label) {
