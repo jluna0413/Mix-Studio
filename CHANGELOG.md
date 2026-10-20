@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.3.0 - 2026-09-24
+
+### Reference-to-asset pipeline
+
+- Added SAM3 multi-part decompose that splits a reference render into character, costume, and accessory parts directly from the Create panel.
+- Decomposed parts are isolated to transparent PNGs and registered as reusable assets, so characters, clothing, and props can be reused in later generations.
+- Added asset variation generation and a labeled character/costume/accessory sheet compositor for reviewing a whole cast at a glance.
+
+### New engines and resolution tiers
+
+- Added the Qwen Image text-to-image engine with the QwenImageKSampler route.
+- Enabled LTX 2.5 on Intel Arc GPUs through the INT8 ConvRot text encoder.
+- Added a Tiny (T) 384×576 resolution tier for fast drafts.
+
+### Intel Arc (XPU) reliability
+
+- Fixed SeedVR2 upscale batch sizing so 32 GB Arc cards no longer run out of memory on long clips.
+- Pinned the H3 text-encoder loaders to the XPU device and resident mode so ClipProjLoader graphs validate on Intel Arc, and pointed the built-in 4K AI upscale at the shipped RealESRGAN_x4plus.pth.
+- Moved video attention to standard SDPA with Triton, with SageAttention correctly gated off on Arc B70.
+
+### Experimental features
+
+- Added an opt-in Experimental Features switch in Preferences that unlocks in-progress work.
+- Unlocked 3D styles (Pixar-style and cel-shaded) in the Create image guide and Smart Select masks driven by SAM3.
+
 ## 1.2.0 - 2026-08-08
 
 All shipped changes from v1.2.0 onward are recorded below by release.

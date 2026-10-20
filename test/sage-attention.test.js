@@ -49,7 +49,7 @@ test('SageAttention selects reviewed Windows wheels for the exact Torch and CUDA
 test('SageAttention install planning rejects unreviewed or unsuitable runtimes', () => {
   assert.equal(sageAttentionInstallPlan(snapshot()).installable, true);
   assert.match(sageAttentionInstallPlan(snapshot({ computeCapability: [7, 5] })).reason, /Ampere/);
-  assert.match(sageAttentionInstallPlan(snapshot({ platform: 'darwin' })).reason, /Windows NVIDIA/);
+  assert.match(sageAttentionInstallPlan(snapshot({ platform: 'darwin' })).reason, /NVIDIA CUDA GPU/);
   assert.match(sageAttentionInstallPlan(snapshot({ pythonHeadersReady: false })).reason, /include and libs/);
   assert.deepEqual(tritonPlanForTorch('2.9.1+cu130'), {
     minimum: '3.5', maximum: '3.6', spec: 'triton-windows>=3.5,<3.6',
