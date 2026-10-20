@@ -31,6 +31,9 @@ _tmp/
 # Archived agent scratch (probe/deploy/test remnants)
 _archive/
 
+# Deploy scratch (v1.3.0 merge tooling)
+.deploy_tmp/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db
