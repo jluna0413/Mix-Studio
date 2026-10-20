@@ -166,7 +166,7 @@ test('builds 4K AI Upscale nodes', () => {
 
   assert.deepEqual(graph.vsr_model, {
     class_type: 'UpscaleModelLoader',
-    inputs: { model_name: 'RealESRGAN_x4plus.safetensors' },
+    inputs: { model_name: 'RealESRGAN_x4plus.pth' },
   });
   assert.deepEqual(graph.vsr_upscale, {
     class_type: 'ImageUpscaleWithModel',
