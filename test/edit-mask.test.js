@@ -78,14 +78,19 @@ test('Klein editors and Qwen route masked source latents through localized compo
   assert.match(serverJs, /Edit areas are available with Klein 4B, Klein 9B, Qwen Edit, and Krea2 only/);
 });
 
-test('SAM3 smart masks use the text-prompted segmenter that registers on ComfyUI 0.30.0', () => {
+test('SAM3 smart masks use the SAM3Grounding segmenter the deployed ComfyUI-SAM3 node exposes', () => {
   const textGraph = buildSam3MaskGraph({ imageName: 'source.png', prompt: 'the jacket' });
-  assert.equal(textGraph.source.class_type, 'LoadImage');
-  assert.equal(textGraph.sam3_segment.class_type, 'SAM3TextSegment');
-  assert.deepEqual(textGraph.sam3_segment.inputs.image, ['source', 0]);
+  assert.equal(textGraph.sam3_model.class_type, 'LoadSAM3Model');
+  assert.equal(textGraph.sam3_source.class_type, 'LoadImage');
+  assert.equal(textGraph.sam3_segment.class_type, 'SAM3Grounding');
+  assert.deepEqual(textGraph.sam3_segment.inputs.sam3_model_config, ['sam3_model', 0]);
+  assert.deepEqual(textGraph.sam3_segment.inputs.image, ['sam3_source', 0]);
+  assert.equal(textGraph.sam3_segment.inputs.confidence_threshold, 0.2);
   assert.equal(textGraph.sam3_segment.inputs.text_prompt, 'the jacket');
-  assert.equal(textGraph.save_mask.class_type, 'SaveImage');
-  assert.deepEqual(textGraph.save_mask.inputs.images, ['sam3_segment', 1]);
+  assert.equal(textGraph.sam3_mask.class_type, 'MaskToImage');
+  assert.deepEqual(textGraph.sam3_mask.inputs.mask, ['sam3_segment', 0]);
+  assert.equal(textGraph.sam3_save_mask.class_type, 'SaveImage');
+  assert.deepEqual(textGraph.sam3_save_mask.inputs.images, ['sam3_mask', 0]);
 
   // Points-only requests degrade to a generic text prompt because the
   // deployed node has no point-based segmenter.
@@ -96,7 +101,7 @@ test('SAM3 smart masks use the text-prompted segmenter that registers on ComfyUI
       { x: 0.9, y: 0.1, foreground: false },
     ],
   });
-  assert.equal(pointGraph.sam3_segment.class_type, 'SAM3TextSegment');
+  assert.equal(pointGraph.sam3_segment.class_type, 'SAM3Grounding');
   assert.equal(pointGraph.sam3_segment.inputs.text_prompt, 'the main subject');
   assert.deepEqual(normalizeMaskPoints([{ x: 2, y: -1 }]), [{ x: 1, y: 0, foreground: true }]);
   assert.match(serverJs, /route === '\/api\/edit-mask\/sam3'/);
@@ -110,4 +115,5 @@ test('SAM3 completion keeps the job alive until its mask output is verified', ()
   assert.match(serverJs, /SAM3 selection timed out after 8 minutes/);
   assert.match(serverJs, /kind: 'smartMask',[\s\S]*?text: 'Queued Smart Select/);
   assert.match(labels, /SAM3TextSegment: 'Selecting the object/);
+  assert.match(labels, /SAM3Grounding: 'Selecting the object/);
 });
