@@ -1,0 +1,30 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================================
+;  Raise the GPU timeout window for long diffusion sampling (H3 on Arc B70)
+; ============================================================================
+;  WHY: UR_RESULT_ERROR_DEVICE_LOST (error 20) at SamplerCustomAdvanced.
+;  Intel Arc has no memory-efficient SDPA kernel, so ComfyUI's standard
+;  attention falls back to the math backend, whose giant attention kernels
+;  can block the GPU for minutes. TdrLevel=3 + TdrDelay=60 declares a hang
+;  and resets the driver mid-step, which Level Zero surfaces as DEVICE_LOST
+;  and kills the generation.
+;
+;  WHAT THIS SETS:
+;    TdrLevel = 3      keep hang detection ON (TdrLevel=0 caused 38 Event-41
+;                      full-machine crashes on this machine — do not disable)
+;    TdrDelay = 600    wait 10 minutes before declaring a hang
+;    TdrDdiDelay = 600 same window at the DDI watchdog level
+;
+;  TRADEOFF: a genuine GPU wedge freezes the machine for up to 10 minutes
+;  before TDR recovers it, and a tripped generation is still lost. That is
+;  the accepted cost of multi-minute sampling kernels on a 33B DiT.
+;
+;  REQUIRES A REBOOT to take effect.
+;  To undo, run tdr-enable-recovery.reg (also in this folder).
+; ============================================================================
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers]
+"TdrLevel"=dword:00000003
+"TdrDelay"=dword:00000258
+"TdrDdiDelay"=dword:00000258
