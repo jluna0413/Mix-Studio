@@ -246,7 +246,7 @@ const ASPECTS = [
   { label: '16:9', ar: 16 / 9 },
   { label: '21:9', ar: 21 / 9 },
 ];
-const RESOLUTION_SIZE_OPTIONS = [0.75, 1, 1.75];
+const RESOLUTION_SIZE_OPTIONS = [0.22, 0.75, 1, 1.75];
 
 function h3ResolutionActive() {
   return state.view === 'video' && state.vidEngine === 'h3';
@@ -6804,7 +6804,7 @@ function generationSafeCreateDimensions(ref = state.createRef, megapixels = stat
   const sourceHeight = Number(ref?.h);
   if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth < 1 || sourceHeight < 1) return null;
   const ratio = sourceWidth / sourceHeight;
-  const pixels = Math.max(0.5, Math.min(2, Number(megapixels) || 1)) * 1e6;
+  const pixels = Math.max(0.2, Math.min(2, Number(megapixels) || 1)) * 1e6;
   let rawWidth = Math.sqrt(pixels * ratio);
   let rawHeight = Math.sqrt(pixels / ratio);
   const maxSide = Math.max(rawWidth, rawHeight);
@@ -6842,7 +6842,7 @@ function derivedAspectLabel(width, height) {
 }
 
 function createSizeLabel(megapixels = state.mp) {
-  return Number(megapixels) === 0.75 ? 'S' : (Number(megapixels) === 1.75 ? 'L' : 'M');
+  return Number(megapixels) === 0.22 ? 'T' : (Number(megapixels) === 0.75 ? 'S' : (Number(megapixels) === 1.75 ? 'L' : 'M'));
 }
 
 function normalizeResolutionMegapixels(value, fallback = 1) {

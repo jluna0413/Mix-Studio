@@ -93,7 +93,7 @@ test('Resolution can match an uploaded image guide and reports the derived dimen
   assert.match(app, /createMatchSource: false/);
   assert.match(app, /createMatchNative: false/);
   assert.match(app, /function generationSafeCreateDimensions\(ref = state\.createRef, megapixels = state\.mp\)/);
-  assert.match(app, /Math\.max\(0\.5, Math\.min\(2, Number\(megapixels\) \|\| 1\)\) \* 1e6/);
+  assert.match(app, /Math\.max\(0\.2, Math\.min\(2, Number\(megapixels\) \|\| 1\)\) \* 1e6/);
   assert.match(app, /if \(maxSide > 2048\)/);
   assert.match(app, /function nativeCreateOutputDimensions\(ref = state\.createRef\)/);
   assert.match(app, /function matchedCreateOutputDimensions\(ref = state\.createRef, native = state\.createMatchNative\)/);
