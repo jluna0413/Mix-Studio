@@ -25,6 +25,7 @@ const { createGithubReleaseChecker } = require('./lib/github-releases');
 const { resolveRuntimeConfig, publicAnalyticsConfig } = require('./lib/runtime-config');
 const { sam3InstallStatus } = require('./lib/sam3-installer');
 const { probeSageAttention } = require('./lib/sage-attention');
+const { strandedJobVerdict } = require('./lib/stranded-jobs');
 const { h3PerformanceReport } = require('./lib/h3-performance');
 const {
   krea2ClipCompatibility,
@@ -3587,6 +3588,58 @@ setInterval(async () => {
     }
   } catch { /* ComfyUI unreachable; orphan detection deferred to next poll */ }
 }, 2500);
+/* Stranded job reaper.
+ *
+ * ComfyUI can die mid-generation (GPU device loss, desktop crash) and restart
+ * with an empty history. The job stays in the `jobs` Map forever because
+ * /history/<pid> never returns a terminal state. One stranded job then blocks
+ * every dependency/setup change through assertDesktopIsIdle with a misleading
+ * "Wait for the Mix Studio queue to finish" error, even though the queue is
+ * empty and the GPU is idle.
+ *
+ * This sweep reaps jobs that ComfyUI no longer knows about, provided they are
+ * old enough to have been submitted and are absent from both the queue and
+ * history. See lib/stranded-jobs.js for the exact rules.
+ */
+setInterval(async () => {
+  if (!jobs.size) return;
+  let queue = null;
+  try {
+    queue = await (await comfyFetch('/queue')).json();
+  } catch {
+    return; // ComfyUI unreachable; leave every job alone.
+  }
+  const queuedIds = new Set(
+    [...(queue.queue_running || []), ...(queue.queue_pending || [])]
+      .map((entry) => String(entry?.[1] || ''))
+      .filter(Boolean),
+  );
+  const now = Date.now();
+  for (const pid of [...jobs.keys()]) {
+    const job = jobs.get(pid);
+    if (!job) continue;
+    let hasHistory = false;
+    try {
+      const hist = await (await comfyFetch(`/history/${pid}`)).json();
+      hasHistory = !!(hist && hist[pid]);
+    } catch {
+      continue; // Cannot confirm; try again on the next sweep.
+    }
+    const verdict = strandedJobVerdict(job, {
+      comfyReachable: true,
+      queuedIds,
+      hasHistory,
+      now,
+    });
+    if (!verdict.reap) continue;
+    log.warn('Reaping stranded job that ComfyUI no longer tracks', {
+      promptId: pid,
+      kind: job.kind,
+      reason: verdict.reason,
+    });
+    failJob(pid, 'ComfyUI lost this generation (it restarted or crashed). Please try again.');
+  }
+}, 30_000);
 /* P0-1: Orphaned prompt detection. Checks ComfyUI's /queue for prompts
  * that have our CLIENT_ID but are NOT in our local jobs Map.
  * This catches jobs lost during a server restart or a WebSocket disconnect
@@ -9619,7 +9672,19 @@ async function handleApi(req, res, url) {
         );
         h3OutputAspectRatio = requestedAspectRatio;
         h3OutputResolutionSize = Number(body.h3ResolutionSize) || 1;
-        ({ W, H } = h3Dimensions(requestedAspectRatio, 1, h3OutputResolutionSize));
+        // Manual dimensions win over the tier, but only when the user
+        // explicitly asked for them. The tier is the safe default because H3
+        // is trained around a native canvas; arbitrary sizes cost quality and
+        // VRAM. Both edges stay on the 32-pixel latent grid.
+        const manualWidth = clampInt(body.h3ManualWidth, 0, 8192, 0);
+        const manualHeight = clampInt(body.h3ManualHeight, 0, 8192, 0);
+        if (manualWidth >= 64 && manualHeight >= 64) {
+          W = Math.max(32, Math.round(manualWidth / 32) * 32);
+          H = Math.max(32, Math.round(manualHeight / 32) * 32);
+          h3OutputAspectRatio = W / Math.max(1, H);
+        } else {
+          ({ W, H } = h3Dimensions(requestedAspectRatio, 1, h3OutputResolutionSize));
+        }
       }
     } else if (engine === 'ltx25') {
       fps = LTX25_FPS;
@@ -10059,6 +10124,12 @@ async function handleApi(req, res, url) {
         h3LongContextFrames: h3LongContextPlan.length > 1 ? 22 : undefined,
         h3AspectRatio: engine === 'h3' ? h3OutputAspectRatio : undefined,
         h3ResolutionSize: engine === 'h3' ? h3OutputResolutionSize : undefined,
+        // Record a manually typed canvas so the gallery can restore it
+        // exactly instead of snapping it back to the nearest tier.
+        h3ManualWidth: engine === 'h3' && body.h3ManualWidth >= 64 && body.h3ManualHeight >= 64
+          ? W : undefined,
+        h3ManualHeight: engine === 'h3' && body.h3ManualWidth >= 64 && body.h3ManualHeight >= 64
+          ? H : undefined,
         h3MatchSource: engine === 'h3' && h3Mode === 'frames' ? body.h3MatchSource === true : undefined,
         h3MatchReferenceVideo: engine === 'h3' && h3Mode === 'reference'
           ? body.h3MatchReferenceVideo === true : undefined,

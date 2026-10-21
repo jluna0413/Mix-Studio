@@ -39,14 +39,23 @@ test('MiniMax H3 resolution picker mirrors the backend S, M, L, and XL canvases'
   assert.match(app, /function h3CurrentDimensions\(\)[\s\S]*h3ResolutionSize\(\)/);
   assert.match(app, /function computeDims\(\)[\s\S]*h3CurrentDimensions\(\)[\s\S]*state\.width = dimensions\.width;[\s\S]*state\.height = dimensions\.height;/);
   assert.match(app, /\$\('#sizeSeg'\)\.hidden = false;/);
-  assert.match(app, /widthInput\.readOnly = h3Resolution;[\s\S]*heightInput\.readOnly = h3Resolution;/);
+  // The canvas fields are editable for H3 so an exact size can be typed; only
+  // the LightX2V 768p turbo canvas stays locked to its trained size.
+  assert.match(app, /const h3LockedCanvas = h3Resolution && h3FixedTurboCanvas;/);
+  assert.match(app, /widthInput\.readOnly = h3LockedCanvas;[\s\S]*heightInput\.readOnly = h3LockedCanvas;/);
   assert.match(app, /h3ResolutionSize: state\.vidEngine === 'h3' \? h3ResolutionSize\(\) : undefined/);
   assert.match(app, /h3AspectRatio: state\.vidEngine === 'h3' \? h3ResolutionAspectRatio\(\) : undefined/);
+  assert.match(app, /h3ManualWidth: state\.vidEngine === 'h3' && state\.vidH3Manual \? state\.vidH3ManualWidth : undefined/);
+  assert.match(app, /h3ManualHeight: state\.vidEngine === 'h3' && state\.vidH3Manual \? state\.vidH3ManualHeight : undefined/);
   assert.match(app, /Match frame[\s\S]*state\.vidH3MatchSource = true/);
   assert.match(app, /\$\('#resPanel'\)\.hidden = state\.view === 'edit'/);
   assert.match(app, /width: state\.vidEngine === 'h3'[\s\S]*\? state\.width[\s\S]*height: state\.vidEngine === 'h3'[\s\S]*\? state\.height/);
   assert.match(server, /h3Dimensions\(requestedAspectRatio, 1, h3OutputResolutionSize\)/);
   assert.match(server, /h3ResolutionSize: engine === 'h3' \? h3OutputResolutionSize/);
+  // An explicit canvas reaches the server and wins over the tier.
+  assert.match(server, /manualWidth = clampInt\(body\.h3ManualWidth, 0, 8192, 0\)/);
+  assert.match(server, /manualHeight = clampInt\(body\.h3ManualHeight, 0, 8192, 0\)/);
+  assert.match(server, /if \(manualWidth >= 64 && manualHeight >= 64\)/);
 });
 
 test('MiniMax H3 reuse restores the base tier independently from an RTX 4K pass', () => {

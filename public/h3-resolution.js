@@ -7,6 +7,10 @@
   const XL_SIZE = 3;
   const XL_SCALE = 10 / 7;
   const SIZE_OPTIONS = Object.freeze([0.75, 1, 1.75, XL_SIZE]);
+  // Manual dimensions let the user type an exact canvas instead of picking a
+  // tier. The tier stays the default because H3 is trained around a native
+  // canvas; arbitrary sizes cost quality and VRAM.
+  const MANUAL_SIZE = 'manual';
   // Keep the existing shared S/M/L control values while giving H3 useful
   // lower-memory canvases. L is the model's native canvas; M and S reduce
   // each edge so their latent memory use falls substantially.
@@ -55,6 +59,21 @@
     };
   }
 
+  /**
+   * Snap a manually entered canvas onto the 32-pixel latent grid that H3's
+   * VAE requires. Returns null when the input is not a usable canvas.
+   */
+  function manualDimensions(width, height) {
+    const requestedWidth = Number(width);
+    const requestedHeight = Number(height);
+    if (!(requestedWidth >= 64 && requestedHeight >= 64)) return null;
+    if (!Number.isFinite(requestedWidth) || !Number.isFinite(requestedHeight)) return null;
+    return {
+      width: Math.max(MULTIPLE, Math.round(requestedWidth / MULTIPLE) * MULTIPLE),
+      height: Math.max(MULTIPLE, Math.round(requestedHeight / MULTIPLE) * MULTIPLE),
+    };
+  }
+
   function restoredGenerationSize(info = {}, fallback = 1) {
     const savedSize = Number(info?.h3ResolutionSize);
     // Current gallery entries store the original H3 tier explicitly. Treat it
@@ -85,7 +104,8 @@
 
   const api = Object.freeze({
     BASE_SHORT_EDGE, MAX_PIXELS, MULTIPLE, XL_SIZE, XL_SCALE, SIZE_OPTIONS,
-    SIZE_SCALES, sizeScale, dimensions, restoredGenerationSize,
+    MANUAL_SIZE, SIZE_SCALES, sizeScale, dimensions, manualDimensions,
+    restoredGenerationSize,
   });
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.H3Resolution = api;

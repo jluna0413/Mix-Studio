@@ -144,6 +144,9 @@ const state = {
   vidH3MatchSource: true,    // keep frame-mode output at the first frame's aspect unless explicitly overridden
   vidH3MatchReferenceVideo: false,
   vidH3Xl: false,
+  vidH3Manual: false,        // true when the user typed an exact H3 canvas
+  vidH3ManualWidth: 0,
+  vidH3ManualHeight: 0,
   vidH3SageAttention: false,
   vidH3Turbo: false,
   vidH3LongContext: false,
@@ -265,7 +268,16 @@ function h3ResolutionSize() {
   return state.vidH3Xl ? H3Resolution.XL_SIZE : state.mp;
 }
 
+function h3ManualDimensions() {
+  if (!state.vidH3Manual) return null;
+  if (h3TurboFixed768pActive()) return null;
+  const dimensions = H3Resolution.manualDimensions(state.vidH3ManualWidth, state.vidH3ManualHeight);
+  return dimensions;
+}
+
 function h3DimensionsForAspect(aspect = state.aspect) {
+  const manual = h3ManualDimensions();
+  if (manual) return manual;
   const selected = ASPECTS.find((option) => option.label === aspect) || ASPECTS[0];
   return H3Resolution.dimensions(selected.ar, 1, h3ResolutionSize());
 }
@@ -313,6 +325,8 @@ function h3ResolutionAspectRatio() {
 }
 
 function h3CurrentDimensions() {
+  const manual = h3ManualDimensions();
+  if (manual) return manual;
   return H3Resolution.dimensions(h3ResolutionAspectRatio(), 1, h3ResolutionSize());
 }
 
@@ -3274,6 +3288,9 @@ function saveForm() {
       vidH3MatchSource: state.vidH3MatchSource,
       vidH3MatchReferenceVideo: state.vidH3MatchReferenceVideo,
       vidH3Xl: state.vidH3Xl,
+      vidH3Manual: state.vidH3Manual,
+      vidH3ManualWidth: state.vidH3ManualWidth,
+      vidH3ManualHeight: state.vidH3ManualHeight,
 
       vidH3Turbo: state.vidH3Turbo,
       vidH3LongContext: state.vidH3LongContext,
@@ -3549,6 +3566,13 @@ function loadForm() {
     state.vidH3MatchSource = f.vidH3MatchSource !== false;
     state.vidH3MatchReferenceVideo = f.vidH3MatchReferenceVideo === true;
     state.vidH3Xl = f.vidH3Xl === true;
+    // Restore a manually typed H3 canvas only when the pair is still usable.
+    const restoredManual = f.vidH3Manual === true
+      ? H3Resolution.manualDimensions(f.vidH3ManualWidth, f.vidH3ManualHeight)
+      : null;
+    state.vidH3Manual = !!restoredManual;
+    state.vidH3ManualWidth = restoredManual ? restoredManual.width : 0;
+    state.vidH3ManualHeight = restoredManual ? restoredManual.height : 0;
     state.vidH3SageAttention = false;
     state.vidH3Turbo = f.vidH3Turbo === true;
     state.vidH3LongContext = f.vidH3LongContext === true
@@ -4632,11 +4656,15 @@ function applyH3TurboCanvasProfile() {
   const changed = state.aspect !== '16:9'
     || state.mp !== 1.75
     || state.vidH3Xl
+    || state.vidH3Manual
     || state.vidH3MatchSource
     || state.vidH3MatchReferenceVideo;
   state.aspect = '16:9';
   state.mp = 1.75;
   state.vidH3Xl = false;
+  state.vidH3Manual = false;
+  state.vidH3ManualWidth = 0;
+  state.vidH3ManualHeight = 0;
   state.vidH3MatchSource = false;
   state.vidH3MatchReferenceVideo = false;
   state.customDims = false;
@@ -8399,19 +8427,25 @@ function renderRegionResolutionPicker() {
 
   const sizeMenu = $('#regionSizeMenu');
   sizeMenu.innerHTML = '';
-  [{ value: 0.75, label: 'S' }, { value: 1, label: 'M' }, { value: 1.75, label: 'L' }].forEach((size) => {
+  // Mirror the shared RESOLUTION_SIZE_OPTIONS so the Tiny tier is reachable
+  // here as well; the region picker used to offer S/M/L only.
+  RESOLUTION_SIZE_OPTIONS.forEach((size) => {
     const button = document.createElement('button');
     button.type = 'button';
     const selected = Number(state.mp) === size.value && !state.customDims;
     button.className = selected ? 'active' : '';
-    button.textContent = size.label;
-    button.setAttribute('aria-label', `${size.label} resolution`);
+    button.textContent = createSizeLabel(size.value);
+    button.setAttribute('aria-label', `${createSizeLabel(size.value)} resolution`);
     button.setAttribute('aria-pressed', String(selected));
     button.addEventListener('click', () => {
       state.mp = size.value;
       state.createMatchSource = false;
       state.createMatchNative = false;
       state.customDims = false;
+      // Picking a tier replaces any manually typed H3 canvas.
+      state.vidH3Manual = false;
+      state.vidH3ManualWidth = 0;
+      state.vidH3ManualHeight = 0;
       computeDims();
       renderAspects();
       renderDims();
@@ -12565,13 +12599,17 @@ function renderDims() {
   // Clone of state.width/height at call time for the Qwen constraints path.
   widthInput.value = state.width;
   heightInput.value = state.height;
-  widthInput.readOnly = h3Resolution;
-  heightInput.readOnly = h3Resolution;
-  widthInput.setAttribute('aria-readonly', String(h3Resolution));
-  heightInput.setAttribute('aria-readonly', String(h3Resolution));
+  // H3 normally derives its canvas from the aspect ratio and size tier, but
+  // the user can type an exact canvas instead. The LightX2V 768p turbo setup
+  // is the one case that must stay locked to its trained canvas.
+  const h3LockedCanvas = h3Resolution && h3FixedTurboCanvas;
+  widthInput.readOnly = h3LockedCanvas;
+  heightInput.readOnly = h3LockedCanvas;
+  widthInput.setAttribute('aria-readonly', String(h3LockedCanvas));
+  heightInput.setAttribute('aria-readonly', String(h3LockedCanvas));
   widthInput.title = h3FixedTurboCanvas
     ? 'LightX2V v1.0 four-step 768p uses its trained 1344 × 768 canvas'
-    : (h3Resolution ? 'MiniMax H3 sets this from the selected aspect ratio' : '');
+    : (h3Resolution ? 'MiniMax H3: type an exact canvas (multiple of 32) or pick a size tier' : '');
   heightInput.title = widthInput.title;
   $('#sizeSeg').hidden = false;
   $('#h3ResolutionWarning').hidden = !h3Resolution || !state.vidH3Xl;
@@ -12611,7 +12649,7 @@ function renderDims() {
       ? `First frame · ${derivedAspectLabel(state.vidRef.w, state.vidRef.h)}`
       : (h3VideoMatch
         ? `Video 1 · ${derivedAspectLabel(h3ReferenceVideoAspectSource().w, h3ReferenceVideoAspectSource().h)}`
-        : state.aspect)} · ${state.vidH3Xl ? 'XL' : createSizeLabel()} · ${state.width} × ${state.height}`
+        : state.aspect)} · ${state.vidH3Manual ? 'Custom' : (state.vidH3Xl ? 'XL' : createSizeLabel())} · ${state.width} × ${state.height}`
     : state.view === 'create' && state.createMode === 'image' && state.createMatchSource && matchedCreateOutputDimensions()
     ? `${state.aspect} · ${state.createMatchNative ? 'Native image' : `Match image ${createSizeLabel()}`} · ${state.width} × ${state.height}`
     : (state.customDims
@@ -12633,7 +12671,9 @@ function renderDims() {
     const selected = h3FixedTurboCanvas
       ? fixedCanvasSize
       : h3Resolution
-      ? (b.hasAttribute('data-h3-xl') ? state.vidH3Xl : (!state.vidH3Xl && Number(b.dataset.mp) === state.mp))
+      ? (state.vidH3Manual
+        ? false
+        : (b.hasAttribute('data-h3-xl') ? state.vidH3Xl : (!state.vidH3Xl && Number(b.dataset.mp) === state.mp)))
       : (!b.hasAttribute('data-h3-xl') && Number(b.dataset.mp) === state.mp
         && (!state.customDims || (state.createMatchSource && !state.createMatchNative)));
     b.classList.toggle('active', selected);
@@ -13133,6 +13173,10 @@ $$('#sizeSeg button').forEach((b) => b.addEventListener('click', async () => {
     state.vidH3Xl = false;
     state.mp = Number(b.dataset.mp);
   }
+  // Picking a tier replaces any manually typed canvas.
+  state.vidH3Manual = false;
+  state.vidH3ManualWidth = 0;
+  state.vidH3ManualHeight = 0;
   const keepImageMatch = !h3ResolutionActive() && state.createMatchSource && !!state.createRef;
   if (keepImageMatch) {
     applyCreateMatchedDimensions();
@@ -13148,7 +13192,23 @@ $$('#sizeSeg button').forEach((b) => b.addEventListener('click', async () => {
 }));
 for (const id of ['#wInput', '#hInput']) {
   $(id).addEventListener('change', () => {
-    if (h3ResolutionActive()) return;
+    if (h3ResolutionActive()) {
+      // H3 accepts an exact canvas, but only when the whole pair is valid.
+      // A half-typed value keeps the tier instead of guessing.
+      const manual = H3Resolution.manualDimensions($('#wInput').value, $('#hInput').value);
+      if (!manual) {
+        renderDims();
+        return;
+      }
+      state.vidH3Manual = true;
+      state.vidH3ManualWidth = manual.width;
+      state.vidH3ManualHeight = manual.height;
+      state.width = manual.width;
+      state.height = manual.height;
+      renderDims();
+      saveForm();
+      return;
+    }
     state.createMatchSource = false;
     state.createMatchNative = false;
     state.customDims = true;
@@ -20137,6 +20197,8 @@ $('#generateBtn').addEventListener('click', async () => {
       h3TurboStrength: h3TurboActive() ? state.vidH3TurboStrength : undefined,
       h3ResolutionSize: state.vidEngine === 'h3' ? h3ResolutionSize() : undefined,
       h3AspectRatio: state.vidEngine === 'h3' ? h3ResolutionAspectRatio() : undefined,
+      h3ManualWidth: state.vidEngine === 'h3' && state.vidH3Manual ? state.vidH3ManualWidth : undefined,
+      h3ManualHeight: state.vidEngine === 'h3' && state.vidH3Manual ? state.vidH3ManualHeight : undefined,
       h3MatchSource: state.vidEngine === 'h3' && state.vidH3Mode === 'frames'
         ? h3MatchSourceActive() : undefined,
       h3MatchReferenceVideo: state.vidEngine === 'h3' && state.vidH3Mode === 'reference'
