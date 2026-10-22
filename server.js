@@ -100,7 +100,7 @@ const {
   parseNvidiaSmiCsv,
   parseRocmSmiUseJson,
 } = require('./lib/queue-health');
-const { classifyLora } = require('./lib/lora-compat');
+const { classifyLora, h3TurboStackConflicts } = require('./lib/lora-compat');
 const { buildLoraContext } = require('./lib/lora-context');
 const {
   DEFAULT_SEEDVR2_DIT,
@@ -9331,6 +9331,37 @@ async function handleApi(req, res, url) {
             error: 'The selected Turbo adapter is managed by the H3 Turbo switch and cannot also be added as a user LoRA. Remove it from the LoRA stack and try again.',
             code: 'h3_managed_lora_duplicate',
             lora: String(duplicateManaged.name),
+          });
+        }
+        // Two proven H3 LoRA accidents this route used to accept silently:
+        // (1) stacking a second Turbo/distill adapter on the managed one —
+        // both patch the same ~208 modules, deltas stack, sampling
+        // trajectory corrupts into heavy artifacts; (2) a wrong-family LoRA
+        // (e.g. Wan-on-H3 at 0/400 key overlap) that applies nothing but
+        // still burns load time and hides the user's real intent.
+        const h3LoraConflicts = h3TurboStackConflicts(
+          requestedVideoLoras,
+          await loraMetadataMap(requestedVideoLoras.map((lora) => String(lora.name))),
+          {
+            turboActive: h3Turbo,
+            managedTurboLoras: [...managedTurboNames],
+          },
+        );
+        const turboConflict = h3LoraConflicts.find((conflict) => conflict.reason === 'turbo');
+        if (turboConflict) {
+          return json(res, 409, {
+            error: `Turbo is already applied by the H3 Turbo switch. "${String(turboConflict.name)}" is itself a Turbo/distill adapter — stacking two distill LoRAs over the same model modules corrupts sampling and produces heavy artifacts. Remove it from the LoRA stack and try again.`,
+            code: 'h3_turbo_adapter_stacked',
+            lora: String(turboConflict.name),
+          });
+        }
+        const familyConflict = h3LoraConflicts.find((conflict) => conflict.reason === 'family');
+        if (familyConflict) {
+          return json(res, 409, {
+            error: `"${String(familyConflict.name)}" is a ${String(familyConflict.category || 'different')} model-family LoRA, not a MiniMax H3 LoRA. It does not apply to H3 (zero key overlap) and only wastes load time. Remove it from the LoRA stack and try again.`,
+            code: 'h3_lora_wrong_family',
+            lora: String(familyConflict.name),
+            category: String(familyConflict.category || 'unknown'),
           });
         }
         const modelOnlyH3Loras = comboList(info, 'LoraLoaderModelOnly', 'lora_name');

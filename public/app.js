@@ -213,7 +213,7 @@ const state = {
   promptPacks: [],
   promptPacksCanManage: false,
   promptPacksLoaded: false,
-  showAllLoras: true,
+  showAllLoras: false,
   activeJobs: new Set(),
   activeJobSequences: new Map(), // prompt id -> sequential edit id
   compositeJobs: new Map(), // prompt id -> parent item + composite type
@@ -4587,6 +4587,18 @@ function h3ManagedWorkflowLora(name) {
     lastMeta?.models?.h3RefTurbo?.lora?.name,
   ].map(normalizedLoraBasename).filter(Boolean);
   return managed.includes(normalizedLoraBasename(name));
+}
+
+// Mirrors lib/lora-compat.js isH3TurboAdapterLora (client copy, like
+// H3_TURBO_SETUPS above): any H3 Turbo/distill adapter, managed or not.
+// Stacking one as a user LoRA on top of the Turbo switch's own adapter
+// applies two distill LoRAs over the same ~208 modules and corrupts
+// sampling (heavy artifacts) — the picker hides them and the stack warns.
+function h3TurboAdapterLora(name) {
+  if (h3ManagedWorkflowLora(name)) return true;
+  const base = normalizedLoraBasename(name);
+  if (!base || !/minimax[_-]?h3/.test(base)) return false;
+  return /(turbo|lightx2v|distill|step\d+[_-]?(ema|ckpt)|ema[_-]?\d)/.test(base);
 }
 
 function selectedH3LoraCompatibility() {
@@ -13272,7 +13284,7 @@ function loraOptionsFor(selected) {
     state.view !== 'video'
     || state.vidEngine !== 'h3'
     || name === selected
-    || !h3ManagedWorkflowLora(name)
+    || (!h3ManagedWorkflowLora(name) && !h3TurboAdapterLora(name))
   ));
   if (state.showAllLoras) return options;
   const allowed = new Set(compatibleLoraCategories());
@@ -13284,7 +13296,9 @@ function incompatibleSelectedLoras() {
   const selected = curLoras().filter((lora) => lora && lora.on && lora.name && !lora.managed);
   if (state.view === 'video' && state.vidEngine === 'h3') {
     if (selectedH3LoraCompatibility().supported === false) return selected;
-    return selected.filter((lora) => h3ManagedWorkflowLora(lora.name) || !allowed.has(loraCategory(lora.name)));
+    return selected.filter((lora) => h3ManagedWorkflowLora(lora.name)
+      || h3TurboAdapterLora(lora.name)
+      || !allowed.has(loraCategory(lora.name)));
   }
   return selected.filter((lora) => !allowed.has(loraCategory(lora.name)));
 }
@@ -13967,12 +13981,17 @@ function renderLoraCompatibility() {
     && selectedH3LoraCompatibility().supported === false;
   const duplicateManaged = state.view === 'video' && state.vidEngine === 'h3'
     && bad.some((lora) => h3ManagedWorkflowLora(lora.name));
+  const turboStacked = state.view === 'video' && state.vidEngine === 'h3'
+    && !duplicateManaged
+    && bad.some((lora) => h3TurboAdapterLora(lora.name));
   warn.classList.toggle('hidden', bad.length === 0 && !h3DynTime);
   const warning = h3DynTime
     ? 'H3 LoRAs use the standard fused QKV model layout and are unavailable with DynTime. Choose Standard or Full BF16.'
     : (duplicateManaged
       ? 'Turbo adapters are applied automatically by the H3 Turbo switch. Remove the duplicate adapter from this LoRA stack.'
-      : (bad.length ? `May not work here: ${bad.map((l) => prettyLora(l.name)).join(', ')}` : ''));
+      : (turboStacked
+        ? 'This is a Turbo/distill adapter: stacking it with the Turbo switch\u2019s own adapter applies two distill LoRAs to the same model modules and produces heavy artifacts. Remove it from the LoRA stack.'
+        : (bad.length ? `May not work here: ${bad.map((l) => prettyLora(l.name)).join(', ')}` : '')));
   warn.dataset.iconTooltip = warning || 'LoRA compatibility caution';
   warn.dataset.iconTooltipDetail = warning || 'The selected LoRA may not be compatible with this workflow.';
   warn.setAttribute('aria-label', warning || 'LoRA compatibility caution');

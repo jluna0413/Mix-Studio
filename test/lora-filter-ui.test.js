@@ -8,8 +8,8 @@ const path = require('node:path');
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
 
-test('LoRA compatibility filtering is opt-in and uses a funnel control', () => {
-  assert.match(appJs, /showAllLoras:\s*true/);
+test('LoRA compatibility filtering is on by default with a funnel opt-out control', () => {
+  assert.match(appJs, /showAllLoras:\s*false/);
   assert.match(appJs, /const filtering = !state\.showAllLoras/);
   assert.match(appJs, /setAttribute\('aria-pressed', String\(filtering\)\)/);
   assert.match(indexHtml, /id="loraAllBtn"[^>]*aria-label="Filter to compatible LoRAs"/);

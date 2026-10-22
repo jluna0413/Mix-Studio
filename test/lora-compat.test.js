@@ -6,6 +6,8 @@ const {
   classifyLora,
   compatibleCategoriesForContext,
   loraCompatibilityWarning,
+  isH3TurboAdapterLora,
+  h3TurboStackConflicts,
 } = require('../lib/lora-compat');
 
 test('classifies Krea2 LoRAs from metadata and key samples', () => {
@@ -95,4 +97,79 @@ test('warning ignores app-managed workflow LoRAs', () => {
   );
   assert.doesNotMatch(warning, /identity_edit/);
   assert.match(warning, /portrait/);
+});
+
+test('classifies Wan21-style names as video, not unknown', () => {
+  // Regression: \bwan\b never matched "wan21", so the Wan-on-H3 accident
+  // (0/400 key overlap, inert no-op) classified as 'unknown' — which every
+  // context filter allows — and slipped through the picker AND the warning.
+  assert.equal(classifyLora({
+    name: 'Wan21_PusaV1_LoRA_14B_rank512_bf16.safetensors',
+    metadata: {},
+    keys: ['diffusion_model.blocks.0.cross_attn.q.lora_A.weight'],
+  }), 'video');
+  assert.equal(classifyLora({ name: 'wan22-style-pack.safetensors', metadata: {}, keys: [] }), 'video');
+  assert.equal(classifyLora({ name: 'LTX-Video-film-look.safetensors', metadata: {}, keys: [] }), 'video');
+});
+
+test('detects H3 Turbo/distill adapters by managed list and filename pattern', () => {
+  assert.equal(isH3TurboAdapterLora('minimax_h3_turbo_v4_step600_ema.safetensors'), true);
+  assert.equal(isH3TurboAdapterLora('Wan21\\minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors'), true);
+  assert.equal(isH3TurboAdapterLora('minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_resized_avg_rank_64_bf16.safetensors'), true);
+  assert.equal(isH3TurboAdapterLora('film-look.safetensors'), false);
+  assert.equal(isH3TurboAdapterLora('minimax_h3_style_portrait.safetensors'), false);
+  assert.equal(isH3TurboAdapterLora('Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors'), false);
+});
+
+test('rejects a Turbo adapter stacked on the managed Turbo switch adapter', () => {
+  const conflicts = h3TurboStackConflicts(
+    [
+      { name: 'minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_resized_avg_rank_64_bf16.safetensors', on: true },
+      { name: 'film-look.safetensors', on: true },
+    ],
+    {
+      'minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_resized_avg_rank_64_bf16.safetensors': { category: 'h3' },
+      'film-look.safetensors': { category: 'h3' },
+    },
+    {
+      turboActive: true,
+      managedTurboLoras: ['minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors'],
+    }
+  );
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].reason, 'turbo');
+  assert.match(conflicts[0].name, /8step/);
+});
+
+test('managed-name duplicates keep the dedicated duplicate path, not the stack guard', () => {
+  const conflicts = h3TurboStackConflicts(
+    [{ name: 'minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors', on: true }],
+    {},
+    {
+      turboActive: true,
+      managedTurboLoras: ['minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors'],
+    }
+  );
+  assert.deepEqual(conflicts, []);
+});
+
+test('rejects wrong-model-family LoRAs on H3 and allows compatible ones', () => {
+  const lorasInfo = {
+    'Wan21_PusaV1_LoRA_14B_rank512_bf16.safetensors': { category: 'video' },
+    'subject.safetensors': { category: 'h3' },
+    'mystery.safetensors': { category: 'unknown' },
+  };
+  const conflicts = h3TurboStackConflicts(
+    [
+      { name: 'Wan21_PusaV1_LoRA_14B_rank512_bf16.safetensors', on: true },
+      { name: 'subject.safetensors', on: true },
+      { name: 'mystery.safetensors', on: true },
+      { name: 'off-lora.safetensors', on: false },
+    ],
+    lorasInfo,
+    { turboActive: false, managedTurboLoras: [] }
+  );
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].reason, 'family');
+  assert.equal(conflicts[0].category, 'video');
 });
