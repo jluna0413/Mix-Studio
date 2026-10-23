@@ -8037,23 +8037,15 @@ async function handleApi(req, res, url) {
         return json(res, 404, { error: 'This uploaded asset was deleted' });
       }
     }
-    // Non-cataloged assets: require profile match via subfolder path.
+    // Non-cataloged assets: serve from local INPUTS store if present.
     // Assets uploaded without x-asset-catalog header are stored directly in
-    // INPUTS root; we gate access by checking the file path pattern.
+    // INPUTS root with names like ks_<timestamp>_<random-hex>_<orig> — the
+    // middle segment is random bytes, not a profile ID, so we cannot gate by
+    // name prefix. Cataloged assets are already profile-gated above via
+    // db.uploadedAssets[].profileId.
     const local = inputAssetPath(INPUTS, name);
     try {
       await fsp.access(local);
-      // Non-cataloged local assets: only serve if profile can resolve the name.
-      if (!catalogedAsset) {
-        // Assets uploaded without cataloging are profile-scoped by name prefix.
-        // The upload creates names like ks_<timestamp>_<profile-hex>_<orig>.
-        // We check that the name starts with the profile's known prefix.
-        const profilePrefix = `ks_${req.profile.id.slice(0, 8)}_`;
-        if (!name.startsWith(profilePrefix) && name.startsWith('ks_')) {
-          // Could be another profile's non-cataloged asset — reject.
-          return json(res, 404, { error: 'Uploaded asset not found' });
-        }
-      }
       return serveFile(res, local, req.headers.range);
     } catch { /* older inputs fall back to ComfyUI */ }
     const parts = name.split('/');
