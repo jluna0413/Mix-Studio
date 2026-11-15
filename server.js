@@ -10760,6 +10760,13 @@ async function handleApiRequest(req, res, url) {
       if (h3Attention.attentionBackend === 'kitchen' && !kitchenAttentionCapability(info).ready) {
         return json(res, 409, { error: kitchenAttentionCapability(info).reason, code: 'h3_kitchen_unavailable' });
       }
+      // H3 INT8 ConvRot models must load with weight_dtype int8 or they OOM at BF16.
+      // Probe the installed UNETLoader schema so an older ComfyUI falls back to default.
+      unetWeightDtypeChoices = objectInfoComboChoices(info, 'UNETLoader', 'weight_dtype');
+      const unetWeightDtype = h3EffectiveWeightDtype(settings, h3GraphMode, unetWeightDtypeChoices);
+      if (unetWeightDtype === 'int8' && (!Array.isArray(unetWeightDtypeChoices) || !unetWeightDtypeChoices.includes('int8'))) {
+        console.warn('[h3]', 'INT8 weight_dtype not supported by ComfyUI UNETLoader; falling back to default dtype for', h3EffectiveModelName(settings, h3GraphMode));
+      }
       const selectedVariant = h3SelectedModelVariant;
       if (requestedVideoLoras.length) {
         const loraCompatibility = h3LoraCompatibility(settings, h3GraphMode);
