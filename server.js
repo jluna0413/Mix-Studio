@@ -8083,7 +8083,7 @@ async function generateSplatOrbit({ image, profileId, quality, signal, onSubmitt
   const frames = h3FramesForSeconds(ORBIT_SECONDS);
   const opts = orbitOptions({ imageName: input, width: dimensions.w, height: dimensions.h, quality, seed, frames });
   const { W, H } = opts;
-  const graph = await buildSplatOrbitGraph(opts, settings, { buildMiniMaxH3Graph, nodeFromOrdered, filterInputs, rtxVideoSuperResolutionNode, rifeSmooth });
+  const graph = await buildSplatOrbitGraph(opts, settings, { buildMiniMaxH3Graph, nodeFromOrdered, filterInputs, rifeSmooth });
   signal.throwIfAborted();
   const pid = await queuePrompt(graph, { profileId });
   return new Promise((resolve, reject) => {
