@@ -157,6 +157,7 @@ const {
   normalizeExternalLlmSettings,
   normalizeLmStudioUrl,
   normalizeOllamaUrl,
+  normalizeOpenAiBaseUrl,
   parseStructuredText,
 } = require('./lib/external-llm');
 const {
@@ -359,6 +360,7 @@ const {
   nodeErrorsHasImageInput,
   matchesImageInputPattern,
 } = require('./lib/edit-image-input');
+const { isGpuDeviceLostError, extractComfyErrorMessage, gpuDeviceLostUserMessage } = require('./lib/gpu-device-lost');
 const { isWidgetSpec } = require('./lib/comfy-widget-spec');
 const { browseGenerationFolder } = require('./lib/folder-picker');
 const {
@@ -643,6 +645,7 @@ const DEFAULT_SETTINGS = {
   externalLlmExternalProvider: EXTERNAL_LLM_DEFAULTS.externalLlmExternalProvider,
   externalLlmOpenAiApiKey: '',
   externalLlmOpenAiModel: EXTERNAL_LLM_DEFAULTS.externalLlmOpenAiModel,
+  externalLlmOpenAiBaseUrl: EXTERNAL_LLM_DEFAULTS.externalLlmOpenAiBaseUrl,
   externalLlmGeminiApiKey: '',
   externalLlmGeminiModel: EXTERNAL_LLM_DEFAULTS.externalLlmGeminiModel,
   externalLlmOllamaUrl: EXTERNAL_LLM_DEFAULTS.externalLlmOllamaUrl,
@@ -1582,29 +1585,51 @@ function describeQueueEntry(entry, running) {
   };
 }
 
+/* Cached for a few seconds: the frontend polls /api/queue every 15 s and every
+ * poll lands here. Each probe is spawned with windowsHide -- on Windows a
+ * console-subsystem helper opened without it would flash a terminal window
+ * several times a minute while Mix Studio is in front. */
+let gpuStatsCache = { until: 0, value: null };
+const GPU_STATS_CACHE_MS = 10_000;
+
 function readGpuStats() {
+  const now = Date.now();
+  if (gpuStatsCache.until > now) return Promise.resolve(gpuStatsCache.value);
+
   return new Promise((resolve) => {
+    const done = (value) => {
+      gpuStatsCache = { until: Date.now() + GPU_STATS_CACHE_MS, value };
+      resolve(value);
+    };
     execFile(
       'nvidia-smi',
       ['--query-gpu=utilization.gpu,memory.used,memory.total,power.draw', '--format=csv,noheader,nounits'],
-      { timeout: 4000 },
+      { timeout: 4000, windowsHide: true },
       (err, stdout) => {
         const nvidia = err ? null : parseNvidiaSmiCsv(stdout);
-        if (nvidia) return resolve(nvidia);
+        if (nvidia) return done(nvidia);
         execFile(
           'rocm-smi',
           ['--showuse', '--showmeminfo', 'vram', '--json'],
-          { timeout: 4000 },
-          (rocmError, rocmStdout) => resolve(rocmError ? null : parseRocmSmiUseJson(rocmStdout))
+          { timeout: 4000, windowsHide: true },
+          (rocmError, rocmStdout) => {
+            if (!rocmError) {
+              const rocm = parseRocmSmiUseJson(rocmStdout);
+              if (rocm) return done(rocm);
+            }
+            // Intel Arc fallback: xpu-smi is optional and may not be on PATH.
+            // Arguments are passed directly -- never through a shell -- so no
+            // console window is created. When it is absent the VRAM guard
+            // degrades gracefully to null.
+            execFile(
+              'xpu-smi',
+              ['--query-gpu=Util_memory.use,Util_memory.used,Util_memory.total', '--format=csv,noheader,nounits'],
+              { timeout: 4000, windowsHide: true },
+              (xpuErr, xpuStdout) => done(xpuErr ? null : parseIntelXpuSmi(xpuStdout))
+            );
+          }
         );
       }
-    );
-    // Fallback: Intel Arc via xpu-smi (optional; only if installed).
-    // Your Arc B70 ships with the driver but xpu-smi may not be on PATH.
-    // If absent the VRAM guard degrades gracefully (returns null).
-    const xpuScript = 'xpu-smi --query-gpu=Util_memory.use,Util_memory.used,Util_memory.total --format=csv,noheader,nounits';
-    execFile(xpuScript, { timeout: 4000, shell: process.platform === 'win32' },
-      (xpuErr, xpuStdout) => resolve(xpuErr ? null : parseIntelXpuSmi(xpuStdout))
     );
   });
 }
@@ -2317,6 +2342,66 @@ async function uploadToComfy(buffer, filename) {
   return (json.subfolder ? json.subfolder + '/' : '') + json.name;
 }
 
+/** True when ComfyUI can already see this name in its input folder. */
+async function comfyInputExists(name) {
+  const parts = String(name || '').split('/');
+  const filename = parts.pop();
+  const subfolder = parts.join('/');
+  try {
+    const response = await comfyFetch(`/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=input`);
+    if (response.body?.cancel) await response.body.cancel().catch(() => {});
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Read a reference asset from the app's durable input store, falling back to
+ *  ComfyUI's own input folder. Returns null when neither has the bytes. */
+async function readReferenceAssetBytes(name) {
+  const clean = String(name || '').trim();
+  if (!clean) return null;
+  const local = inputAssetPath(INPUTS, clean);
+  try {
+    return await fsp.readFile(local);
+  } catch { /* not in the app store; try ComfyUI */ }
+  const parts = clean.split('/');
+  const filename = parts.pop();
+  const subfolder = parts.join('/');
+  try {
+    const response = await comfyFetch(`/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=input`);
+    return Buffer.from(await response.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * H3 reference assets arrive as app-side names (gallery files, durable uploads,
+ * or ComfyUI inputs). ComfyUI's LoadImage only resolves names in its own input
+ * folder, so a gallery file like `ks_..._generate_a_logo_for_.webp` fails
+ * validation with "Invalid image file". Push any asset ComfyUI cannot see into
+ * its input folder and return the name the graph should reference.
+ */
+async function ensureH3ReferenceInputs(references) {
+  const resolveOne = async (asset) => {
+    const name = String(asset?.name || '').trim();
+    if (!name) return asset;
+    if (await comfyInputExists(name)) return asset;
+    const buffer = await readReferenceAssetBytes(name);
+    if (!buffer) {
+      throw new Error(`MiniMax H3 reference "${name}" is no longer available. Reattach it and try again.`);
+    }
+    const uploaded = await uploadToComfy(buffer, path.basename(name));
+    return Object.assign({}, asset, { name: uploaded });
+  };
+  return {
+    images: await Promise.all((references.images || []).map(resolveOne)),
+    videos: await Promise.all((references.videos || []).map(resolveOne)),
+    audios: await Promise.all((references.audios || []).map(resolveOne)),
+  };
+}
+
 async function uploadCameraMotionGuides(value) {
   const ids = normalizeCameraMotions(value);
   const uploaded = [];
@@ -2537,6 +2622,23 @@ async function vramPreCheck(options = {}) {
   }
 }
 
+async function comfyHealthCheck() {
+  try {
+    const res = await comfyFetch('/system_stats', { timeout: 10_000 });
+    if (!res.ok) return { healthy: false, reason: `ComfyUI returned ${res.status}` };
+    const stats = await res.json();
+    // Check if GPU is in a bad state
+    const devices = stats?.devices || [];
+    if (devices.length === 0) {
+      return { healthy: false, reason: 'No GPU devices detected by ComfyUI' };
+    }
+  return { healthy: true, reason: '' };
+} catch (error) {
+  return { healthy: false, reason: `ComfyUI unreachable: ${error.message}` };
+}
+}
+
+
 async function queuePrompt(graph, options = {}) {
   const slotToken = await _acquirePromptSlot();
   return runSerialized(async () => {
@@ -2728,6 +2830,22 @@ function handleWsMessage(msg) {
       // Second [Errno 22] after restart — give up
       console.error(`[job:${pid}] [Errno 22] persisted after ComfyUI restart. Not retrying again.`);
     }
+    // GPU device lost (Intel Arc level_zero) — ComfyUI crashed mid-computation.
+    // Surface a clear error and attempt one ComfyUI restart to recover,
+    // mirroring the [Errno 22] recovery path.
+    if (isGpuDeviceLostError(exceptionMessage) || isGpuDeviceLostError(d.node_type || '')) {
+      if (job.gpuDeviceLostRetries === undefined) {
+        job.gpuDeviceLostRetries = 1;
+        console.warn(`[job:${pid}] GPU device lost detected. Attempting ComfyUI restart (attempt ${job.gpuDeviceLostRetries}).`);
+        failJob(pid, `GPU driver error — restarting ComfyUI (attempt ${job.gpuDeviceLostRetries})`);
+        restartComfyOnGpuDeviceLost(pid, job);
+        return;
+      }
+      // Second GPU device lost after restart — give up
+      console.error(`[job:${pid}] GPU device lost persisted after ComfyUI restart. Not retrying again.`);
+      failJob(pid, gpuDeviceLostUserMessage());
+      return;
+    }
     if (refNames.length && (matchesImageInputPattern(exceptionMessage) || matchesImageInputPattern(d.node_type || ''))) {
       failJob(pid, imageInputNotAcceptedMessage(refNames[0]));
     } else {
@@ -2903,6 +3021,48 @@ async function restartComfyOnErrno22(pid, job) {
     }
   } catch (error) {
     console.error(`[job:${pid}] ComfyUI restart failed during [Errno 22] recovery:`, error.message);
+  } finally {
+    comfyRestartRunning = false;
+  }
+}
+
+async function restartComfyOnGpuDeviceLost(pid, job) {
+  if (comfyRestartRunning) {
+    console.warn(`[job:${pid}] ComfyUI restart already in progress — GPU device lost recovery deferred.`);
+    return;
+  }
+  comfyRestartRunning = true;
+  try {
+    console.warn(`[job:${pid}] Restarting ComfyUI to recover from GPU device lost.`);
+    await restartComfy(RUNTIME, (phase, message) => {
+      console.warn(`[job:${pid}] ComfyUI restart ${phase}: ${message}`);
+    });
+    const reconnected = await waitForComfyReconnect();
+    if (reconnected) {
+      objectInfoCache = null;
+      comfyCompatibilitySnapshot = null;
+      comfyCompatibilityAt = 0;
+      console.log(`[job:${pid}] ComfyUI back online after GPU device lost restart — requeuing job.`);
+      const newPid = await queuePrompt(job.graph, { profileId: job.profileId });
+      jobs.delete(pid);
+      jobs.set(newPid, Object.assign({}, job, {
+        enqueuedAt: Date.now(),
+        startedAt: null,
+        gpuDeviceLostRetries: job.gpuDeviceLostRetries,
+      }));
+      broadcast('jobRetry', {
+        jobId: newPid,
+        originalJobId: pid,
+        kind: job.kind,
+        profileId: job.profileId,
+        itemId: job.itemId || null,
+        message: 'ComfyUI restarted after GPU error — job requeued.',
+      });
+    } else {
+      console.error(`[job:${pid}] ComfyUI did not reconnect after GPU device lost restart.`);
+    }
+  } catch (error) {
+    console.error(`[job:${pid}] ComfyUI restart failed during GPU device lost recovery:`, error.message);
   } finally {
     comfyRestartRunning = false;
   }
@@ -3753,10 +3913,20 @@ setInterval(async () => {
         const job = jobs.get(pid);
         const refNames = (job && job.refImageNames) || [];
         const histError = JSON.stringify(hist.status.error || hist.status || '');
+        const extractedMsg = extractComfyErrorMessage(hist.status);
         if (refNames.length && matchesImageInputPattern(histError)) {
           failJob(pid, imageInputNotAcceptedMessage(refNames[0]));
+        } else if (isGpuDeviceLostError(histError) || isGpuDeviceLostError(extractedMsg)) {
+          if (job && job.gpuDeviceLostRetries === undefined) {
+            job.gpuDeviceLostRetries = 1;
+            console.warn(`[job:${pid}] GPU device lost detected via polling. Attempting ComfyUI restart (attempt ${job.gpuDeviceLostRetries}).`);
+            failJob(pid, `GPU driver error — restarting ComfyUI (attempt ${job.gpuDeviceLostRetries})`);
+            restartComfyOnGpuDeviceLost(pid, job);
+          } else {
+            failJob(pid, gpuDeviceLostUserMessage());
+          }
         } else {
-          failJob(pid, 'Execution error (see ComfyUI console)');
+          failJob(pid, extractedMsg || 'Execution error (see ComfyUI console)');
         }
       }
     } catch (error) {
@@ -7268,7 +7438,7 @@ async function buildExistingVideoUpscale(videoName, opts) {
   const graph = {};
   graph.src = await nodeFromOrdered('VHS_LoadVideo', [], {}, {
     video: videoName,
-    force_rate: opts.fps || 0,
+    force_rate: Math.min(opts.fps || 0, 60),
     custom_width: 0,
     custom_height: 0,
     frame_load_cap: opts.frames || 0,
@@ -7322,7 +7492,7 @@ async function buildExistingVideoInterpolate(videoName, opts) {
   const fps = opts.fps || 16;
   graph.src = await nodeFromOrdered('VHS_LoadVideo', [], {}, {
     video: videoName,
-    force_rate: fps,
+    force_rate: Math.min(fps, 60),
     custom_width: 0,
     custom_height: 0,
     frame_load_cap: opts.frames || 0,
@@ -7492,7 +7662,7 @@ async function cachedVideoPreview(media, options = {}) {
   const sourceStat = await fsp.stat(media.file);
   if (!sourceStat.isFile()) throw Object.assign(new Error('Video not found'), { code: 'ENOENT' });
   const fingerprint = crypto.createHash('sha256')
-    .update(`preview-v2\0${media.name}\0${sourceStat.size}\0${Math.round(sourceStat.mtimeMs)}\0${preview.size}\0${preview.fps}`)
+    .update(`preview-v3\0${media.name}\0${sourceStat.size}\0${Math.round(sourceStat.mtimeMs)}\0${preview.size}\0${preview.fps}`)
     .digest('hex')
     .slice(0, 24);
   const output = path.join(VIDEO_PREVIEWS, `${fingerprint}.mp4`);
@@ -9024,10 +9194,16 @@ async function handleApiRequest(req, res, url) {
       try { body.externalLlmLmStudioUrl = normalizeLmStudioUrl(body.externalLlmLmStudioUrl); }
       catch (error) { return json(res, 400, { error: String(error.message || error) }); }
     }
+    if (typeof body.externalLlmOpenAiBaseUrl === 'string') {
+      try { body.externalLlmOpenAiBaseUrl = normalizeOpenAiBaseUrl(body.externalLlmOpenAiBaseUrl); }
+      catch (error) { return json(res, 400, { error: String(error.message || error) }); }
+    }
     const changesExternalLlm = body.clearExternalLlmOpenAiApiKey === true
       || body.clearExternalLlmGeminiApiKey === true
       || ['externalLlmOpenAiApiKey', 'externalLlmGeminiApiKey'].some((key) => typeof body[key] === 'string' && body[key].trim())
-      || ['externalLlmProvider', 'externalLlmLocalProvider', 'externalLlmExternalProvider', 'externalLlmOpenAiModel', 'externalLlmGeminiModel', 'externalLlmOllamaUrl', 'externalLlmOllamaModel', 'externalLlmLmStudioUrl', 'externalLlmLmStudioModel']
+      || (typeof body.externalLlmOpenAiBaseUrl === 'string'
+        && body.externalLlmOpenAiBaseUrl !== String(settings.externalLlmOpenAiBaseUrl || ''))
+      || ['externalLlmProvider', 'externalLlmLocalProvider', 'externalLlmExternalProvider', 'externalLlmOpenAiModel', 'externalLlmGeminiModel', 'externalLlmOllamaUrl', 'externalLlmOllamaModel']
         .some((key) => typeof body[key] === 'string' && body[key].trim() && body[key].trim() !== String(settings[key] || ''))
       || ['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance']
         .some((key) => typeof body[key] === 'boolean' && body[key] !== settings[key]);
@@ -9049,6 +9225,9 @@ async function handleApiRequest(req, res, url) {
     }
     if ((changesExternalLlm || changesLocalPromptAi || changesH3ModelVariant) && !isAdmin()) {
       return json(res, 403, { error: 'Only the owner profile can change the shared prompt AI settings or shared H3 model settings' });
+    }
+    if (typeof body.externalLlmOpenAiBaseUrl === 'string') {
+      settings.externalLlmOpenAiBaseUrl = body.externalLlmOpenAiBaseUrl;
     }
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       if (key === 'exportDir') continue;
@@ -11121,6 +11300,13 @@ async function handleApiRequest(req, res, url) {
     const seed = Number.isSafeInteger(requestedSeed) && requestedSeed >= 0
       ? requestedSeed
       : Math.floor(Math.random() * 2 ** 48);
+    // H3 reference assets may be gallery files or durable uploads that ComfyUI
+    // cannot see by name. Push any missing asset into ComfyUI's input folder
+    // before the graph references it, otherwise LoadImage rejects the prompt
+    // with "Invalid image file".
+    const resolvedH3References = engine === 'h3' && h3ReferenceBacked
+      ? await ensureH3ReferenceInputs(h3References)
+      : h3References;
     // Edit Anything expects concise, literal editing instructions. Its author
     // specifically advises against the LTX prompt rewriter for this workflow.
     if (wanAnimate2) body.enhance = false;
@@ -11128,7 +11314,7 @@ async function handleApiRequest(req, res, url) {
     const h3PromptImageNames = engine !== 'h3'
       ? []
       : h3ReferenceBacked
-        ? [h3References.images[0]?.name].filter(Boolean)
+        ? [resolvedH3References.images[0]?.name].filter(Boolean)
         : [!bypass ? comfyName : null, body.endImageName ? String(body.endImageName) : null].filter(Boolean);
     let autoGeneratedMotion = preparedMotionPrompt;
     if (autoMotionRequested) {
@@ -11292,7 +11478,7 @@ async function handleApiRequest(req, res, url) {
       sageAttention: h3SageAttention,
       slaAttention: h3SlaAttention,
       firstImageName: engine === 'h3' && !bypass && h3Mode === 'frames' ? comfyName : null,
-      references: h3References,
+      references: resolvedH3References,
       refImageSize: body.h3RefImageSize === 'max' ? 'max' : 'match',
       longContext: firstH3LongContextSegment ? {
         chainId: h3LongContextChainId,
@@ -11468,7 +11654,7 @@ async function handleApiRequest(req, res, url) {
           ? body.h3MatchReferenceVideo === true : undefined,
         attentionBackend: engine === 'h3' ? opts.attentionBackend : undefined,
         h3RefImageSize: h3ReferenceBacked ? opts.refImageSize : undefined,
-        h3References: h3ReferenceBacked ? h3References : undefined,
+        h3References: h3ReferenceBacked ? resolvedH3References : undefined,
         h3ReplaceKind: engine === 'h3' && h3Mode === 'replace' ? h3ReplaceKind : undefined,
         h3ReplaceTarget: engine === 'h3' && h3Mode === 'replace' ? h3ReplaceTarget : undefined,
         // Asset names (ComfyUI input dir) so "Reuse" can restore them
@@ -11665,13 +11851,13 @@ async function handleApiRequest(req, res, url) {
     const outName = await uploadToComfy(buf, `ks_cmp_${entry.id}.mp4`);
 
     const graph = {};
-    graph.drive = await nodeFromOrdered('VHS_LoadVideo', [], {}, {
-      video: info.driveVideoName, force_rate: fps, custom_width: 0, custom_height: 0,
+  graph.drive = await nodeFromOrdered('VHS_LoadVideo', [], {}, {
+      video: info.driveVideoName, force_rate: Math.min(fps, 60), custom_width: 0, custom_height: 0,
       frame_load_cap: frames, skip_first_frames: Math.max(0, Math.round((info.driveStartSeconds || 0) * fps)),
       select_every_nth: 1, format: 'None',
     });
     graph.result = await nodeFromOrdered('VHS_LoadVideo', [], {}, {
-      video: outName, force_rate: fps, custom_width: 0, custom_height: 0,
+      video: outName, force_rate: Math.min(fps, 60), custom_width: 0, custom_height: 0,
       frame_load_cap: frames, skip_first_frames: 0, select_every_nth: 1, format: 'None',
     });
 
@@ -12110,30 +12296,49 @@ async function handleApiRequest(req, res, url) {
 
   if (route === '/api/prompt/provider/test' && req.method === 'POST') {
     if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can test the shared prompt planner' });
-    const provider = configuredExternalLlm();
-    const parts = {
-      instruction: 'You are checking a prompt-writing connection. Follow the user request exactly.',
-      userInput: 'Reply with exactly: Connection ready',
-    };
-    const text = provider.provider === 'local'
-      ? await queueTextEnhancement(parts, Math.floor(Math.random() * 2 ** 31), '', 64, {
-        profileId: req.profile.id, broadcastStatus: false,
-      })
-      : await externalLlmRequest({
+    try {
+      const provider = configuredExternalLlm();
+      const parts = {
+        instruction: 'You are checking a prompt-writing connection. Follow the user request exactly.',
+        userInput: 'Reply with exactly: Connection ready',
+      };
+      const text = provider.provider === 'local'
+        ? await queueTextEnhancement(parts, Math.floor(Math.random() * 2 ** 31), '', 64, {
+          profileId: req.profile.id, broadcastStatus: false,
+        })
+        : await externalLlmRequest({
+          provider: provider.provider,
+          model: provider.model,
+          apiKey: provider.apiKey,
+          baseUrl: provider.baseUrl,
+          instruction: 'You are checking a prompt-writing connection. Follow the user request exactly.',
+          userInput: 'Reply with exactly: Connection ready',
+          maxTokens: 64,
+          instruction: parts.instruction,
+          userInput: parts.userInput,
+          maxTokens: 64,
+        });
+      return json(res, 200, {
+        ok: true,
         provider: provider.provider,
         model: provider.model,
-        apiKey: provider.apiKey,
-        baseUrl: provider.baseUrl,
-        instruction: parts.instruction,
-        userInput: parts.userInput,
-        maxTokens: 64,
+        response: String(text).trim().slice(0, 120),
       });
-    return json(res, 200, {
-      ok: true,
-      provider: provider.provider,
-      model: provider.model,
-      response: String(text).trim().slice(0, 120),
-    });
+    } catch (error) {
+      // Previously unguarded: any provider failure surfaced as an opaque 500.
+      const status = /no usable prompt text|empty|invalid|unsupported/i.test(String(error?.message || ''))
+        ? 409
+        : 502;
+      log.error('External prompt provider test failed', {
+        kind: 'external_llm_test',
+        provider: configuredExternalLlm().provider,
+        error: String(error?.message || error),
+      });
+      return json(res, status, {
+        error: String(error?.message || error || 'The prompt provider could not be reached.'),
+        code: error?.code || 'external_llm_test_failed',
+      });
+    }
   }
 
   if (route === '/api/prompt/local-models' && req.method === 'GET') {

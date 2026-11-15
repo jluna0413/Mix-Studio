@@ -2298,12 +2298,18 @@
     <p class="private-access-copy">Enter the gallery password to view and manage locked folders.</p>
     <div class="field">
       <label for="privatePasswordInput">Gallery password</label>
+      <input type="text" name="username" id="privateUnlockUsername" autocomplete="username" hidden aria-hidden="true" tabindex="-1" value="gallery" />
       <input id="privatePasswordInput" type="password" autocomplete="current-password" placeholder="Password" />
       <p class="private-access-error" id="privatePasswordError" role="alert" hidden></p>
     </div>
     <button class="sheet-cta" id="privateUnlockSubmit" type="submit">Unlock folders</button>
   </form>
 </div>
+
+<!-- Associates orphaned secret inputs with a form owner so browsers stop
+     warning that password fields are not contained in a form. The form is
+     empty and hidden; it never submits. -->
+<form id="mixstudioSecretFields" hidden></form>
 
 <!-- folder actions -->
 <div class="sheet" id="folderActionsSheet">
@@ -2650,7 +2656,7 @@
           </div>
           <label class="setup-hf-token-label" for="setupHfToken">Read token</label>
           <div class="setup-hf-token-row">
-            <input id="setupHfToken" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste an hf_ read token" aria-describedby="setupHfTokenStatus" />
+            <input id="setupHfToken" type="password" form="mixstudioSecretFields" autocomplete="new-password" spellcheck="false" placeholder="Paste an hf_ read token" aria-describedby="setupHfTokenStatus" />
             <button id="setupSaveHfToken" type="button">Save token</button>
           </div>
           <small class="setup-hf-token-status" id="setupHfTokenStatus" aria-live="polite">The token is stored only on this Mix Studio server and is never shown again.</small>
@@ -3215,6 +3221,11 @@
                     <label for="setExternalLlmOpenAiModel">OpenAI model</label>
                     <input id="setExternalLlmOpenAiModel" type="text" autocomplete="off" spellcheck="false" placeholder="gpt-5.6-luna" />
                   </div>
+                  <div class="field">
+                    <label for="setExternalLlmOpenAiBaseUrl">Custom base URL <small>Optional · OpenAI-compatible endpoints</small></label>
+                    <input id="setExternalLlmOpenAiBaseUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com/v1 (default)" />
+                    <div class="settings-note">Leave empty to use api.openai.com. A custom endpoint uses Chat Completions; proxies that attach their own credentials accept any non-empty API key.</div>
+                  </div>
                 </div>
                 <div class="external-llm-provider" data-external-llm-provider="gemini" hidden>
                   <div class="field">
@@ -3224,7 +3235,7 @@
                   <div class="field">
                     <label for="setExternalLlmGeminiApiKey">Gemini API key</label>
                     <div class="external-llm-secret-row">
-                      <input id="setExternalLlmGeminiApiKey" type="password" autocomplete="new-password" placeholder="Paste an API key" />
+                      <input id="setExternalLlmGeminiApiKey" type="password" form="mixstudioSecretFields" autocomplete="new-password" placeholder="Paste an API key" />
                       <button class="settings-cache-clear" id="clearExternalLlmGeminiApiKey" type="button" hidden>Clear</button>
                     </div>
                   </div>
@@ -3239,7 +3250,7 @@
                 <div class="field prompt-ai-openai-access-field">
                   <label for="setExternalLlmOpenAiApiKey">OpenAI API key</label>
                   <div class="external-llm-secret-row">
-                    <input id="setExternalLlmOpenAiApiKey" type="password" autocomplete="new-password" placeholder="Paste an API key" />
+                    <input id="setExternalLlmOpenAiApiKey" type="password" form="mixstudioSecretFields" autocomplete="off" placeholder="Paste an API key" />
                     <button class="settings-cache-clear" id="clearExternalLlmOpenAiApiKey" type="button" hidden>Clear</button>
                   </div>
                   <small class="external-llm-field-note">Smart voice transcription uses OpenAI even when another planner is selected. Leave blank if voice input is not needed.</small>
@@ -3350,7 +3361,7 @@
                 <h5>Download access</h5>
                 <div class="field">
                   <label>Hugging Face token</label>
-                  <input id="setHfToken" type="password" autocomplete="new-password" placeholder="Paste an hf_ read token" />
+                  <input id="setHfToken" type="password" form="mixstudioSecretFields" autocomplete="off" placeholder="Paste an hf_ read token" />
                   <div class="settings-note">Gated models may require access approval and a read token.</div>
                 </div>
                 <div class="field">
@@ -3430,7 +3441,7 @@
                 </div>
                 <small class="spark-access-security">Uses Tailscale Funnel on HTTPS port 8443 and exposes only the secret MCP path—not the Mix Studio web app.</small>
               </section>
-              <div class="field"><label>Gallery password</label><input id="galleryPasswordInput" type="password" value="1234" autocomplete="new-password" /></div>
+              <div class="field"><label>Gallery password</label><input id="galleryPasswordInput" type="password" form="mixstudioSecretFields" value="1234" autocomplete="new-password" /></div>
             </div>
           </details>
           <details class="settings-group settings-preference-disclosure" data-settings-preference-section="system-hardware">

@@ -226,8 +226,10 @@ test('external adapters preserve ordered multiple vision images for every provid
     await externalLlmRequest({
       provider,
       model: `${provider}-test`,
-      apiKey: ['ollama', 'lmstudio'].includes(provider) ? '' : 'test-key',
-      baseUrl: 'http://127.0.0.1:11434',
+        apiKey: provider === 'ollama' ? '' : 'test-key',
+        // A custom base URL switches OpenAI to the Chat Completions wire format,
+        // so only Ollama receives one here.
+        baseUrl: provider === 'ollama' ? 'http://127.0.0.1:11434' : '',
       instruction: 'Return one prompt.',
       userInput: 'Compare both references.',
       images: [first, second],
@@ -257,6 +259,39 @@ test('external adapters preserve ordered multiple vision images for every provid
 
   const ollama = await requestBody('ollama');
   assert.deepEqual(ollama.messages[1].images, [firstBase64, secondBase64]);
+});
+
+test('a custom OpenAI base URL uses Chat Completions and preserves vision order', async () => {
+  const first = { data: Buffer.from('first-image'), mimeType: 'image/jpeg' };
+  const second = { data: Buffer.from('second-image'), mimeType: 'image/webp' };
+  const firstBase64 = Buffer.from('first-image').toString('base64');
+  const secondBase64 = Buffer.from('second-image').toString('base64');
+
+  let body;
+  let calledUrl;
+  const text = await externalLlmRequest({
+    provider: 'openai',
+    model: 'Hermes-4-70B',
+    apiKey: 'sk-unused',
+    baseUrl: 'http://127.0.0.1:8645/v1',
+    instruction: 'Return one prompt.',
+    userInput: 'Compare both references.',
+    images: [first, second],
+    fetchImpl: async (url, init) => {
+      calledUrl = url;
+      body = JSON.parse(init.body);
+      return jsonResponse({ choices: [{ message: { content: 'Done.' } }] });
+    },
+  });
+
+  assert.equal(calledUrl, 'http://127.0.0.1:8645/v1/chat/completions');
+  assert.equal(body.stream, false);
+  assert.deepEqual(body.messages[0], { role: 'system', content: 'Return one prompt.' });
+  assert.deepEqual(
+    body.messages[1].content.slice(1).map((part) => part.image_url.url),
+    [`data:image/jpeg;base64,${firstBase64}`, `data:image/webp;base64,${secondBase64}`],
+  );
+  assert.equal(text, 'Done.');
 });
 
 test('multiple vision images ignore invalid entries and cap payloads at eight', async () => {
@@ -316,7 +351,10 @@ test('structured requests use each provider native JSON schema mode and parse th
   for (const provider of ['openai', 'gemini', 'ollama', 'lmstudio']) {
     const result = await externalLlmStructuredRequest({
       provider, model: `${provider}-test`, apiKey: ['ollama', 'lmstudio'].includes(provider) ? '' : 'test-key',
-      baseUrl: 'http://127.0.0.1:11434', instruction: 'Plan.', userInput: 'A film.',
+      // Only the local providers speak Chat Completions on a custom base URL;
+      // openai keeps the Responses API (and its native json_schema mode).
+      baseUrl: ['ollama', 'lmstudio'].includes(provider) ? 'http://127.0.0.1:11434' : '',
+      instruction: 'Plan.', userInput: 'A film.',
       schema, schemaName: 'production_plan',
       fetchImpl: async (_url, init) => {
         bodies[provider] = JSON.parse(init.body);

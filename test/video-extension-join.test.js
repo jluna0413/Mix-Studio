@@ -272,7 +272,7 @@ test('MP4 transcoding reports missing FFmpeg and empty output directly', async (
   }), (error) => error.code === 'video_transcode_failed' && /empty MP4/.test(error.message));
 });
 
-test('gallery preview arguments create a bounded silent H.264 proxy', () => {
+test('gallery preview arguments create a bounded H.264 proxy that keeps audio', () => {
   const args = videoPreviewTranscodeArgs({
     sourcePath: '/media/full resolution.mp4',
     outputPath: '/cache/preview.mp4',
@@ -280,9 +280,10 @@ test('gallery preview arguments create a bounded silent H.264 proxy', () => {
   assert.deepEqual(args.slice(args.indexOf('-i'), args.indexOf('-vf')), [
     '-i', '/media/full resolution.mp4',
     '-map', '0:v:0',
-    '-an',
+    '-map', '0:a:0?',
     '-t', '5',
   ]);
+  assert.equal(args.includes('-an'), false);
   assert.equal(DEFAULT_VIDEO_PREVIEW_SIZE, 640);
   assert.equal(DEFAULT_VIDEO_PREVIEW_FPS, 24);
   assert.deepEqual(VIDEO_PREVIEW_SIZE_OPTIONS, [480, 640, 720]);
@@ -293,6 +294,8 @@ test('gallery preview arguments create a bounded silent H.264 proxy', () => {
   assert.equal(args[args.indexOf('-c:v') + 1], 'libx264');
   assert.equal(args[args.indexOf('-preset') + 1], 'veryfast');
   assert.equal(args[args.indexOf('-crf') + 1], '28');
+  assert.equal(args[args.indexOf('-c:a') + 1], 'aac');
+  assert.ok(args.includes('-shortest'));
   assert.equal(args[args.indexOf('-g') + 1], '48');
   assert.equal(args[args.indexOf('-keyint_min') + 1], '48');
   assert.equal(args[args.indexOf('-movflags') + 1], '+faststart');

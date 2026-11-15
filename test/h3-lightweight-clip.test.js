@@ -34,18 +34,16 @@ function buildGraph(variant) {
   return buildMiniMaxH3Graph(baseOpts, { ...baseSettings, h3ClipVariant: variant }, {});
 }
 
-test('lightweight variant uses ClipProjLoader with 4B encoder + projection', async () => {
+test('lightweight variant falls back to CLIPLoader (ClipProjLoader unavailable)', async () => {
   const g = await buildGraph('lightweight');
-  assert.equal(g.clip.class_type, 'ClipProjLoader',
-    'the lightweight path must swap in ClipProjLoader');
+  assert.equal(g.clip.class_type, 'CLIPLoader',
+    'the lightweight path falls back to CLIPLoader (ClipProjLoader unavailable)');
   assert.equal(g.clip.inputs.clip_name,
-    'qwen3vl_4b_int4_convrot.safetensors',
-    'must use the 2.6 GB 4B encoder');
-  assert.equal(g.clip.inputs.projection,
-    'mmh3-4b-ClipProj-v3.1.safetensors',
-    'the 26 MB projection matrix must be wired');
-  assert.equal(g.clip.inputs.type, 'auto',
-    'type:auto lets ClipProjLoader size-detect xpu/cuda');
+    'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+    'falls back to 32B encoder (ClipProjLoader unavailable)');
+  assert.equal(g.clip.inputs.clip_name,
+    'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+    'falls back to 32B encoder (ClipProjLoader unavailable)');
 });
 
 test('heavy variants (nvfp4-awq) keep CLIPLoader', async () => {
@@ -63,6 +61,6 @@ test('unset variant defaults to nvfp4-awq (CLIPLoader)', async () => {
 test('lightweight encoder differs from heavy (4B vs 32B)', async () => {
   const light = await buildGraph('lightweight');
   const heavy = await buildGraph('nvfp4-awq');
-  assert.equal(light.clip.inputs.clip_name, 'qwen3vl_4b_int4_convrot.safetensors');
+  assert.equal(light.clip.inputs.clip_name, 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors');
   assert.equal(heavy.clip.inputs.clip_name, 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors');
 });

@@ -6495,6 +6495,11 @@ $('#vidLtxToggles').hidden = !(isVideo && state.vidEngine === 'ltx');
   $('#advancedCfgField').hidden = isVideo;
   $('#vidScailFpsField').hidden = !(isVideo && state.vidEngine === 'scail');
   renderH3LongContext();
+  // renderH3References() owns the experimental gates (Replace mode button,
+  // Reference panel, mode row). It was only reachable from reference-slot
+  // interactions before, so switching to the Video tab left #vidH3ModePanel
+  // at its initial `hidden` state and the modes were unreachable.
+  renderH3References();
   renderH3TurboMode();
   renderH3AttentionBackend();
   renderWanAnimate2Strengths();
@@ -32851,8 +32856,8 @@ function renderExternalLlmPreferences() {
   const readonly = !state.profileIsOwner;
   $('#externalLlmSettings').dataset.readonly = String(readonly);
   [
-    'promptAiModeSwitch', 'setExternalLlmLocalProvider', 'setExternalLlmExternalProvider',
-    'setExternalLlmOpenAiApiKey', 'setExternalLlmOpenAiModel',
+    'promptAiModeSwitch', 'setExternalLlmProvider', 'setExternalLlmLocalProvider', 'setExternalLlmExternalProvider',
+    'setExternalLlmOpenAiApiKey', 'setExternalLlmOpenAiModel', 'setExternalLlmOpenAiBaseUrl',
     'setExternalLlmGeminiApiKey', 'setExternalLlmGeminiModel', 'setExternalLlmOllamaUrl',
     'setExternalLlmOllamaModel', 'setExternalLlmLmStudioUrl', 'setExternalLlmLmStudioModel',
     'testExternalLlm',
@@ -32872,6 +32877,7 @@ function applyExternalLlmSettings(settings = {}) {
     : (['openai', 'gemini'].includes(provider) ? provider : 'openai');
   $('#setExternalLlmOpenAiApiKey').value = '';
   $('#setExternalLlmOpenAiModel').value = settings.externalLlmOpenAiModel || 'gpt-5.6-luna';
+  $('#setExternalLlmOpenAiBaseUrl').value = settings.externalLlmOpenAiBaseUrl || '';
   $('#setExternalLlmGeminiApiKey').value = '';
   $('#setExternalLlmGeminiModel').value = settings.externalLlmGeminiModel || 'gemini-3.6-flash';
   $('#setExternalLlmOllamaUrl').value = settings.externalLlmOllamaUrl || 'http://127.0.0.1:11434';
@@ -33013,6 +33019,7 @@ function settingsPayload() {
     externalLlmExternalProvider: $('#setExternalLlmExternalProvider').value,
     externalLlmOpenAiApiKey: $('#setExternalLlmOpenAiApiKey').value,
     externalLlmOpenAiModel: $('#setExternalLlmOpenAiModel').value,
+    externalLlmOpenAiBaseUrl: $('#setExternalLlmOpenAiBaseUrl').value,
     externalLlmGeminiApiKey: $('#setExternalLlmGeminiApiKey').value,
     externalLlmGeminiModel: $('#setExternalLlmGeminiModel').value,
     externalLlmOllamaUrl: $('#setExternalLlmOllamaUrl').value,
@@ -33428,8 +33435,14 @@ async function emptyTrashFromSettings() {
       if (!enabled) state.mediaPreferences.smartMode = false;
       if (!enabled && state.vidH3Mode === 'replace') state.vidH3Mode = 'frames';
       if (!enabled) state.vidH3LongContext = false;
-      if (!enabled && ['smart', 'splat'].includes(state.createMode)) state.createMode = 'region';
-      renderSmartFeatureAccess();
+        // renderH3References() owns the experimental gates: the Replace mode button,
+        // Long context panel, and Reference panel visibility all derive from
+        // h3ReplaceAvailable()/experimentalFeaturesEnabled(). Without it the toggle flips
+        // state but the UI stays hidden until an unrelated re-render happens.
+        renderH3References();
+        renderH3LongContext();
+        if (!enabled && ['smart', 'splat'].includes(state.createMode)) state.createMode = 'region';
+        renderSmartFeatureAccess();
       updateVideoPanels();
       renderPromptComposer();
       saveForm();

@@ -155,7 +155,7 @@ test('gallery cards use lightweight preview proxies and one mobile decoder', () 
   assert.match(server, /url\.pathname\.startsWith\('\/video-previews\/'\)/);
   assert.match(server, /async function cachedVideoPreview\(media, options = \{\}\)/);
   assert.match(server, /normalizeVideoPreviewOptions\(options\)/);
-  assert.match(server, /preview-v2\\0\$\{media\.name\}[\s\S]*\$\{preview\.size\}\\0\$\{preview\.fps\}/);
+  assert.match(server, /preview-v3\\0\$\{media\.name\}[\s\S]*\$\{preview\.size\}\\0\$\{preview\.fps\}/);
   assert.match(server, /size: url\.searchParams\.get\('size'\),\s*fps: url\.searchParams\.get\('fps'\)/);
   assert.match(server, /videoPreviewQueue\.then\(create, create\)/);
 });
