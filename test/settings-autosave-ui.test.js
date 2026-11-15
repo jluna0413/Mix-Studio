@@ -60,11 +60,20 @@ test('only a changed ComfyUI URL currently requests a Mix Studio restart', () =>
 
 test('shared external prompt AI preferences autosave without exposing API keys', () => {
   for (const id of [
-    'setExternalLlmProvider', 'setExternalLlmOpenAiApiKey', 'setExternalLlmGeminiApiKey',
-    'setExternalLlmOllamaUrl', 'externalLlmImageRevise', 'externalLlmImageEnhance',
-    'externalLlmVideoRevise', 'externalLlmVideoEnhance', 'testExternalLlm',
+    'promptAiModeSwitch', 'setExternalLlmProvider', 'setExternalLlmLocalProvider',
+    'setExternalLlmExternalProvider', 'setExternalLlmOpenAiApiKey', 'setExternalLlmGeminiApiKey',
+    'setExternalLlmOllamaUrl', 'setExternalLlmLmStudioUrl', 'setExternalLlmLmStudioModel', 'testExternalLlm',
   ]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance']) {
+    assert.doesNotMatch(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /Revise Prompt and Prompt Enhance share the model below; Smart planning can optionally use its own local model/);
   assert.match(app, /externalLlmProvider: \$\('#setExternalLlmProvider'\)\.value/);
+  assert.match(app, /externalLlmLocalProvider: \$\('#setExternalLlmLocalProvider'\)\.value/);
+  assert.match(app, /externalLlmExternalProvider: \$\('#setExternalLlmExternalProvider'\)\.value/);
+  assert.match(app, /externalLlmLmStudioUrl: \$\('#setExternalLlmLmStudioUrl'\)\.value/);
+  assert.match(app, /externalLlmLmStudioModel: \$\('#setExternalLlmLmStudioModel'\)\.value/);
+  assert.match(app, /smartPlannerModelOverride: \$\('#smartPlannerModelOverride'\)\.getAttribute\('aria-checked'\) === 'true'/);
   assert.match(app, /scheduleSettingsAutosave\('server', 0\)/);
   assert.match(app, /api\('\/api\/prompt\/provider\/test', \{ method: 'POST' \}\)/);
   assert.match(server, /Only the owner profile can change the shared prompt AI settings/);

@@ -42,7 +42,10 @@ function writeRelease(root, release) {
 }
 
 test('the checked-in release manifest identifies Mix Studio 1.3.0', () => {
-  assert.deepEqual(readAppRelease(path.join(__dirname, '..')), {
+  const release = readAppRelease(path.join(__dirname, '..'));
+  assert.ok(release.version);
+  assert.ok(release.releasedAt);
+  assert.deepEqual(release, {
     version: '1.3.0',
     releasedAt: '2026-09-24',
   });

@@ -130,7 +130,7 @@ test('release checker handles repositories without releases and keeps stale succ
 test('server and UI expose a read-only official release channel', () => {
   assert.match(server, /createGithubReleaseChecker\(\)/);
   assert.match(server, /route === '\/api\/releases\/latest' && req\.method === 'GET'/);
-  assert.match(server, /officialReleaseChecker\.check\(app\.version\)/);
+  assert.match(server, /selectedReleaseChecker\(channel\)\.check\(app\.version\)/);
   assert.doesNotMatch(server, /api\/update-announcements|updateAnnouncements|normalizeAnnouncementInput/);
 
   assert.match(app, /api\('\/api\/releases\/latest'\)/);
@@ -170,7 +170,7 @@ test('release notes include an owner-only install action and no bundled publishe
   assert.match(app, /\$\('#updatesHighlightsBtn'\)\.addEventListener/);
   assert.match(app, /label: 'Update Mix Studio'/);
   assert.match(app, /\$\('#settingsUpdatesBtn'\)\.addEventListener\('click', openUpdatesSheet\)/);
-  assert.match(app, /const UPDATE_SHOWCASE_INTERVAL_MS = 8000/);
+  assert.match(app, /const UPDATE_SHOWCASE_INTERVAL_MS = 10000/);
   assert.match(app, /function updateShowcaseSwipeDirection\(startX, startY, endX, endY, width, elapsed\)/);
   assert.match(app, /Math\.abs\(deltaX\) < Math\.abs\(deltaY\) \* 1\.25/);
   assert.match(app, /\$\('#updateNoticePrev'\)\.addEventListener\('click'/);

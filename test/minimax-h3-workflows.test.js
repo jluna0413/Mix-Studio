@@ -336,6 +336,28 @@ test('MiniMax H3 ModelAttentionBackend patches only the guider model and leaves 
   assert.equal(graph.sage_attention, undefined);
 });
 
+test('MiniMax H3 SLA applies conservative block sparsity as the final patch for its guider and scheduler', async () => {
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'frames', prompt: 'A storm rolls across the sea.', W: 1344, H: 768, frames: 124, seed: 7,
+    attentionBackend: 'sla',
+  }, settings);
+  assert.equal(graph.sage_attention, undefined);
+  assert.deepEqual(graph.sla_attention, {
+    class_type: 'H3SLAAttention',
+    inputs: {
+      model: ['model', 0],
+      sparsity_ratio: 0.85,
+      block_size: '64',
+      min_seq_len: 8192,
+      dense_last_steps: 0,
+      protect_audio: true,
+      enabled: true,
+    },
+  });
+  assert.deepEqual(graph.guider.inputs.model, ['sla_attention', 0]);
+  assert.deepEqual(graph.scheduler.inputs.model, ['sla_attention', 0]);
+});
+
 test('MiniMax H3 Turbo keeps the creator sampler as a legacy-core fallback with adjustable steps', async () => {
   const graph = await buildMiniMaxH3Graph({
     mode: 'frames', prompt: 'A singer performs under soft stage light.', W: 1344, H: 768,
@@ -522,6 +544,18 @@ test('MiniMax H3 Reference Turbo plans a single five-second video without an ext
   assert.deepEqual(graph.condition.inputs['ref_video_audios.ref_video_audio_0'], ['ref_video_0_0', 2]);
 });
 
+test('MiniMax H3 Reference Turbo accepts a normalized five-second frame value with float drift', async () => {
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'reference', prompt: 'Restyle <Video 1>.', W: 1344, H: 768,
+    frames: 124.0000000001, seed: 20, turbo: true,
+    references: { videos: [{ name: 'source.mp4', hasAudio: true }] },
+  }, settings);
+
+  assert.equal(graph.condition.inputs.length, 124);
+  assert.equal(graph.ref_video_0_0.inputs.frame_load_cap, 124);
+  assert.equal(graph.ref_video_0_0.inputs.skip_first_frames, 0);
+});
+
 test('MiniMax H3 Reference Turbo rejects an unplanned long video graph', async () => {
   await assert.rejects(buildMiniMaxH3Graph({
     mode: 'reference', prompt: 'Restyle <Video 1>.', W: 1344, H: 768,
@@ -574,6 +608,21 @@ test('MiniMax H3 reference inputs are limited to the native node capacities', ()
   assert.equal(refs.images.length, 9);
   assert.equal(refs.videos.length, 3);
   assert.equal(refs.audios.length, 3);
+});
+
+test('MiniMax H3 reference video trims map to lossless VHS frame offsets', async () => {
+  const refs = normalizeH3References({
+    videos: [{ name: 'source.mp4', dur: 12, trimStart: 2.5, trimEnd: 7.5, hasAudio: true }],
+  });
+  assert.equal(refs.videos[0].trimStart, 2.5);
+  assert.equal(refs.videos[0].trimEnd, 7.5);
+  const graph = await buildMiniMaxH3Graph({
+    mode: 'reference', prompt: 'Use <Video 1>.', W: 1344, H: 768, frames: 124, seed: 31,
+    references: refs,
+  }, settings);
+  assert.equal(graph.ref_video_0.inputs.skip_first_frames, 60);
+  assert.equal(graph.ref_video_0.inputs.frame_load_cap, 120);
+  assert.deepEqual(graph.condition.inputs['ref_video_audios.ref_video_audio_0'], ['ref_video_0', 2]);
 });
 
 test('MiniMax H3 reference mode rejects an empty reference set', async () => {

@@ -97,7 +97,7 @@ test('server defaults, normalizes, and gates h3ClipVariant', () => {
   );
   assert.match(
     server,
-    /modelVariants = \{ krea2: krea2Variant, h3: h3Variant \}/,
+    /const modelVariants = \{[\s\S]{0,200}krea2: krea2Variant,[\s\S]{0,120}h3: h3Variant,/,
     'install endpoint must pass h3 through to the installer'
   );
 });

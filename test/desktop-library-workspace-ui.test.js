@@ -141,7 +141,7 @@ test('desktop empty stage avoids redundant layout instructions', () => {
 });
 
 test('desktop results expose a full icon action row and can be unloaded safely', () => {
-  assert.match(html, /id="desktopStageClear"[^>]*Unload result and clear generation settings/);
+  assert.match(html, /id="desktopStageClear"[^>]*aria-label="Unload result"[^>]*title="Unload result"/);
   assert.match(html, /id="desktopStageActions"/);
   assert.match(html, /id="desktopStageLike"/);
   assert.match(html, /id="desktopStageSave"/);
@@ -151,6 +151,8 @@ test('desktop results expose a full icon action row and can be unloaded safely',
   assert.match(app, /function clearDesktopStageSelection\(\)/);
   assert.match(app, /function resetActiveGenerationForm\(\)/);
   assert.match(app, /state\.desktopStageDismissed = true/);
+  const clearStage = app.match(/function clearDesktopStageSelection\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.doesNotMatch(clearStage, /resetActiveGenerationForm|checkpointDesktopInputSetup|appendDesktopInputSetup/);
   assert.doesNotMatch(app, /Image settings loaded/);
   assert.match(css, /\.desktop-generate-row \{ display: block;/);
   assert.ok(html.indexOf('id="desktopStageActions"') < html.indexOf('id="genDock"'));
@@ -195,7 +197,7 @@ test('grouped desktop results use the mobile parent and attached-media hierarchy
   assert.match(app, /angleGroupItems\(item\)/);
   assert.match(app, /generationGroupItems\(item\)/);
   assert.match(app, /selectDesktopLibraryItem\(choice\.item, choice\.media\)/);
-  assert.match(app, /button\.addEventListener\('click', \(\) => selectDesktopLibraryItem\(choice\.item, choice\.media\)\)/);
+  assert.match(app, /button\.addEventListener\('click', \(\) => choice\.splat \? openLibrarySplat\(choice\.splat, choice\.item\) : selectDesktopLibraryItem\(choice\.item, choice\.media\)\)/);
   assert.match(app, /thumbnail\.className = 'desktop-stage-choice-thumb'/);
   assert.match(app, /button\.appendChild\(thumbnail\)/);
   assert.doesNotMatch(app, /desktop-stage-choice-copy/);

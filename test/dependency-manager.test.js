@@ -51,10 +51,10 @@ function safetensorsFixture() {
 }
 
 test('dependency catalog covers every enabled image and video family', () => {
-  for (const component of ['image', 'krea2raw', 'krea2depth', 'krea2style', 'krea2outpaint', 'editoutpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'video', 'ltx25', 'ltx25quality', 'h3', 'h3turbo', 'h3turbor2v', 'h3sage', 'h3r2v', 'h3dyntime', 'ltxcamera', 'ltxdirector', 'videoedit', 'faceid', 'wan', 'eros', 'rife', 'scail', 'scailinfinity', 'smartmask', 'regional']) {
+  for (const component of ['promptai', 'image', 'krea2raw', 'krea2depth', 'krea2style', 'krea2outpaint', 'editoutpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'video', 'ltx25', 'ltx25quality', 'h3', 'h3turbo', 'h3turbor2v', 'h3sage', 'h3sla', 'h3r2v', 'h3dyntime', 'ltxcamera', 'ltxdirector', 'videoedit', 'faceid', 'wan', 'eros', 'rife', 'scail', 'scailinfinity', 'smartmask', 'regional']) {
     assert.ok(COMPONENTS[component], `${component} is installable`);
   }
-  for (const group of ['image', 'krea2Raw', 'krea2Depth', 'krea2Outpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'ltx', 'ltx25', 'ltx25Quality', 'h3', 'h3RefCommon', 'h3Ref', 'h3Bf16', 'h3RefBf16', 'h3DynTimeRef', 'h3DynTimeRefHq', 'h3Turbo', 'h3TurboLegacy', 'h3TurboLightx8', 'h3TurboLightx4_768p', 'h3RefTurbo', 'h3RefTurboLightx8', 'h3RefTurboLightx4_768p', 'ltxCamera', 'ltxDirector', 'ltxEdit', 'faceid', 'wan', 'eros', 'scail']) {
+  for (const group of ['promptAi', 'image', 'krea2Raw', 'krea2Depth', 'krea2Outpaint', 'klein4', 'klein9', 'qwen', 'upscale', 'ltx', 'ltx25', 'ltx25Quality', 'h3', 'h3RefCommon', 'h3Ref', 'h3Bf16', 'h3RefBf16', 'h3DynTimeRef', 'h3DynTimeRefHq', 'h3Turbo', 'h3TurboLegacy', 'h3TurboLightx8', 'h3TurboLightx4_768p', 'h3RefTurbo', 'h3RefTurboLightx8', 'h3RefTurboLightx4_768p', 'ltxCamera', 'ltxDirector', 'ltxEdit', 'faceid', 'wan', 'eros', 'scail']) {
     assert.ok(MODEL_ASSETS[group]?.length, `${group} has model downloads`);
   }
   assert.ok(Object.values(NODE_PACKS).every((pack) => pack.repo.startsWith('https://github.com/')));
@@ -64,6 +64,8 @@ test('dependency catalog covers every enabled image and video family', () => {
   assert.equal(NODE_PACKS.regional.allowCompatibleMirror, true);
   assert.match(NODE_PACKS.eros.repo, /TenStrip\/10S-Comfy-nodes/);
   assert.deepEqual(COMPONENTS.eros.nodes, ['eros', 'kjnodes']);
+  assert.deepEqual(COMPONENTS.promptai, { label: 'Local Prompt AI', nodes: ['kjnodes'], models: ['promptAi'] });
+  assert.equal(MODEL_ASSETS.promptAi[0][0], 'localPromptAiClip');
   assert.deepEqual(COMPONENTS.scail.nodes, ['sam3', 'vhs', 'gguf', 'kjnodes']);
   assert.deepEqual(COMPONENTS.video4k.nodes, ['rtx']);
   assert.equal(NODE_PACKS.rtx.folder, 'Nvidia_RTX_Nodes_ComfyUI');
@@ -78,6 +80,13 @@ test('dependency catalog covers every enabled image and video family', () => {
   assert.deepEqual(COMPONENTS.h3sage.nodes, ['kjnodes']);
   assert.deepEqual(COMPONENTS.h3sage.pythonPackages, ['sageattention']);
   assert.equal(COMPONENTS.h3sage.optional, true);
+  assert.deepEqual(COMPONENTS.h3sla.nodes, ['h3Sla']);
+  assert.deepEqual(COMPONENTS.h3sla.pythonPackages, ['h3sla']);
+  assert.equal(COMPONENTS.h3sla.optional, true);
+  assert.equal(NODE_PACKS.h3Sla.folder, 'ComfyUI-PlagueKind-Nodes');
+  assert.equal(NODE_PACKS.h3Sla.ref, '6ca3037bd16dc143b6d461c67c87a28ca8074063');
+  assert.equal(NODE_PACKS.h3Sla.enforceRevision, true);
+  assert.match(NODE_PACKS.h3Sla.repo, /PlagueKind\/ComfyUI-PlagueKind-Nodes/);
   assert.deepEqual(COMPONENTS.h3r2v.models, ['h3RefCommon', 'h3Ref']);
   assert.deepEqual(COMPONENTS.h3turbor2v.nodes, ['h3Turbo']);
   assert.deepEqual(COMPONENTS.h3turbor2v.models, ['h3RefTurbo']);
@@ -290,6 +299,56 @@ test('RTX 4K setup installs the reviewed NVIDIA node and its nvidia-vfx requirem
     assert.deepEqual(requirementsInstall[1].slice(-2), ['-r', requirementsPath]);
     assert.equal(fs.readFileSync(requirementsPath, 'utf8'), 'nvidia-vfx\n');
     assert.ok(reports.some((entry) => entry.phase === 'requirements' && /NVIDIA RTX Nodes/.test(entry.message)));
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('already-present dependencies are checked without requesting another restart', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixbox-existing-dependencies-'));
+  const customNodesPath = path.join(rootDir, 'custom_nodes');
+  const modelsPath = path.join(rootDir, 'models');
+  const pythonPath = path.join(rootDir, '.venv', 'Scripts', 'python.exe');
+  const rtxPath = path.join(customNodesPath, NODE_PACKS.rtx.folder);
+  try {
+    fs.mkdirSync(path.join(rtxPath, '.git'), { recursive: true });
+    fs.mkdirSync(path.dirname(pythonPath), { recursive: true });
+    fs.mkdirSync(modelsPath, { recursive: true });
+    fs.writeFileSync(path.join(rootDir, 'main.py'), '');
+    fs.writeFileSync(pythonPath, '');
+
+    const nodeResult = await installComponents({
+      runtime: { comfy: { path: rootDir, modelsPath } },
+      settings: {},
+      components: ['video4k'],
+      options: {
+        run: async (_command, args) => {
+          if (args.includes('get-url')) return NODE_PACKS.rtx.repo;
+          if (args.includes('rev-parse')) return NODE_PACKS.rtx.ref;
+          return '';
+        },
+      },
+    });
+    assert.equal(nodeResult.completed, 1);
+    assert.equal(nodeResult.changed, 0);
+    assert.deepEqual(nodeResult.changedItems, []);
+    assert.equal(nodeResult.restartRequired, false);
+
+    const registeredModels = MODEL_ASSETS.image.map((asset) => asset[2].split('/').pop());
+    const modelResult = await installComponents({
+      runtime: { comfy: { path: rootDir, modelsPath } },
+      settings: {},
+      components: ['image'],
+      options: {
+        disableHfAcceleration: true,
+        availableModelNames: registeredModels,
+        fetch: async () => { throw new Error('registered models must not download'); },
+      },
+    });
+    assert.equal(modelResult.completed, MODEL_ASSETS.image.length);
+    assert.equal(modelResult.changed, 0);
+    assert.deepEqual(modelResult.changedItems, []);
+    assert.equal(modelResult.restartRequired, false);
   } finally {
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
@@ -523,6 +582,23 @@ test('dependency planning adopts a compatible Krea text encoder already register
   });
   assert.equal(plan.effectiveSettings.clip, compatible);
   assert.equal(plan.settingUpdates.clip, compatible);
+});
+
+test('Prompt AI setup installs the inherited reviewed encoder and never substitutes a custom selection', () => {
+  const inherited = dependencyModelPlan(['promptAi'], {
+    clip: 'Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors',
+    localPromptAiClip: '',
+  });
+  assert.equal(inherited.assets[0][0], 'clip');
+  assert.equal(inherited.assets[0][5]?.checkOnly, undefined);
+
+  const custom = dependencyModelPlan(['promptAi'], {
+    clip: 'Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors',
+    localPromptAiClip: 'prompt\\my-planner.gguf',
+  });
+  assert.equal(custom.assets[0][0], 'localPromptAiClip');
+  assert.equal(custom.assets[0][5]?.checkOnly, true);
+  assert.equal(custom.assets[0][5]?.customKind, 'Prompt AI text encoder');
 });
 
 test('large Hugging Face models use isolated Xet acceleration before the HTTP fallback', async () => {
@@ -1078,6 +1154,15 @@ test('an explicit post-restart check clears stale restart-required state', () =>
   assert.match(server, /Still needed: \$\{checkedMissingLabels\.join\(', '\)\}/);
   assert.match(server, /restartRequired: false/);
   assert.match(app, /loadMeta\(true, true\)/);
+  assert.match(server, /dependencyReadinessDiagnostics/);
+  assert.match(server, /missingNodes/);
+  assert.match(server, /missingModels/);
+  assert.match(server, /customNodesPath: isAdmin\(\)/);
+  assert.match(app, /Installed files are not loading/);
+  assert.match(app, /Reinstalling the same files will not help/);
+  assert.match(app, /Already installed — resolve loading issue below/);
+  assert.match(html, /id="setupReadinessDiagnostic"/);
+  assert.match(css, /\.setup-operation\.not-loaded/);
 });
 
 test('Settings presents a compact dependency manager with progress and restart controls', () => {

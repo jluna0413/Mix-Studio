@@ -133,9 +133,15 @@ After the Owner profile has a PIN, the console prints local network URLs and Gen
 - `Local: http://localhost:3300` opens on the desktop.
 - `Phone: http://192.168.x.x:3300` opens on a phone connected to the same Wi-Fi.
 
-Use **Copy** or **Share** to send the selected address to a phone. Add a PIN to the Owner profile before sharing access beyond the desktop. On the phone, use **Add to Home Screen** for an app-like fullscreen experience.
+Use **Copy** or **Share** to send the selected address to a phone. Add a PIN to the Owner profile before sharing access beyond the desktop. HTTP phone addresses support browser access, but mobile app installation requires HTTPS; adding an HTTP address to the home screen can create only a browser shortcut.
 
 For private access away from home, install [Tailscale](https://tailscale.com/download) on both devices and sign them into the same tailnet. Refresh the Phone access card, then copy or share its Tailscale URL. The desktop continues to host ComfyUI, models, and media; the phone remains the control surface.
+
+For app installation, use the secure-address action in **Preferences → System → Phone access**, then open the resulting HTTPS address on the phone. In Chrome on Android, choose **Install app**. On iPhone, use Safari's **Share → Add to Home Screen**. Keep Tailscale connected when using the private address.
+
+If Tailscale Serve already hosts another app, Mix Studio refuses to replace that configuration. An operator can configure an unused HTTPS port with `tailscale serve --bg --https=8443 http://127.0.0.1:3300` after checking that port 8443 is free, then use `https://<device>.<tailnet>.ts.net:8443/`. This is private Tailscale Serve access; it does not require Funnel. The current Phone access card detects the default HTTPS endpoint, so retain the explicit URL when using an alternate port.
+
+If Chrome offers **Open another app** instead of installing Mix Studio, check that the full address includes the intended port. An existing Android web app on the same hostname can also claim its links. In Android's **Settings → Apps → [that app] → Open by default**, turn off **Open supported links**, reopen the Mix Studio HTTPS address directly in Chrome, and retry installation. This changes phone link handling, not the other app's desktop installation.
 
 If the phone cannot connect over the local network, allow Node through Windows Defender Firewall, macOS network security controls, or the Linux host firewall for private networks. Set a different application port with the `PORT` environment variable when required.
 
@@ -149,32 +155,38 @@ Operators can override the project with `MIXBOX_POSTHOG_KEY` and `MIXBOX_POSTHOG
 
 ## Updating
 
-Open Mix Studio's side menu and choose **Update app**. Updates require:
+Open Mix Studio's side menu and choose **Update app**. The confirmation names the exact release that will be installed. In the Updates inbox, the owner can select:
 
-- a Git clone with its `.git` directory;
-- a named branch and configured `origin` remote;
-- no uncommitted tracked application changes; and
-- idle Mix Studio and ComfyUI queues.
+- **Stable** (default): the latest published stable GitHub Release.
+- **Preview** (opt-in): the highest semantic version among the most recent 100 published releases, including prereleases and stable releases. Drafts are excluded.
+- **Development** (explicit opt-in): a fast-forward pull of the configured Git branch. This can include unreleased work.
 
-Machine-specific `install.json` and all `data/` content are ignored by Git, so normal updates do not replace profiles, settings, metadata, or generations. Server-side changes restart the Node process automatically. Frontend-only changes reload without a server restart.
+Release updates require an official Git checkout on the configured branch (normally `main`), no tracked local edits, and idle Mix Studio and ComfyUI queues. They fetch the offered tag, resolve it to a commit, validate it in a temporary worktree, and fast-forward only to that commit. They never reset local commits, discard untracked files, downgrade, or update ComfyUI, custom nodes, or models. A branch ahead of or diverged from a release stays unchanged with an explanatory error. Switching from Preview to Stable therefore waits for a stable release that includes the installed commits.
 
-Mix Studio checks the official `BlackMixture/Mix-Studio` GitHub Releases channel when a profile signs in and every six hours while the app stays open. A newer stable semantic version appears in the **Updates inbox** with release notes and an optional browser alert. The check is read-only, cached locally for one hour, and uses no bundled GitHub credentials. The local owner still decides when to install the update.
+The prior `update.channel: "main"` setting continues to name a Git branch; it does not opt users into Development. Existing installations default to Stable when this transition reaches them through their old updater. The selected release channel is saved separately in ignored `data/update-channel.json`. Administrators can set `MIXBOX_RELEASE_CHANNEL=stable|preview|development` to lock the choice, or set `update.releaseChannel` in `install.json` as its default. Source contributors must opt into Development and configure their branch with `MIXBOX_UPDATE_CHANNEL` if it is not `main`.
 
-The owner can also choose **Restart app**. The same queue safety checks run before the Node server restarts.
+New downloadable installers resolve a stable release tag before cloning, create a named `main` branch at that release, and stop if GitHub cannot verify a stable release. Re-running an installer does not pull development code into an existing installation. Manual Git clones are source checkouts; use the release installers for the stable community installation.
+
+Updates preserve `install.json` and `data/`. Before a release is applied, the updater creates a recovery Git ref and a private snapshot of `install.json`, `db.json`, and `settings.json` under the configured updates directory. It does not duplicate gallery media. Release updates restart Mix Studio after application so the new code starts together; if external ComfyUI work appears, restart waits for idle. **Restart app** uses the same queue checks.
+
+The Updates inbox checks the selected release channel at sign-in and every six hours, with a one-hour server cache. Cached results from an outage may still be displayed, but cannot authorize a release install. **Copy update diagnostics** produces only versions, revision, branch, channel, platform, and installation type—no settings, tokens, prompts, or gallery contents.
+
+### Recovery limits
+
+Recovery snapshots preserve the previous code revision and metadata for operator-assisted recovery; they are not an automatic downgrade button. If an update fails validation, the running checkout has not changed. If a new server starts but later proves faulty, first stop generation, confirm both queues are idle, and stop Mix Studio. Read the snapshot's `recovery.json`, preserve any new data, and review database compatibility before restoring code. Never overwrite the current database with a snapshot after new generations or edits have been made. Keep the recovery files private because settings may contain credentials. Snapshots are not automatically deleted in this version.
 
 ### Maintainer release procedure
 
-Every user-facing release uses the semantic version in `release.json` and a matching Git tag such as `v1.2.0`.
+Keep `main` safe for old installations until the transition updater has reached the community. Develop new work on feature branches and submit pull requests. Require the existing Node 22 checks on Linux, Windows, and macOS before merging; protect release tags against replacement/deletion. Repository rules must be configured in GitHub settings separately from these workflow files.
 
-1. Keep `main` release-ready and ensure the working tree contains the intended changes only.
-2. Update `release.json` with the version and release date.
-3. Add the user-facing notes to `CHANGELOG.md`.
-4. Run `node --check server.js`, `node --check public/app.js`, and `node --test`.
-5. Commit and push the release state.
-6. Tag that commit with the matching annotated Git tag and push the tag.
-7. Publish a GitHub Release for that tag with the changelog notes. This final step enables the public Updates inbox notification.
+1. Update `release.json` and `CHANGELOG.md` on the intended release commit. Use a prerelease version such as `1.3.0-beta.1` for Preview.
+2. Run syntax checks and the complete `node --test` suite. Test real generation on supported backend/hardware combinations; CI does not validate GPU output.
+3. Merge the reviewed change and push an annotated matching tag (for example `v1.3.0-beta.1`). Never move an existing release tag.
+4. The **Prepare release** workflow runs all platform checks, then creates a **draft** release with installer assets and checksums. It marks prerelease tags as prereleases. Nothing is announced to users while it is a draft.
+5. Review notes and compatibility, then publish the Preview release. Test installation, upgrade from the preceding stable release, phone access, and idle/restart behavior with volunteers.
+6. For Stable, create a new version/tag descending from the tested Preview commit, changing only release metadata and reviewed fixes. Test those final changes, then publish the stable draft and mark it Latest. The updater verifies tag/metadata agreement; the stable tag cannot simply point to a commit whose version still says beta.
 
-Repository quality checks run on Node 22 for Linux, Windows, and macOS. A release tag fails validation when it does not match `release.json`, and the download page cannot deploy until the same checks pass.
+Managed backend startup is a subsequent, optional Preview feature. Preserve existing Comfy Desktop, portable, and shared-backend behavior until those paths have been tested. Backend upgrades and database migrations need their own compatibility and recovery policies; they are not silently part of an app update.
 
 ## Restarting, uninstalling, and data safety
 

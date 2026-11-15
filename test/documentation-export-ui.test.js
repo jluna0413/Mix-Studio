@@ -113,8 +113,8 @@ test('focused videos can export source, generation details, and result in one pe
   assert.match(html, /Generation inputs, settings, and the complete result stay together in one view/);
   assert.match(app, /const boardRatio = portrait \? ratio \/ 1\.32 : ratio \+ \.52/);
   assert.match(app, /function documentationVideoLayout\(width, height, mediaRatio = width \/ height, inputCount = 1, storyboardCount = 0\)/);
-  assert.match(app, /function drawDocumentationVideoFrame\(ctx, canvas, inputMedia, item, video, resultMedia\)/);
-  assert.match(app, /drawDocumentationVideoMedia\(ctx, resultMedia, layout\.result, 'Final Result', '#ea4335', \{ quiet: true \}\)/);
+  assert.match(app, /function drawDocumentationVideoFrame\(ctx, canvas, inputMedia, item, video, resultMedia, splatRenderer = null\)/);
+  assert.match(app, /drawDocumentationVideoMedia\(ctx, finalMedia, layout\.result, splatRenderer \? '3D scene' : 'Final Result', '#ea4335', \{ quiet: true \}\)/);
   assert.match(app, /inputMedia\.forEach\(\(input, index\) => \{[\s\S]*drawDocumentationVideoMedia\(ctx, input\.media, box, input\.label, input\.accent\)/);
   assert.match(app, /function drawDocumentationVideoMedia[\s\S]*setDocumentationFont\(ctx, quiet \? 650 : 700, fontSize\)/);
   assert.match(app, /quiet[\s\S]*Math\.min\(12, Math\.round\(scaledFontSize \* \.78\)\)/);
@@ -193,17 +193,21 @@ test('documentation video recording follows result fps and retains result audio 
   assert.match(app, /run\.inputs \|\| \[\][\s\S]*input\.media\.pause\(\)/);
 });
 
-test('documentation video recording prefers MP4 while retaining a WebM fallback', () => {
+test('documentation video recording normalizes native MP4 and retains a WebM fallback', () => {
   const mp4 = app.indexOf("'video/mp4;codecs=avc1.42E01E,mp4a.40.2'");
   const bareMp4 = app.indexOf("'video/mp4'");
   const webm = app.indexOf("'video/webm;codecs=vp9'");
   assert.ok(mp4 >= 0 && bareMp4 > mp4 && webm > bareMp4);
-  assert.match(app, /function convertDocumentationVideoToMp4\(blob, signal\)/);
+  assert.match(app, /function convertDocumentationVideoToMp4\(blob, fps, signal\)/);
   assert.match(app, /fetch\('\/api\/video\/convert-mp4'/);
-  assert.match(app, /recordedBlob\.type !== 'video\/mp4'[\s\S]*await convertDocumentationVideoToMp4/);
+  assert.match(app, /await convertDocumentationVideoToMp4\(recordedBlob, captureFps, run\.abortController\.signal\)/);
+  assert.doesNotMatch(app, /if \(recordedBlob\.type !== 'video\/mp4'\) \{\s*run\.phase = 'converting'/);
   assert.match(app, /conversionError[\s\S]*extension = 'webm'/);
+  assert.match(app, /Finalizing editor-compatible MP4/);
   assert.match(app, /Documentation video saved as MP4/);
   assert.match(server, /route === '\/api\/video\/convert-mp4'/);
+  assert.match(server, /\['video\/mp4', 'video\/webm'/);
+  assert.match(server, /'x-video-fps'/);
   assert.match(server, /receiveInputFile\(req, source, MAX_DOCUMENTATION_VIDEO_BYTES\)/);
   assert.match(server, /transcodeVideoFileToMp4\(\{/);
   assert.match(server, /'Content-Type': 'video\/mp4'/);

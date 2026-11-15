@@ -110,13 +110,25 @@ test('MiniMax H3 Reference mode can match Video 1 aspect and labels video thumbn
   assert.match(server, /h3MatchReferenceVideo: engine === 'h3' && h3Mode === 'reference'/);
 });
 
-test('MiniMax H3 uses pytorch attention via ModelAttentionBackend instead of SageAttention', () => {
-  assert.match(app, /vidH3SageAttention: false/);
-  assert.match(app, /function renderH3SageAttention\(\)/);
-  assert.match(app, /sageAttention: false,/);
-  assert.match(html, /SageAttention removed/);
-  assert.match(server, /const h3SageAttention = false/);
-  assert.match(server, /attentionBackend: engine === 'h3' \? 'pytorch' : undefined/);
+test('MiniMax H3 offers mutually exclusive Standard, SageAttention, and experimental SLA backends', () => {
+  assert.match(html, /role="radiogroup" aria-label="MiniMax H3 attention backend"/);
+  assert.match(html, /data-h3-attention="standard"/);
+  assert.match(html, /data-h3-attention="sageattention"[^>]*><strong>Sage<\/strong>/);
+  assert.match(html, /data-h3-attention="sla"[^>]*><strong>SLA Sparse<\/strong>/);
+  assert.match(app, /vidH3AttentionBackend: 'sageattention'/);
+  assert.match(app, /function renderH3AttentionBackend\(\)/);
+  assert.match(app, /attentionBackend: state\.vidEngine === 'h3' \? selectedH3AttentionBackend\(\) : undefined/);
+  assert.match(app, /selectedH3AttentionBackend\(\) === 'sageattention'\) components\.add\('h3sage'\)/);
+  assert.match(app, /selectedH3AttentionBackend\(\) === 'sla'\) components\.add\('h3sla'\)/);
+  assert.match(app, /attentionBackend: selectedH3AttentionBackend\(\)/);
+  assert.match(css, /\.h3-attention-options button\[data-ready="false"\]\[aria-checked="true"\]/);
+  assert.match(server, /const h3Attention = engine === 'h3'[\s\S]{0,120}h3AttentionOptions\(body\.attentionBackend, body\.sageAttention\)/);
+  assert.match(server, /code: 'h3_sage_attention_unavailable'/);
+  assert.match(server, /code: 'h3_sla_attention_unavailable'/);
+  assert.match(server, /attentionBackend: engine === 'h3' \? opts\.attentionBackend : undefined/);
+      // Intel Arc/XPU gets a Triton path through the same native backend node.
+      assert.match(html, /data-h3-attention="triton"/);
+      assert.match(app, /'standard', 'sageattention', 'sla', 'kitchen', 'triton'/);
 });
 
 test('MiniMax H3 exposes the shared LoRA stack and sends it to the video workflow', () => {
@@ -477,6 +489,10 @@ test('Video exposes the shared prompt revision assistant with H3-aware context',
   assert.match(server, /scope: 'generation-preflight'/);
   assert.match(app, /d\.jobId === 'pre'[\s\S]{0,160}d\.scope !== 'generation-preflight'[\s\S]{0,100}generationPreflightRequests < 1/);
   assert.match(app, /async function generationApi\([\s\S]{0,260}generationPreflightRequests = Math\.max/);
+  assert.match(app, /const total = \(q\.preparing \|\| \[\]\)\.length/);
+  assert.match(app, /\.\.\.\(q\.preparing \|\| \[\]\)\.map\(\(j\) => \(\{ \.\.\.j, run: true, preparing: true \}\)\)/);
+  assert.match(app, /j\.preparing \? 'Enhancing'/);
+  assert.match(app, /es\.addEventListener\('queueChanged'[\s\S]{0,220}queueRefreshSoon\(true\)/);
   assert.doesNotMatch(galleryAnimate, /generationApi\(/);
   assert.match(app, /finally \{[\s\S]{0,520}refreshQueue\(\)\.catch/);
   assert.match(promptEnhance, /Preserve every <Picture n>, <Video n>, and <Audio n>/);
@@ -628,6 +644,8 @@ test('MiniMax H3 Frames Turbo defaults new installs to v4 while preserving expli
 
 test('long H3 Reference Turbo videos advance through five-second jobs and rejoin as one result', () => {
   assert.match(server, /h3TurboReferenceSegments\(frames\)/);
+  assert.doesNotMatch(server, /h3References\.videos\.length && frames > H3_TURBO_REFERENCE_CHUNK_FRAMES/);
+  assert.match(server, /if \(h3TurboReferenceChunks\.length\) \{[\s\S]{0,120}opts\.turboReferenceSegment = h3TurboReferenceChunks\[0\]/);
   assert.match(server, /opts\.turboReferenceSegment = h3TurboReferenceChunks\[0\]/);
   assert.match(server, /async function queueNextVideoChunk\(job\)/);
   assert.match(server, /videoChunkSequence\.chunkBuffers\[videoChunkSequence\.index\] = buf/);
@@ -758,6 +776,9 @@ test('MiniMax H3 Reference mode uses progressive media slots and prompt mention 
   assert.match(app, /<(?:\(\?:)?Picture\|Video\|Audio\) \\\\d\+>/);
   assert.match(app, /state\.view === 'edit' \|\| h3ReferenceModeActive\(\)[\s\S]{0,100}event\.data === '@'/);
   assert.match(app, /function renderPromptMentionPicker\(\)[\s\S]{0,760}h3PromptReferenceEntries\(\)/);
+  assert.match(app, /media = document\.createElement\('video'\);[\s\S]{0,180}media\.className = 'prompt-mention-video'/);
+  assert.match(app, /entry\.role === 'embedded-audio' \? 'Audio from video'/);
+  assert.doesNotMatch(app, /detail\.textContent = h3Reference \? \(ref\.label \|\| ref\.name\)/);
   assert.match(app, /Remove empty H3 reference input \$\{slotIndex \+ 1\}/);
   assert.match(app, /state\.vidH3RefSlots = Math\.max\(1, visibleSlots - 1\)/);
   assert.match(app, /state\.vidH3RefSlots = Math\.max\(1, h3ReferenceCount\(\)\);[\s\S]{0,260}renderPromptComposer\(\)/);
@@ -770,11 +791,14 @@ test('MiniMax H3 Reference mode uses progressive media slots and prompt mention 
   assert.match(app, /refs\[kind\]\[index\] = asset/);
   assert.match(app, /prompt kept/);
   assert.match(app, /swap\.className = 'ref-swap'/);
+  assert.match(app, /openH3ReferenceTools\(swap, entry\)/);
   assert.match(app, /pickH3ReferenceReplacement\(kind, index\)/);
   assert.match(css, /\.h3-reference-grid \.ref-swap/);
   assert.doesNotMatch(app, /h3-reference-name/);
   assert.match(css, /\.h3-reference-grid \.ref-slot/);
-  assert.match(css, /\.h3-reference-grid \.ref-slot \.ref-role \{[\s\S]*background: transparent;/);
+  assert.match(css, /\.h3-reference-panel \{[\s\S]*border: 0;[\s\S]*background: transparent;/);
+  assert.match(css, /\.h3-reference-grid,\s*\.h3-reference-grid\[data-slots="1"\][\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /\.h3-reference-grid \.ref-slot \.ref-role \{[\s\S]*background: linear-gradient/);
   assert.match(css, /\.video-input-grid\.h3-frame-inputs \.media-input-filled \.attach-info \{[\s\S]*background: transparent;/);
   assert.match(css, /\.video-input-grid\[hidden\] \{ display: none; \}/);
   assert.match(css, /\.prompt-h3-audio/);
@@ -782,6 +806,18 @@ test('MiniMax H3 Reference mode uses progressive media slots and prompt mention 
   assert.match(css, /\.prompt-mention-option\.current/);
   assert.match(css, /\.h3-reference-grid \.ref-slot\.filled \{ cursor: grab;/);
   assert.match(html, /class="sheet centered-dialog-sheet" id="promptMentionSheet"/);
+});
+
+test('MiniMax H3 reference cards reuse crop, lossless trim, and first-frame tools', () => {
+  assert.match(html, /id="h3ReferenceTrimSheet"[\s\S]*id="h3ReferenceTrimVideo"[\s\S]*id="h3ReferenceTrimWave"[\s\S]*id="h3ReferenceTrimApply"/);
+  assert.match(app, /function openH3ReferenceTools\(anchor, entry\)/);
+  assert.match(app, /openInputImageCrop\(asset, \(next\) => commitH3ReferenceEdit\(kind, index, next\)/);
+  assert.match(app, /label: 'Preview and trim'[\s\S]{0,180}openH3ReferenceTrim\(kind, index\)/);
+  assert.match(app, /label: 'Extract first frame'[\s\S]{0,180}addH3ReferenceFirstFrame\(asset\)/);
+  assert.match(app, /async function extractVideoFirstFrameAsset\(asset, requestedTime = 0/);
+  assert.match(app, /trimStart: Math\.max\(0, Number\(asset\.trimStart\) \|\| 0\)/);
+  assert.match(app, /trimEnd: Math\.max\(0, Number\(asset\.trimEnd\) \|\| 0\)/);
+  assert.match(css, /\.h3-reference-trim-preview video \{[^}]*object-fit: contain/);
 });
 
 test('MiniMax H3 Reference mode offers local multi-style video restyling', () => {

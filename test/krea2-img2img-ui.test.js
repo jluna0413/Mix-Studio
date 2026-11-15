@@ -78,7 +78,7 @@ test('Create Image uploads, persists, and submits the guide with inverse denoise
   assert.match(app, /function createDenoiseFromInfluence\(influence = state\.createInfluence\)/);
   assert.match(app, /1 - normalized \* 0\.95/);
   assert.match(app, /function pickCreateImageGuide\(\)/);
-  assert.match(app, /const createImageGuide = mode === 't2i' && state\.createMode === 'image' && state\.createGuideActive/);
+  assert.match(app, /const createImageGuide = mode === 't2i' && state\.createMode === 'image' && state\.imageEngine !== 'qwen21' && state\.createGuideActive/);
   assert.match(app, /createPromptFromImageName\(state\.createRef\);[\s\S]{0,120}state\.createGuideActive = false/);
   assert.match(app, /imageName: createImageGuideName/);
   assert.match(app, /createImageGuide && state\.createGuideMode === 'image' \? createDenoiseFromInfluence\(\) : 1/);
@@ -109,7 +109,7 @@ test('Resolution can match an uploaded image guide and reports the derived dimen
   assert.match(html, /aria-label="Style: follow look and texture"/);
   assert.match(app, /state\.createGuideMode === 'image' \|\| state\.createGuideMode === 'depth'/);
   assert.match(app, /state\.createMatchSource = false;\s*state\.createMatchNative = false;\s*state\.customDims = false;/);
-  assert.match(app, /const keepImageMatch = !h3ResolutionActive\(\) && state\.createMatchSource && !!state\.createRef/);
+  assert.match(app, /const keepImageMatch = !b\.hasAttribute\('data-qwen-native'\) && !h3ResolutionActive\(\) && state\.createMatchSource && !!state\.createRef/);
   assert.match(app, /if \(keepImageMatch\) \{\s*applyCreateMatchedDimensions\(\)/);
   assert.match(app, /generationSafeCreateDimensions\(asset, 1\.75\)/);
 });

@@ -9,13 +9,18 @@ const {
   externalLlmEnabled,
   externalLlmProviderConfig,
   externalLlmRequest,
+  externalLlmStructuredRequest,
+  geminiResponseJsonSchema,
+  lmStudioChatUrl,
   normalizeExternalLlmSettings,
+  normalizeLmStudioUrl,
   normalizeOllamaUrl,
   ollamaChatUrl,
   outputText,
 } = require('../lib/external-llm');
 
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const externalLlmSource = fs.readFileSync(path.join(__dirname, '..', 'lib', 'external-llm.js'), 'utf8');
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -24,20 +29,43 @@ function jsonResponse(payload, status = 200) {
   });
 }
 
-test('external LLM settings normalize providers, models, URLs, and independent routes', () => {
+test('prompt AI settings normalize providers and always route every prompt tool', () => {
   const settings = normalizeExternalLlmSettings({
     externalLlmProvider: 'ollama',
+    externalLlmExternalProvider: 'gemini',
     externalLlmOllamaUrl: 'http://127.0.0.1:11434/',
     externalLlmOllamaModel: 'qwen3-vl',
-    externalLlmImageRevise: true,
-    externalLlmVideoEnhance: true,
+    externalLlmImageRevise: false,
+    externalLlmVideoEnhance: false,
   });
   assert.equal(settings.externalLlmProvider, 'ollama');
+  assert.equal(settings.externalLlmLocalProvider, 'ollama');
+  assert.equal(settings.externalLlmExternalProvider, 'gemini');
   assert.equal(settings.externalLlmOllamaUrl, 'http://127.0.0.1:11434');
   assert.equal(settings.externalLlmOllamaModel, 'qwen3-vl');
   assert.equal(externalLlmEnabled(settings, 'image', 'revise'), true);
-  assert.equal(externalLlmEnabled(settings, 'image', 'enhance'), false);
+  assert.equal(externalLlmEnabled(settings, 'image', 'enhance'), true);
   assert.equal(externalLlmEnabled(settings, 'video', 'enhance'), true);
+  assert.equal(settings.externalLlmImageRevise, true);
+  assert.equal(settings.externalLlmVideoEnhance, true);
+});
+
+test('prompt AI remembers one provider for each Local and External mode', () => {
+  const local = normalizeExternalLlmSettings({
+    externalLlmProvider: 'local',
+    externalLlmLocalProvider: 'ollama',
+    externalLlmExternalProvider: 'gemini',
+  });
+  assert.equal(local.externalLlmLocalProvider, 'local');
+  assert.equal(local.externalLlmExternalProvider, 'gemini');
+
+  const external = normalizeExternalLlmSettings({
+    externalLlmProvider: 'gemini',
+    externalLlmLocalProvider: 'ollama',
+    externalLlmExternalProvider: 'openai',
+  });
+  assert.equal(external.externalLlmLocalProvider, 'ollama');
+  assert.equal(external.externalLlmExternalProvider, 'gemini');
 });
 
 test('Ollama URL handling accepts HTTP endpoints without embedded credentials', () => {
@@ -48,6 +76,15 @@ test('Ollama URL handling accepts HTTP endpoints without embedded credentials', 
   assert.throws(() => normalizeOllamaUrl('http://user:secret@localhost:11434'), /credentials/);
 });
 
+test('LM Studio URL handling targets its OpenAI-compatible chat endpoint', () => {
+  assert.equal(normalizeLmStudioUrl('http://localhost:1234/v1/'), 'http://localhost:1234/v1');
+  assert.equal(lmStudioChatUrl('http://localhost:1234'), 'http://localhost:1234/v1/chat/completions');
+  assert.equal(lmStudioChatUrl('http://localhost:1234/v1'), 'http://localhost:1234/v1/chat/completions');
+  assert.equal(lmStudioChatUrl('https://host.example/v1/chat/completions'), 'https://host.example/v1/chat/completions');
+  assert.throws(() => normalizeLmStudioUrl('file:///tmp/lmstudio'), /HTTP or HTTPS/);
+  assert.throws(() => normalizeLmStudioUrl('http://user:secret@localhost:1234/v1'), /credentials/);
+});
+
 test('provider config selects the active model and keeps keys server-side', () => {
   const config = externalLlmProviderConfig({
     externalLlmProvider: 'gemini',
@@ -56,6 +93,20 @@ test('provider config selects the active model and keeps keys server-side', () =
   });
   assert.deepEqual(config, {
     provider: 'gemini', label: 'Gemini', model: 'gemini-test', apiKey: 'secret-key',
+  });
+});
+
+test('provider config can route Smart planning through the configured local ComfyUI model', () => {
+  const config = externalLlmProviderConfig({
+    externalLlmProvider: 'local',
+    localPromptAiClip: 'prompt\\qwen3-vl-8b.safetensors',
+    localPromptAiClipType: 'qwen_image',
+    clip: 'generation-model.safetensors',
+    clipType: 'krea2',
+  });
+  assert.deepEqual(config, {
+    provider: 'local', label: 'Local ComfyUI',
+    model: 'prompt\\qwen3-vl-8b.safetensors', type: 'qwen_image', apiKey: '',
   });
 });
 
@@ -114,6 +165,7 @@ test('Ollama adapter uses native non-streaming chat and optional vision input', 
     instruction: 'Return one prompt.',
     userInput: 'Camera pushes forward.',
     image: { data: Buffer.from('image-bytes'), mimeType: 'image/webp' },
+    maxTokens: 8192,
     fetchImpl: async (url, init) => {
       request = { url, body: JSON.parse(init.body) };
       return jsonResponse({ message: { role: 'assistant', content: 'The camera pushes steadily forward.' }, done: true });
@@ -123,8 +175,44 @@ test('Ollama adapter uses native non-streaming chat and optional vision input', 
   assert.equal(request.url, 'http://127.0.0.1:11434/api/chat');
   assert.equal(request.body.stream, false);
   assert.equal(request.body.think, false);
+  assert.equal(request.body.options.num_predict, 8192);
   assert.equal(request.body.messages[0].role, 'system');
   assert.equal(request.body.messages[1].images.length, 1);
+});
+
+test('LM Studio adapter uses OpenAI-compatible chat, vision, and structured output', async () => {
+  let request;
+  const schema = {
+    type: 'object', additionalProperties: false, required: ['title'],
+    properties: { title: { type: 'string' } },
+  };
+  const result = await externalLlmStructuredRequest({
+    provider: 'lmstudio',
+    model: 'qwen3-vl-local',
+    baseUrl: 'http://127.0.0.1:1234/v1',
+    instruction: 'Return a complete production plan.',
+    userInput: 'A lion crosses a flooded city.',
+    image: { data: Buffer.from('image-bytes'), mimeType: 'image/png' },
+    schema,
+    schemaName: 'production_plan',
+    maxTokens: 8192,
+    fetchImpl: async (url, init) => {
+      request = { url, init, body: JSON.parse(init.body) };
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: '{"title":"Lion plan"}' } }] });
+    },
+  });
+  assert.deepEqual(result, { title: 'Lion plan' });
+  assert.equal(request.url, 'http://127.0.0.1:1234/v1/chat/completions');
+  assert.equal(request.init.headers.Authorization, undefined);
+  assert.equal(request.body.stream, false);
+  assert.equal(request.body.max_tokens, 8192);
+  assert.equal(request.body.messages[0].role, 'system');
+  assert.equal(request.body.messages[1].content[1].type, 'image_url');
+  assert.match(request.body.messages[1].content[1].image_url.url, /^data:image\/png;base64,/);
+  assert.deepEqual(request.body.response_format, {
+    type: 'json_schema',
+    json_schema: { name: 'production_plan', strict: true, schema },
+  });
 });
 
 test('external adapters preserve ordered multiple vision images for every provider', async () => {
@@ -138,7 +226,7 @@ test('external adapters preserve ordered multiple vision images for every provid
     await externalLlmRequest({
       provider,
       model: `${provider}-test`,
-      apiKey: provider === 'ollama' ? '' : 'test-key',
+      apiKey: ['ollama', 'lmstudio'].includes(provider) ? '' : 'test-key',
       baseUrl: 'http://127.0.0.1:11434',
       instruction: 'Return one prompt.',
       userInput: 'Compare both references.',
@@ -207,15 +295,187 @@ test('output extraction supports nested OpenAI response content', () => {
   assert.equal(outputText({ output: [{ content: [{ type: 'output_text', text: 'Finished prompt' }] }] }), 'Finished prompt');
 });
 
-test('server routes independent image and video revise/enhance paths through the shared provider', () => {
-  assert.match(serverSource, /function enhancePrompt\([\s\S]*shouldUseExternalPrompt\('image', 'enhance'\)/);
-  assert.match(serverSource, /function reviseImagePrompt\([\s\S]*shouldUseExternalPrompt\('image', 'revise'\)/);
-  assert.match(serverSource, /function reviseVideoPrompt\([\s\S]*shouldUseExternalPrompt\('video', 'revise'\)/);
-  assert.match(serverSource, /function enhanceRegionPrompt\([\s\S]*shouldUseExternalPrompt\('image', 'enhance'\)/);
-  assert.match(serverSource, /function suggestMotionPrompt\([\s\S]*shouldUseExternalPrompt\('video', 'enhance'\)/);
-  assert.match(serverSource, /shouldUseExternalPrompt\('video', 'enhance'\) && enhance && suppliedMotionPrompt/);
+test('structured parsing recovers one JSON object from local-model commentary', async () => {
+  const result = await externalLlmStructuredRequest({
+    provider: 'ollama', model: 'local-test', baseUrl: 'http://127.0.0.1:11434',
+    instruction: 'Plan.', userInput: 'A film.',
+    schema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] },
+    fetchImpl: async () => jsonResponse({
+      message: { content: 'Here is the plan:\n{"title":"Recovered local plan"}\nDone.' },
+    }),
+  });
+  assert.deepEqual(result, { title: 'Recovered local plan' });
+});
+
+test('structured requests use each provider native JSON schema mode and parse the result', async () => {
+  const schema = {
+    type: 'object', additionalProperties: false, required: ['title'],
+    properties: { title: { type: 'string' } },
+  };
+  const bodies = {};
+  for (const provider of ['openai', 'gemini', 'ollama', 'lmstudio']) {
+    const result = await externalLlmStructuredRequest({
+      provider, model: `${provider}-test`, apiKey: ['ollama', 'lmstudio'].includes(provider) ? '' : 'test-key',
+      baseUrl: 'http://127.0.0.1:11434', instruction: 'Plan.', userInput: 'A film.',
+      schema, schemaName: 'production_plan',
+      fetchImpl: async (_url, init) => {
+        bodies[provider] = JSON.parse(init.body);
+        if (provider === 'openai') return jsonResponse({ output_text: '{"title":"OpenAI plan"}' });
+        if (provider === 'gemini') return jsonResponse({ candidates: [{ content: { parts: [{ text: '{"title":"Gemini plan"}' }] } }] });
+        if (provider === 'ollama') return jsonResponse({ message: { content: '```json\n{"title":"Ollama plan"}\n```' } });
+        return jsonResponse({ choices: [{ message: { content: '{"title":"LM Studio plan"}' } }] });
+      },
+    });
+    assert.match(result.title, /plan$/);
+  }
+  assert.deepEqual(bodies.openai.text.format, {
+    type: 'json_schema', name: 'production_plan', strict: true, schema,
+  });
+  assert.equal(bodies.gemini.generationConfig.responseMimeType, 'application/json');
+  assert.deepEqual(bodies.gemini.generationConfig.responseJsonSchema, schema);
+  assert.deepEqual(bodies.ollama.format, schema);
+  assert.deepEqual(bodies.lmstudio.response_format, {
+    type: 'json_schema', json_schema: { name: 'production_plan', strict: true, schema },
+  });
+});
+
+test('Gemini structured output removes unsupported JSON Schema keywords recursively', async () => {
+  const schema = {
+    type: 'object', additionalProperties: false, required: ['title', 'clips'],
+    properties: {
+      title: { type: 'string', minLength: 1, maxLength: 100 },
+      clips: {
+        type: 'array', minItems: 1, maxItems: 12,
+        items: {
+          type: 'object', additionalProperties: false, required: ['duration', 'description'],
+          properties: {
+            duration: { type: 'number', minimum: 0.1, maximum: 10 },
+            description: { type: 'string', minLength: 1, maxLength: 600, pattern: '.+' },
+          },
+        },
+      },
+    },
+  };
+  const compatible = geminiResponseJsonSchema(schema);
+  assert.deepEqual(compatible, {
+    type: 'object', additionalProperties: false, required: ['title', 'clips'],
+    properties: {
+      title: { type: 'string' },
+      clips: {
+        type: 'array', minItems: 1, maxItems: 12,
+        items: {
+          type: 'object', additionalProperties: false, required: ['duration', 'description'],
+          properties: {
+            duration: { type: 'number', minimum: 0.1, maximum: 10 },
+            description: { type: 'string' },
+          },
+        },
+      },
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(compatible), /minLength|maxLength|pattern/);
+  assert.match(JSON.stringify(compatible), /minItems|maxItems|minimum|maximum/);
+});
+
+test('Gemini retries schema-complexity rejections in JSON mode with the schema in its instruction', async () => {
+  const schema = {
+    type: 'object', additionalProperties: false, required: ['scenes'],
+    properties: {
+      scenes: {
+        type: 'array', maxItems: 12,
+        items: {
+          type: 'object', required: ['timeline'],
+          properties: {
+            timeline: {
+              type: 'array', maxItems: 6,
+              items: {
+                type: 'object', required: ['time', 'kind'],
+                properties: {
+                  time: { type: 'number', minimum: 0.1, maximum: 10 },
+                  kind: { type: 'string', enum: ['action', 'camera', 'cut'] },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+  const bodies = [];
+  const result = await externalLlmStructuredRequest({
+    provider: 'gemini', model: 'gemini-test', apiKey: 'test-key',
+    instruction: 'Build a plan.', userInput: 'A timed film.', schema,
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      if (bodies.length === 1) {
+        return jsonResponse({
+          error: { code: 400, message: 'Request contains an invalid argument.', status: 'INVALID_ARGUMENT' },
+        }, 400);
+      }
+      return jsonResponse({ candidates: [{ content: { parts: [{ text: '{"scenes":[]}' }] } }] });
+    },
+  });
+  assert.deepEqual(result, { scenes: [] });
+  assert.equal(bodies.length, 2);
+  assert.deepEqual(bodies[0].generationConfig.responseJsonSchema, schema);
+  assert.equal(bodies[1].generationConfig.responseJsonSchema, undefined);
+  assert.equal(bodies[1].generationConfig.responseMimeType, 'application/json');
+  assert.match(bodies[1].systemInstruction.parts[0].text, /Return only one valid JSON object/);
+  assert.match(bodies[1].systemInstruction.parts[0].text, /"timeline"/);
+});
+
+test('Gemini does not retry credential failures as schema fallbacks', async () => {
+  let calls = 0;
+  await assert.rejects(externalLlmStructuredRequest({
+    provider: 'gemini', model: 'gemini-test', apiKey: 'bad-key',
+    instruction: 'Build a plan.', userInput: 'A film.',
+    schema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] },
+    fetchImpl: async () => {
+      calls += 1;
+      return jsonResponse({ error: { message: 'API key rejected', status: 'PERMISSION_DENIED' } }, 400);
+    },
+  }), /API key rejected/);
+  assert.equal(calls, 1);
+});
+
+test('server routes every image and video prompt tool through the selected Prompt AI', () => {
+  assert.match(serverSource, /function enhancePrompt\([\s\S]*shouldUseConfiguredPromptAi\('image', 'enhance'\)/);
+  assert.match(serverSource, /function reviseImagePrompt\([\s\S]*shouldUseConfiguredPromptAi\('image', 'revise'\)/);
+  assert.match(serverSource, /function reviseVideoPrompt\([\s\S]*shouldUseConfiguredPromptAi\('video', 'revise'\)/);
+  assert.match(serverSource, /function enhanceRegionPrompt\([\s\S]*shouldUseConfiguredPromptAi\('image', 'enhance'\)/);
+  assert.match(serverSource, /function suggestMotionPrompt\([\s\S]*shouldUseConfiguredPromptAi\('video', 'enhance'\)/);
+  assert.match(serverSource, /shouldUseConfiguredPromptAi\('video', 'enhance'\) && enhance && suppliedMotionPrompt/);
   assert.match(serverSource, /videoPromptEnhanceParts\(motionPrompt/);
   assert.match(serverSource, /route === '\/api\/prompt\/provider\/test'/);
+});
+
+test('external generation enhancement is visible while Ollama runs before ComfyUI queueing', () => {
+  const configuredBlock = serverSource.slice(
+    serverSource.indexOf('async function runConfiguredPromptAi'),
+    serverSource.indexOf('function shouldUseConfiguredPromptAi'),
+  );
+  const queueBlock = serverSource.slice(
+    serverSource.indexOf("if (route === '/api/queue')"),
+    serverSource.indexOf("if (route === '/api/queue/history/clear'"),
+  );
+  assert.match(serverSource, /const externalPromptPreflights = new Map\(\)/);
+  assert.match(serverSource, /function startExternalPromptPreflight[\s\S]*options\.action !== 'enhance'/);
+  assert.match(configuredBlock, /const preflight = startExternalPromptPreflight\(provider, options\)/);
+  assert.match(configuredBlock, /jobId: preflight \? 'pre' : 'external-prompt'/);
+  assert.match(configuredBlock, /scope: preflight \? 'generation-preflight' : undefined/);
+  assert.match(configuredBlock, /finally \{[\s\S]*finishExternalPromptPreflight\(preflight\)/);
+  assert.match(queueBlock, /const preparing = \[\.\.\.externalPromptPreflights\.values\(\)\]/);
+  assert.match(queueBlock, /cancellable: false/);
+  assert.match(queueBlock, /ok: true,[\s\S]*preparing,[\s\S]*running,/);
+});
+
+test('external Smart planning keeps its full output budget and gives local API models a longer timeout', () => {
+  const smartBlock = serverSource.slice(
+    serverSource.indexOf('async function requestSmartPlan'),
+    serverSource.indexOf('const smartPlanRequests = new Map'),
+  );
+  assert.match(smartBlock, /externalLlmStructuredRequest\(\{[\s\S]*maxTokens: 8192,[\s\S]*\['ollama', 'lmstudio'\]\.includes\(provider\.provider\) \? 45 \* 60_000 : 10 \* 60_000,/);
+  assert.match(externalLlmSource, /const timeoutCeilingMs = \['ollama', 'lmstudio'\]\.includes\(provider\) \? 90 \* 60_000 : 15 \* 60_000/);
 });
 
 test('server preserves ordered H3 first and last frames for external and local prompt vision', () => {
@@ -227,8 +487,8 @@ test('server preserves ordered H3 first and last frames for external and local p
   assert.match(serverSource, /left panel is Picture 1, the first frame at 0\.00 seconds/);
   assert.match(serverSource, /right panel is Picture 2, the last frame at the effective duration/);
   const externalBlock = serverSource.slice(
-    serverSource.indexOf('async function runConfiguredExternalPrompt'),
-    serverSource.indexOf('function shouldUseExternalPrompt'),
+    serverSource.indexOf('async function runConfiguredPromptAi'),
+    serverSource.indexOf('function shouldUseConfiguredPromptAi'),
   );
   assert.match(externalBlock, /const imageNames = orderedPromptImageNames\(options\)/);
   assert.match(externalBlock, /h3PromptPartsWithVisionOrder\(parts, options, 'attachments'\)/);

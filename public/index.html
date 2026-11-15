@@ -15,6 +15,7 @@
 <link rel="icon" href="/app-icon-192.png" type="image/png" sizes="192x192" />
 <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
 <link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/splat-workspace.css">
 </head>
 <body>
 
@@ -75,7 +76,7 @@
             <span class="app-drawer-create-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 5h16v14H4V5Zm2 2v10h12V7H6Zm2 8 2.8-3 2.1 2.1 1.7-1.8L17 15H8Zm1-6.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Z"/></svg></span>
             <span>Image</span>
           </button>
-          <button class="app-drawer-create-item" type="button" data-drawer-create-mode="region">
+          <button class="app-drawer-create-item" id="drawerMiddleCreate" type="button" data-drawer-create-mode="region">
             <span class="app-drawer-create-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 3h6v2H6v4H4V3Zm10 0h6v6h-2V5h-4V3ZM4 15h2v4h4v2H4v-6Zm14 0h2v6h-6v-2h4v-4ZM8 8h8v8H8V8Zm2 2v4h4v-4h-4Z"/></svg></span>
             <span>Region</span>
           </button>
@@ -174,7 +175,7 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 2v12h16V6H4Zm3.5 2.5A1.5 1.5 0 1 1 6 10a1.5 1.5 0 0 1 1.5-1.5ZM5 16l4-4.5 3 3 2-2.5 5 4H5Z"/></svg>
       <span>Image</span>
     </button>
-    <button class="tab create-tab" data-create-mode="region">
+    <button class="tab create-tab" id="createMiddleTab" data-create-mode="region">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 3h6v2H5v4H3V3Zm12 0h6v6h-2V5h-4V3ZM3 15h2v4h4v2H3v-6Zm16 0h2v6h-6v-2h4v-4ZM8 8h8v8H8V8Zm2 2v4h4v-4h-4Z"/></svg>
       <span>Region</span>
     </button>
@@ -182,6 +183,7 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h11a2 2 0 0 1 2 2v2.2l5-3v11.6l-5-3V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Zm0 2v10h11V7H4Zm13 4.5v1l3 1.8V9.7l-3 1.8Z"/></svg>
       <span>Video</span>
     </button>
+    <button class="tab create-tab" id="splatModeTab" data-create-mode="splat" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Zm0 9 8-4.5M12 12 4 7.5M12 12v9" fill="none" stroke="currentColor" stroke-width="1.7"/></svg><span>3D</span></button>
   </div>
 </div>
 
@@ -201,6 +203,84 @@
       </button>
     </nav>
   </div>
+  <section id="splatInputs" class="splat-inputs" hidden>
+    <button id="splatPhotoPick" class="create-image-guide-empty splat-photo-pick" type="button">
+      <img id="splatPhotoPreview" alt="Source photo" hidden>
+      <span class="create-image-guide-icon" id="splatPhotoIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 2v12h16V6H4Zm3.5 2.5A1.5 1.5 0 1 1 6 10a1.5 1.5 0 0 1 1.5-1.5ZM5 16l4-4.5 3 3 2-2.5 5 4H5Z"/></svg><i>+</i></span>
+      <span><b id="splatPhotoLabel">Choose image</b></span>
+    </button>
+    <input id="splatPhotoInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+    <section class="panel krea-model-panel">
+      <button id="splatQualityToggle" class="krea-model-switch" type="button" role="switch" aria-label="Quality mode" aria-checked="false">
+        <span class="krea-model-switch-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg></span>
+        <span class="krea-model-switch-copy"><b id="splatQualityLabel">Balance</b><small id="splatQualityHint">Faster generation</small></span>
+        <span class="switch" aria-hidden="true"><i></i></span>
+      </button>
+    </section>
+    <p id="splatProgressText" role="status" aria-live="polite" hidden></p>
+  </section>
+  <section class="smart-workspace" id="smartWorkspace" aria-label="Smart production" hidden>
+    <header class="smart-head">
+      <span class="smart-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 2 1.7 5.1L19 9l-5.3 1.9L12 16l-1.7-5.1L5 9l5.3-1.9L12 2Zm7 12 .9 2.6 2.6.9-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9L19 14Z"/></svg></span>
+      <span><small>Experimental orchestration</small><h2>Smart production</h2></span>
+      <button class="smart-provider" id="smartConfigureAi" type="button" title="Configure the Smart planner">
+        <span id="smartProvider">AI planner</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+      </button>
+    </header>
+    <div class="smart-layout">
+      <section class="smart-brief-card">
+        <h3>Describe the finished piece</h3>
+        <p>Speak naturally or type one idea. Smart will direct it shot by shot, choose the workflows, and either wait for review or run automatically.</p>
+        <label class="sr-only" for="smartBriefInput">Creative brief</label>
+        <div class="smart-brief-input-wrap">
+          <textarea id="smartBriefInput" rows="7" maxlength="8000" placeholder="Make a 120-second cinematic video about a lion navigating a series of surreal city scenarios…"></textarea>
+          <button class="smart-voice-icon" id="smartVoiceBtn" type="button" aria-label="Speak brief" title="Speak brief" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 1 0-7 0v5A3.5 3.5 0 0 0 12 15Zm-7-4a7 7 0 0 0 14 0M12 18v4m-4 0h8"/></svg>
+            <i id="smartVoiceTime"></i>
+          </button>
+          <input id="smartVoiceFile" type="file" accept="audio/*" capture="user" hidden />
+        </div>
+        <div class="smart-reference-inputs">
+          <div class="smart-reference-inputs-head">
+            <span><strong>References</strong><small>Optional · up to 2 images</small></span>
+            <button id="smartAddReference" type="button" aria-label="Add reference images" title="Add reference images"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+          </div>
+          <div class="smart-reference-list" id="smartReferenceList"><p>Guide character identity, product details, composition, or visual style.</p></div>
+        </div>
+        <div class="smart-execution-options">
+          <button class="smart-execution-toggle" id="smartAutoApprove" type="button" role="switch" aria-checked="false">
+            <span><strong>Auto approve</strong><small>Queue the director's plan immediately</small></span><i aria-hidden="true"><b></b></i>
+          </button>
+          <button class="smart-execution-toggle" id="smartPauseReferences" type="button" role="switch" aria-checked="false">
+            <span><strong>Review references</strong><small>Pause once all required states are ready</small></span><i aria-hidden="true"><b></b></i>
+          </button>
+        </div>
+        <div class="smart-brief-actions">
+          <button class="smart-plan-btn" id="smartPlanBtn" type="button"><span>Build director's plan</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>
+        </div>
+        <div class="smart-status" id="smartStatus" role="status" aria-live="polite"></div>
+        <div class="smart-examples" aria-label="Example briefs">
+          <span>Try an example</span>
+          <button type="button" data-smart-example="Create a 20-second vertical fashion film featuring the same silver robot walking through three different weather conditions.">Robot fashion film</button>
+          <button type="button" data-smart-example="Make a cinematic still of a tiny greenhouse glowing inside a dark brutalist apartment.">Cinematic still</button>
+        </div>
+      </section>
+      <section class="smart-production-card" id="smartBoard" aria-live="polite">
+        <div class="smart-board-empty">
+          <span class="smart-empty-orbit" aria-hidden="true"><i></i><b></b></span>
+          <small>Director's plan</small>
+          <h3>Your shot plan will appear here</h3>
+          <p>Smart plans the visual arc, cuts, camera angles, continuity, reference use, and individual clip jobs before anything is generated.</p>
+          <ol><li><span>1</span>Direct the brief</li><li><span>2</span>Review or modify</li><li><span>3</span>Approve the clip queue</li></ol>
+        </div>
+      </section>
+      <section class="smart-recent" id="smartRecent" hidden>
+        <div class="smart-section-label"><span>RECENT</span> Productions</div>
+        <div class="smart-recent-list" id="smartRecentList"></div>
+      </section>
+    </div>
+  </section>
   <section class="director-workspace" id="directorWorkspace" aria-label="LTX 2.3 Director workspace" hidden>
     <header class="director-head">
       <section class="video-model-panel director-model-panel" id="directorModelPanel" aria-label="Director video model">
@@ -476,9 +556,22 @@
               <label>Duration <span class="director-unit">frames</span><input id="directorRangeLength" type="number" min="1" max="480" step="1" /></label>
             </div>
           </div>
-        </details>
+          </details>
       </section>
     </div>
+  </section>
+  <section class="panel video-model-panel" id="imageModelPanel">
+    <button class="video-model-header" id="imageModelHeader" type="button" aria-expanded="false" aria-controls="imageModelBody">
+      <span class="video-model-kicker">Image model</span>
+      <span class="model-current"><span class="model-current-title"><span class="video-model-selected" id="imageEngineSelected">Krea 2</span></span><span class="video-model-note" id="imageEngineNote">Fast image generation</span></span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m6 9 6 6 6-6H6Z"/></svg>
+    </button>
+    <div class="video-model-body" id="imageModelBody" aria-hidden="true" inert><div class="video-model-body-inner">
+      <div class="chip-row video-choice-grid" id="imageEngineRow" aria-label="Image model">
+        <button class="chip active" type="button" data-image-engine="krea2" aria-pressed="true"><b>Krea 2</b><small>Fast image generation</small></button>
+        <button class="chip" type="button" data-image-engine="qwen21" aria-pressed="false"><b>Qwen Image 2.1</b><small>Text + detailed compositions</small></button>
+      </div>
+    </div></div>
   </section>
   <section class="panel video-model-panel edit-model-panel" id="editModelPanel" hidden>
     <button class="video-model-header" id="editModelHeader" type="button" aria-expanded="false" aria-controls="editModelBody">
@@ -495,6 +588,7 @@
         <div class="chip-row video-choice-grid edit-engine-row" id="editEngineRow" aria-label="Edit model" aria-describedby="editModelOrderHint">
           <button class="chip active" data-engine="klein9" data-feature-engine="edit.klein9" data-task-label="Precision Editing" data-model-label="Flux Klein 9B"><b>Flux Klein 9B</b><small>Precision Editing</small></button>
           <button class="chip" data-engine="klein4" data-feature-engine="edit.klein4" data-task-label="Fast Edits" data-model-label="Flux Klein 4B"><b>Flux Klein 4B</b><small>Fast Edits</small></button>
+          <button class="chip" data-engine="qwen21" data-feature-engine="edit.qwen21" data-task-label="Detailed Image Editing" data-model-label="Qwen Image 2.1"><b>Qwen Image 2.1</b><small>Detailed Image Editing</small></button>
           <button class="chip" data-engine="qwen" data-feature-engine="edit.qwen" data-task-label="Combine Images" data-model-label="Qwen Edit"><b>Qwen Edit</b><small>Combine Images</small></button>
           <button class="chip" data-engine="krea2ref" data-feature-engine="edit.krea2ref" data-task-label="Identity Editing" data-model-label="Krea 2 Edit"><b>Krea 2 Edit</b><small>Identity Editing</small></button>
           <button class="chip" data-engine="krea2remix" data-feature-engine="edit.krea2remix" data-task-label="Reference Remix" data-model-label="Krea 2 Remix"><b>Krea 2 Remix</b><small>Reference Remix</small></button>
@@ -623,7 +717,7 @@
         <div class="model-order-hint" id="videoModelOrderHint">Hold models to reorder · first is default</div>
         <div class="chip-row video-choice-grid" id="vidEngineRow" aria-label="Video model" aria-describedby="videoModelOrderHint">
           <button class="chip active" data-engine="ltx" data-feature-engine="video.ltx" data-task-label="Cinematic Video" data-model-label="LTX 2.3"><b>LTX 2.3</b><small>Cinematic Video</small></button>
-          <button class="chip" data-engine="ltx25" data-feature-engine="video.ltx25" data-task-label="Next-gen Cinematic Video" data-model-label="LTX 2.5"><b>LTX 2.5 <span class="model-status-badge">Preview</span></b><small>Next-gen Cinematic Video</small></button>
+          <button class="chip" data-engine="ltx25" data-feature-engine="video.ltx25" data-task-label="Next-gen Cinematic Video" data-model-label="LTX 2.5"><b>LTX 2.5</b><small>Next-gen Cinematic Video</small></button>
           <button class="chip" data-engine="h3" data-feature-engine="video.h3" data-task-label="Omni Video" data-model-label="MiniMax H3"><b>MiniMax H3</b><small>Omni Video + Audio</small></button>
           <button class="chip video-model-option" id="directorModelOption" type="button" data-director-entry data-feature-engine="video.ltx" aria-label="Open LTX Director for directed sequences"><b>LTX Director</b><small>Directed Sequences</small></button>
           <button class="chip" data-engine="ltx-edit" data-feature-engine="video.ltxEdit" data-task-label="Video Editing" data-model-label="LTX Edit" data-experimental="true"><b>LTX Edit <span class="model-status-badge">Experimental</span></b><small>Video Editing</small></button>
@@ -1281,6 +1375,7 @@
             <button type="button" data-mp="0.75" aria-pressed="false">S</button>
             <button type="button" data-mp="1" class="active" aria-pressed="true">M</button>
             <button type="button" data-mp="1.75" aria-pressed="false">L</button>
+            <button type="button" data-mp="4.194304" data-qwen-native="true" aria-label="Native 2K resolution" aria-pressed="false" hidden>2K</button>
             <button type="button" data-h3-xl="true" aria-pressed="false" hidden>XL</button>
           </div>
           <button class="res-resource-warning caution-icon" id="h3ResolutionWarning" type="button" aria-label="XL resolution resource caution" data-icon-tooltip="XL resolution caution" data-icon-tooltip-detail="XL uses roughly twice the pixels of L. L with 4K AI upscale is more reliable." hidden>
@@ -1317,6 +1412,15 @@
       <span class="krea-model-switch-copy"><b>Turbo</b><small id="kreaModelSummary">Krea 2 · fast</small></span>
       <span class="switch" aria-hidden="true"><i></i></span>
     </button>
+  </section>
+
+  <section class="panel krea-model-panel" id="qwen21SamplingPanel" hidden>
+    <button class="krea-model-switch" id="qwen21QualityToggle" type="button" role="switch" aria-label="Quality mode" aria-checked="false">
+      <span class="krea-model-switch-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg></span>
+      <span class="krea-model-switch-copy"><b id="qwen21QualityLabel">Balance</b><small id="qwen21QualitySummary">Qwen 2.1 · faster</small></span>
+      <span class="switch" aria-hidden="true"><i></i></span>
+    </button>
+    <p class="external-llm-field-note">Qwen Research License · research and evaluation only. <a href="https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE" target="_blank" rel="noopener">License details</a></p>
   </section>
 
   <section class="panel">
@@ -1420,7 +1524,19 @@
                 <button class="chip" type="button" data-scail-fps="24">24 fps · experimental</button>
               </div>
             </div>
-            <!-- SageAttention removed: incompatible with Intel Arc XPU; pytorch attention is used instead -->
+            <div class="field field-span h3-attention-field" id="vidH3AttentionField" hidden>
+              <div class="h3-attention-heading">
+                <span><strong>Attention backend</strong><small id="vidH3AttentionStatus">Verifying the ComfyUI runtime…</small></span>
+                <em>Experimental</em>
+              </div>
+              <div class="h3-attention-options" role="radiogroup" aria-label="MiniMax H3 attention backend">
+                <button type="button" role="radio" aria-checked="true" data-h3-attention="standard"><strong>Standard</strong><small>Reliable</small></button>
+                <button type="button" role="radio" aria-checked="false" data-h3-attention="sageattention"><strong>Sage</strong><small>Verified speed</small></button>
+                <button type="button" role="radio" aria-checked="false" data-h3-attention="sla"><strong>SLA Sparse</strong><small>Long clips</small></button>
+                <button type="button" role="radio" aria-checked="false" data-h3-attention="kitchen"><strong>Kitchen</strong><small>Experimental</small></button>
+                <button type="button" role="radio" aria-checked="false" data-h3-attention="triton"><strong>Triton</strong><small>Intel Arc XPU</small></button>
+              </div>
+            </div>
             <div class="h3-turbo-strength-field field-span" id="vidH3TurboStrengthField" hidden>
               <div class="h3-turbo-strength-head">
                 <span><label for="vidH3TurboStrength">Turbo LoRA strength</label><small id="vidH3TurboStrengthHelp">Advanced tuning for grainy or soft results</small></span>
@@ -1474,6 +1590,10 @@
 </main>
 
 <section class="desktop-stage" id="desktopStage" aria-label="Generation stage">
+  <section id="splatResult" class="splat-result" hidden>
+    <header class="desktop-stage-head"><div class="desktop-stage-heading"><h1 id="splatResultTitle">Ready to create</h1><span class="splat-experimental" id="splatResultStatus">Ready</span></div><div class="size-seg splat-result-switch" id="splatResultSwitch"><button id="splatShowVideo" class="active" type="button">Video</button><button id="splatShow3D" type="button">3D</button></div><button id="splatExpand" class="desktop-stage-info" type="button" aria-label="Expand 3D view" title="Expand 3D view" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg></button></header>
+    <div class="splat-result-media"><div id="splatResultEmpty"><svg viewBox="0 0 100 100" aria-hidden="true"><path d="m50 12 33 19v38L50 88 17 69V31Zm0 0v38m33-19L50 50 17 31m33 19v38"/></svg><p>Your 3D scene will appear here.</p></div><video id="splatOrbitVideo" controls loop playsinline hidden></video><iframe id="splatViewerFrame" title="Interactive Gaussian splat" hidden></iframe></div>
+  </section>
   <div class="desktop-stage-shell">
     <header class="desktop-stage-head">
       <div class="desktop-stage-heading">
@@ -1490,7 +1610,7 @@
         <button class="desktop-stage-info" id="desktopStageInfo" type="button" aria-label="View generation details" title="View generation details" disabled>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 10.8v5.2M12 7.7h.01"/></svg>
         </button>
-        <button class="desktop-stage-info desktop-stage-clear" id="desktopStageClear" type="button" aria-label="Unload result and clear generation settings" title="Unload result and clear generation settings" hidden>
+        <button class="desktop-stage-info desktop-stage-clear" id="desktopStageClear" type="button" aria-label="Unload result" title="Unload result" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
         </button>
       </div>
@@ -1665,6 +1785,7 @@
   <div class="lightbox-img-wrap">
     <img id="lbImg" alt="" role="button" tabindex="0" aria-label="Return to Create view. Image zoom 100 percent" aria-keyshortcuts="Enter Space + - 0 Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown" title="Scroll or pinch to zoom · drag or two-finger scroll to pan · click to return to Create" draggable="false" />
     <video id="lbVideo" controls playsinline loop hidden></video>
+    <iframe id="splatLibraryViewerFrame" title="Interactive 3D scene" hidden></iframe>
     <img class="lightbox-reference-preview" id="lbReferenceImg" alt="Reference image preview" hidden />
     <img class="lightbox-swipe-preview" id="lbSwipePreview" alt="" aria-hidden="true" hidden />
     <div class="like-burst" id="lightboxLikeBurst" aria-hidden="true"></div>
@@ -2305,6 +2426,7 @@
       <div class="queue-health" id="queueHealth"></div>
       <div class="queue-tools">
         <button class="queue-clear-btn" id="queueClearHistoryBtn" type="button">Clear history</button>
+        <button class="queue-review-clear-btn" id="queueClearReviewsBtn" type="button" hidden>Clear reviews</button>
         <button class="queue-reset-btn" id="queueResetBtn" type="button">Hard reset</button>
       </div>
       <div class="queue-reorder-hint" id="queueReorderHint" hidden>Hold and drag queued jobs to reorder.</div>
@@ -2315,6 +2437,8 @@
     </div>
   </div>
 </div>
+
+
 
 <!-- animate sheet -->
 <div class="sheet" id="animateSheet">
@@ -2451,6 +2575,11 @@
           <span class="dependency-access-copy"><strong>Hugging Face access required</strong><small>Accept the model license, then paste a read token in the access panel below.</small></span>
           <a class="dependency-access-link" id="setupDependencyAccessLink" target="_blank" rel="noopener noreferrer"><span>Open model page</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M13 11l6-6M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></a>
         </div>
+        <div class="setup-readiness-diagnostic" id="setupReadinessDiagnostic" hidden>
+          <span>Still not registered by ComfyUI</span>
+          <div id="setupReadinessItems"></div>
+          <small id="setupReadinessPaths"></small>
+        </div>
         <div class="setup-operation-actions">
           <button id="setupShowDetails" type="button" hidden>Details</button>
           <button id="setupRestartComfy" type="button" hidden>Restart ComfyUI</button>
@@ -2464,6 +2593,15 @@
           <span class="setup-start-visual" aria-hidden="true"><i></i><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z"/></svg></span>
           <span class="setup-start-copy"><strong id="setupStartTitle">ComfyUI is installed</strong><small id="setupStartCopy">Start it here and Mix Studio will find the local port automatically.</small></span>
           <span class="setup-start-actions"><button id="setupStartComfy" type="button">Start ComfyUI</button><button id="setupFindComfy" type="button">Find running ComfyUI</button></span>
+        </div>
+        <div class="setup-managed" id="setupManagedComfy" hidden>
+          <strong>Managed ComfyUI · Preview</strong>
+          <p>Start a supported local backend when you generate. Browsing your gallery keeps it off. Use this for a dedicated Mix Studio backend; separately started instances remain shared.</p>
+          <label>Start ComfyUI automatically <select id="setupManagedEnabled"><option value="false">Off</option><option value="true">On</option></select></label>
+          <label>Release idle model memory <select id="setupManagedIdle"><option value="0">Never</option><option value="5">After 5 minutes</option><option value="10">After 10 minutes</option><option value="30">After 30 minutes</option><option value="60">After 60 minutes</option></select></label>
+          <p id="setupManagedStatus" role="status"></p>
+          <div class="setup-start-actions"><button type="button" id="setupManagedSave">Save</button><button type="button" id="setupManagedRelease">Release model memory</button><button type="button" id="setupManagedStop">Stop managed ComfyUI</button></div>
+          <small>Closing Mix Studio does not stop generation. After a Mix Studio server restart, a surviving backend becomes shared and must be stopped separately.</small>
         </div>
         <div class="setup-core-update" id="setupCoreUpdate" role="status" hidden>
           <span class="setup-core-update-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14"/></svg></span>
@@ -2660,8 +2798,27 @@
             <span class="settings-media-toggle-copy"><strong>Experimental Features</strong><small>Show early-access tools and workflows that may still change.</small></span>
             <span class="settings-media-switch" aria-hidden="true"><i></i></span>
           </button>
+          <div class="settings-media-toggle asset-picker-recent-setting">
+            <span class="settings-media-toggle-copy"><strong>Recently used Library items</strong><small>Choose how many previously selected inputs appear in the source picker.</small></span>
+            <label class="asset-picker-recent-range" for="assetPickerRecentLimit">
+              <output id="assetPickerRecentLimitValue" for="assetPickerRecentLimit">10</output>
+              <input id="assetPickerRecentLimit" type="range" min="5" max="20" step="1" value="10" aria-label="Number of recently used Library items" />
+              <span aria-hidden="true"><i>5</i><i>20</i></span>
+            </label>
+          </div>
+          <button class="settings-media-toggle" id="openSplats" type="button" hidden>
+            <span class="settings-media-toggle-copy"><strong>Gaussian Splats <em>Experimental</em></strong><small>Create an orbit video and interactive 3D scene from one photo.</small></span>
+            <span aria-hidden="true">↗</span>
+          </button>
+          <div id="splatSetupCard" hidden><p id="splatSetupStatus" class="external-llm-field-note"></p><button id="splatSetupInstall" class="action-btn" type="button" hidden>Install 3D tools</button></div>
+          <div class="smart-mode-setting" id="smartModeExperimentalRow" hidden>
+            <button class="settings-media-toggle smart-mode-toggle" id="smartModeToggle" type="button" role="switch" aria-checked="false">
+              <span class="settings-media-toggle-copy"><strong>Smart mode <em>Experimental</em></strong><small>Replace Region with an AI production planner. Turn it off any time to restore the original Region workflow.</small></span>
+              <span class="settings-media-switch" aria-hidden="true"><i></i></span>
+            </button>
+          </div>
           <button class="settings-media-toggle analytics-toggle" id="analyticsToggle" type="button" role="switch" aria-checked="true" aria-labelledby="analyticsToggleLabel" aria-describedby="analyticsToggleStatus" hidden>
-            <span class="settings-media-toggle-copy"><strong id="analyticsToggleLabel">Anonymous analytics</strong><small id="analyticsToggleStatus">On · app launches and model starts only. Never prompts, media, or screen recordings.</small></span>
+            <span class="settings-media-toggle-copy"><strong id="analyticsToggleLabel">Usage analytics</strong><small id="analyticsToggleStatus">On · a random browser ID measures visits, returns, and model requests. Never prompts, media, or screen recordings.</small></span>
             <span class="settings-media-switch" aria-hidden="true"><i></i></span>
           </button>
         </section>
@@ -2694,6 +2851,15 @@
             <div class="field"><label>Klein 9B Expand consistency LoRA</label><input id="setKlein9ConsistencyLora" type="text" /></div>
             <div class="field"><label>Klein 9B consistency trigger</label><input id="setKlein9ConsistencyTrigger" type="text" /></div>
             <div class="field"><label>Klein VAE</label><input id="setKleinVae" type="text" /></div>
+            </div>
+          </details>
+          <details class="settings-group settings-model-disclosure" data-settings-model-section="qwen21">
+            <summary class="settings-model-summary"><span class="settings-model-name">Qwen Image 2.1</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></summary>
+            <div class="settings-model-body">
+              <div class="field"><label for="setQwen21ModelVariant">Download preference</label><select id="setQwen21ModelVariant" data-model-select><option value="auto">Automatic · match this computer</option><option value="compact">Lower memory · INT8 + 4-bit encoder</option><option value="balanced">Balanced · INT8</option><option value="bf16">Full precision · BF16</option></select></div>
+              <button class="settings-cache-clear" id="installQwen21Models" type="button">Download selected model files</button>
+              <p class="external-llm-field-note">One download for Create and Edit. Automatic recommends a smaller encoder below 16 GB VRAM on NVIDIA; other GPUs use BF16. Offloading also needs system RAM. Choices apply to the next model installation.</p>
+              <p class="external-llm-field-note">No Hugging Face token required. <a href="https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE" target="_blank" rel="noopener">Qwen Research License</a>: research and evaluation only; commercial use needs a separate license.</p>
             </div>
           </details>
           <details class="settings-group settings-model-disclosure" data-settings-model-section="qwen">
@@ -2944,99 +3110,143 @@
         </section>
 
         <section class="settings-pane" id="settingsPaneSuggestions" role="tabpanel" aria-labelledby="settingsTabSuggestions" data-settings-pane="suggestions" data-settings-disclosure-group hidden>
-          <div class="settings-pane-head"><h4>Prompting</h4><p>Prompt models, external routing, LoRA suggestions, and enhancement instructions.</p></div>
-          <details class="settings-group settings-preference-disclosure" data-settings-preference-section="prompting-local">
-            <summary class="settings-preference-summary"><span class="settings-preference-summary-copy"><strong>Local Prompt AI</strong><small id="localPromptAiSummary">ComfyUI prompt model</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></summary>
-            <div class="settings-preference-body local-prompt-ai-settings" id="localPromptAiSettings">
-              <p class="settings-default-note">Choose the ComfyUI text encoder used for local Revise Prompt and Prompt Enhance. Generation models remain unchanged.</p>
-              <div class="field">
-                <label for="setLocalPromptAiClip">Prompt model</label>
-                <select id="setLocalPromptAiClip" aria-describedby="localPromptAiHint">
-                  <option value="">Automatic · Krea 2 prompt model</option>
-                </select>
-              </div>
-              <div class="field" id="localPromptAiClipTypeField">
-                <label for="setLocalPromptAiClipType">Loader type</label>
-                <select id="setLocalPromptAiClipType">
-                  <option value="krea2">Krea 2 / Qwen3-VL</option>
-                </select>
-              </div>
-              <p class="local-prompt-ai-hint" id="localPromptAiHint">Vision-capable Qwen3-VL models are recommended for frame- and reference-aware prompts.</p>
-              <div class="local-prompt-ai-actions">
-                <button class="settings-cache-clear" id="refreshLocalPromptAiModels" type="button">Refresh models</button>
-                <button class="settings-cache-clear" id="testLocalPromptAiModel" type="button">Test model</button>
-                <span id="localPromptAiStatus" role="status" aria-live="polite">Loading installed models…</span>
-              </div>
-            </div>
-          </details>
+          <div class="settings-pane-head"><h4>Prompting</h4><p>Choose how prompt AI runs, then configure suggestions and enhancement instructions.</p></div>
           <details class="settings-group settings-preference-disclosure" data-settings-preference-section="prompting-external">
-            <summary class="settings-preference-summary"><span class="settings-preference-summary-copy"><strong>External Prompt AI</strong><small id="externalPromptAiSummary">Optional provider overrides</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></summary>
+            <summary class="settings-preference-summary"><span class="settings-preference-summary-copy"><strong>Prompt AI</strong><small id="externalPromptAiSummary">Local · ComfyUI</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></summary>
             <div class="settings-preference-body external-llm-settings" id="externalLlmSettings">
-              <p class="settings-default-note">Use one shared provider for prompt revision and enhancement. API keys stay on this Mix Studio server and are never returned to the browser.</p>
-              <div class="field">
-                <label for="setExternalLlmProvider">Provider</label>
-                <select id="setExternalLlmProvider">
-                  <option value="openai">OpenAI</option>
-                  <option value="gemini">Google Gemini</option>
-                  <option value="ollama">Ollama</option>
-                </select>
-              </div>
-              <div class="external-llm-provider" data-external-llm-provider="openai">
-                <div class="field">
-                  <label for="setExternalLlmOpenAiModel">OpenAI model</label>
-                  <input id="setExternalLlmOpenAiModel" type="text" autocomplete="off" spellcheck="false" placeholder="gpt-5.6-luna" />
+              <p class="settings-default-note">Choose where prompt assistance runs. Revise Prompt and Prompt Enhance share the model below; Smart planning can optionally use its own local model.</p>
+              <div class="prompt-ai-location">
+                <div class="prompt-ai-location-copy">
+                  <strong id="promptAiModeLabel">Where should AI run?</strong>
+                  <small id="promptAiModeDescription">Local keeps prompt assistance on your generation machine.</small>
                 </div>
+                <button class="prompt-ai-mode-switch" id="promptAiModeSwitch" type="button" role="switch" aria-checked="false" aria-labelledby="promptAiModeLabel" aria-describedby="promptAiModeDescription">
+                  <span data-prompt-ai-mode-label="local">Local</span>
+                  <span class="prompt-ai-mode-track" aria-hidden="true"><i></i></span>
+                  <span data-prompt-ai-mode-label="external">External</span>
+                </button>
+              </div>
+              <input id="setExternalLlmProvider" type="hidden" value="local" />
+
+              <div class="prompt-ai-mode-panel" data-prompt-ai-mode-panel="local">
                 <div class="field">
+                  <label for="setExternalLlmLocalProvider">Local source</label>
+                  <select id="setExternalLlmLocalProvider">
+                    <option value="local">ComfyUI</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="lmstudio">LM Studio</option>
+                  </select>
+                </div>
+                <div class="external-llm-provider local-prompt-ai-settings" id="localPromptAiSettings" data-external-llm-provider="local">
+                  <div class="field">
+                    <label for="setLocalPromptAiClip">Prompt enhance model</label>
+                    <select id="setLocalPromptAiClip" aria-describedby="localPromptAiHint">
+                      <option value="">Automatic · Krea 2 prompt model</option>
+                    </select>
+                  </div>
+                  <div class="field" id="localPromptAiClipTypeField">
+                    <label for="setLocalPromptAiClipType">Loader type</label>
+                    <select id="setLocalPromptAiClipType">
+                      <option value="krea2">Krea 2 / Qwen3-VL</option>
+                    </select>
+                  </div>
+                  <p class="local-prompt-ai-hint" id="localPromptAiHint">Used by Revise Prompt and Prompt Enhance. Generation models remain unchanged.</p>
+                  <div class="local-prompt-ai-actions">
+                    <button class="settings-cache-clear" id="refreshLocalPromptAiModels" type="button">Refresh models</button>
+                    <span id="localPromptAiStatus" role="status" aria-live="polite">Loading installed models…</span>
+                  </div>
+                  <div class="smart-planner-model-setting">
+                    <button class="settings-media-toggle" id="smartPlannerModelOverride" type="button" role="switch" aria-checked="false">
+                      <span class="settings-media-toggle-copy"><strong>Dedicated Smart planner model</strong><small>Use a different ComfyUI model only for full production planning.</small></span>
+                      <span class="settings-media-switch" aria-hidden="true"><i></i></span>
+                    </button>
+                    <div class="smart-planner-model-fields" id="smartPlannerModelFields" hidden>
+                      <div class="field">
+                        <label for="setSmartPlannerClip">Smart planner model</label>
+                        <select id="setSmartPlannerClip" aria-describedby="smartPlannerModelHint">
+                          <option value="">Choose an installed model…</option>
+                        </select>
+                      </div>
+                      <div class="field" id="smartPlannerClipTypeField">
+                        <label for="setSmartPlannerClipType">Loader type</label>
+                        <select id="setSmartPlannerClipType">
+                          <option value="krea2">Krea 2 / Qwen3-VL</option>
+                        </select>
+                      </div>
+                      <p class="local-prompt-ai-hint" id="smartPlannerModelHint">A capable Qwen3-VL model is recommended for complete shot planning and attached-reference analysis.</p>
+                      <span id="smartPlannerModelStatus" role="status" aria-live="polite"></span>
+                    </div>
+                  </div>
+                </div>
+                <div class="external-llm-provider" data-external-llm-provider="ollama" hidden>
+                  <div class="field">
+                    <label for="setExternalLlmOllamaUrl">Ollama URL</label>
+                    <input id="setExternalLlmOllamaUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:11434" />
+                  </div>
+                  <div class="field">
+                    <label for="setExternalLlmOllamaModel">Ollama model</label>
+                    <input id="setExternalLlmOllamaModel" type="text" autocomplete="off" spellcheck="false" placeholder="gemma3" />
+                  </div>
+                  <p class="external-llm-field-note">Ollama remains local when this URL points to your generation machine.</p>
+                </div>
+                <div class="external-llm-provider" data-external-llm-provider="lmstudio" hidden>
+                  <div class="field">
+                    <label for="setExternalLlmLmStudioUrl">LM Studio URL</label>
+                    <input id="setExternalLlmLmStudioUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:1234/v1" />
+                  </div>
+                  <div class="field">
+                    <label for="setExternalLlmLmStudioModel">LM Studio model identifier</label>
+                    <input id="setExternalLlmLmStudioModel" type="text" autocomplete="off" spellcheck="false" placeholder="Copy from LM Studio’s Developer tab" />
+                  </div>
+                  <p class="external-llm-field-note">Start the local server in LM Studio’s Developer tab. Vision references require a loaded vision-capable model.</p>
+                </div>
+              </div>
+
+              <div class="prompt-ai-mode-panel" data-prompt-ai-mode-panel="external" hidden>
+                <div class="field">
+                  <label for="setExternalLlmExternalProvider">External provider</label>
+                  <select id="setExternalLlmExternalProvider">
+                    <option value="openai">OpenAI</option>
+                    <option value="gemini">Google Gemini</option>
+                  </select>
+                </div>
+                <div class="external-llm-provider" data-external-llm-provider="openai" hidden>
+                  <div class="field">
+                    <label for="setExternalLlmOpenAiModel">OpenAI model</label>
+                    <input id="setExternalLlmOpenAiModel" type="text" autocomplete="off" spellcheck="false" placeholder="gpt-5.6-luna" />
+                  </div>
+                </div>
+                <div class="external-llm-provider" data-external-llm-provider="gemini" hidden>
+                  <div class="field">
+                    <label for="setExternalLlmGeminiModel">Gemini model</label>
+                    <input id="setExternalLlmGeminiModel" type="text" autocomplete="off" spellcheck="false" placeholder="gemini-3.6-flash" />
+                  </div>
+                  <div class="field">
+                    <label for="setExternalLlmGeminiApiKey">Gemini API key</label>
+                    <div class="external-llm-secret-row">
+                      <input id="setExternalLlmGeminiApiKey" type="password" autocomplete="new-password" placeholder="Paste an API key" />
+                      <button class="settings-cache-clear" id="clearExternalLlmGeminiApiKey" type="button" hidden>Clear</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <details class="prompt-ai-access-disclosure" id="promptAiOpenAiAccess">
+                <summary>
+                  <span><strong id="promptAiOpenAiAccessTitle">Voice transcription</strong><small id="promptAiOpenAiAccessPurpose">Optional · uses OpenAI</small></span>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg>
+                </summary>
+                <div class="field prompt-ai-openai-access-field">
                   <label for="setExternalLlmOpenAiApiKey">OpenAI API key</label>
                   <div class="external-llm-secret-row">
                     <input id="setExternalLlmOpenAiApiKey" type="password" autocomplete="new-password" placeholder="Paste an API key" />
                     <button class="settings-cache-clear" id="clearExternalLlmOpenAiApiKey" type="button" hidden>Clear</button>
                   </div>
+                  <small class="external-llm-field-note">Smart voice transcription uses OpenAI even when another planner is selected. Leave blank if voice input is not needed.</small>
                 </div>
-              </div>
-              <div class="external-llm-provider" data-external-llm-provider="gemini" hidden>
-                <div class="field">
-                  <label for="setExternalLlmGeminiModel">Gemini model</label>
-                  <input id="setExternalLlmGeminiModel" type="text" autocomplete="off" spellcheck="false" placeholder="gemini-3.6-flash" />
-                </div>
-                <div class="field">
-                  <label for="setExternalLlmGeminiApiKey">Gemini API key</label>
-                  <div class="external-llm-secret-row">
-                    <input id="setExternalLlmGeminiApiKey" type="password" autocomplete="new-password" placeholder="Paste an API key" />
-                    <button class="settings-cache-clear" id="clearExternalLlmGeminiApiKey" type="button" hidden>Clear</button>
-                  </div>
-                </div>
-              </div>
-              <div class="external-llm-provider" data-external-llm-provider="ollama" hidden>
-                <div class="field">
-                  <label for="setExternalLlmOllamaUrl">Ollama URL</label>
-                  <input id="setExternalLlmOllamaUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:11434" />
-                </div>
-                <div class="field">
-                  <label for="setExternalLlmOllamaModel">Ollama model</label>
-                  <input id="setExternalLlmOllamaModel" type="text" autocomplete="off" spellcheck="false" placeholder="gemma3" />
-                </div>
-              </div>
-              <div class="external-llm-routing">
-                <h6>Use external AI for</h6>
-                <button class="settings-media-toggle" id="externalLlmImageRevise" type="button" role="switch" aria-checked="false">
-                  <span class="settings-media-toggle-copy"><strong>Image · Revise Prompt</strong><small>Rewrite image prompts with the selected provider.</small></span>
-                  <span class="settings-media-switch" aria-hidden="true"><i></i></span>
-                </button>
-                <button class="settings-media-toggle" id="externalLlmImageEnhance" type="button" role="switch" aria-checked="false">
-                  <span class="settings-media-toggle-copy"><strong>Image · Prompt Enhance</strong><small>Enhance global and regional image prompts externally.</small></span>
-                  <span class="settings-media-switch" aria-hidden="true"><i></i></span>
-                </button>
-                <button class="settings-media-toggle" id="externalLlmVideoRevise" type="button" role="switch" aria-checked="false">
-                  <span class="settings-media-toggle-copy"><strong>Video · Revise Prompt</strong><small>Rewrite video prompts with the selected provider.</small></span>
-                  <span class="settings-media-switch" aria-hidden="true"><i></i></span>
-                </button>
-                <button class="settings-media-toggle" id="externalLlmVideoEnhance" type="button" role="switch" aria-checked="false">
-                  <span class="settings-media-toggle-copy"><strong>Video · Prompt Enhance</strong><small>Use the provider before building H3, LTX, Wan, Eros, and SCAIL graphs.</small></span>
-                  <span class="settings-media-switch" aria-hidden="true"><i></i></span>
-                </button>
-              </div>
-              <p class="external-llm-privacy">When visual context is enabled, prompt text and the selected reference image are sent to the chosen provider. Ollama remains local when its URL points to this computer.</p>
+              </details>
+              <p class="prompt-ai-routing-note"><i aria-hidden="true"></i><span><strong>Routing coverage</strong><small>Image prompts · Video prompts · Smart planner or its local override</small></span></p>
+              <p class="external-llm-privacy">When External is selected, prompts and relevant attached references are sent only to the chosen provider. ComfyUI, Ollama, and LM Studio remain local when their URLs point to the generation machine.</p>
               <div class="external-llm-test-row">
                 <button class="settings-cache-clear" id="testExternalLlm" type="button">Test connection</button>
                 <span id="externalLlmStatus" role="status" aria-live="polite"></span>
@@ -3385,6 +3595,12 @@
 <div class="sheet" id="updatesSheet">
   <section class="sheet-panel updates-panel" role="dialog" aria-modal="true" aria-labelledby="updatesTitle">
     <h3 class="sheet-title"><span id="updatesTitle">Mix Studio updates</span><button data-close type="button" aria-label="Close updates">✕</button></h3>
+    <div class="field update-channel-field">
+      <label for="updateChannel">Update channel</label>
+      <select id="updateChannel" aria-describedby="updateChannelHelp" disabled><option value="stable">Stable — recommended</option><option value="preview">Preview — early testing</option><option value="development">Development — configured Git branch</option></select>
+      <p id="updateChannelHelp">Stable installs published releases. Changing channels never downgrades your installation.</p>
+      <button id="copyUpdateDiagnostics" type="button" hidden>Copy update diagnostics</button>
+    </div>
     <button class="updates-alert-toggle" id="updatesAlertToggle" type="button" role="switch" aria-checked="false">
       <span><strong>Browser alerts</strong><small id="updatesAlertStatus">Get an alert while Mix Studio is open.</small></span>
       <span class="settings-media-switch" aria-hidden="true"><i></i></span>
@@ -3551,6 +3767,10 @@
         <span class="asset-picker-action-icon" aria-hidden="true">✦</span>
         <span><b>Browse Library</b><small>Generations and uploaded assets</small></span>
       </button>
+      <button class="asset-picker-action" id="assetPickerRecent" type="button">
+        <span class="asset-picker-action-icon asset-picker-recent-icon" aria-hidden="true">↺</span>
+        <span><b>Recently used</b><small id="assetPickerRecentCopy">Used assets will appear here</small></span>
+      </button>
     </div>
     <div class="asset-picker-gallery" id="assetPickerGallery" hidden>
       <div class="asset-picker-gallery-head">
@@ -3647,6 +3867,32 @@
     <div class="image-crop-actions">
       <button type="button" id="imageCropRestore" hidden>Restore original</button>
       <button class="sheet-cta" type="button" id="imageCropApply">Apply crop</button>
+    </div>
+  </div>
+</div>
+
+<div class="sheet centered-dialog-sheet" id="h3ReferenceTrimSheet">
+  <div class="sheet-panel h3-reference-trim-panel" role="dialog" aria-modal="true" aria-labelledby="h3ReferenceTrimTitle">
+    <h3 class="sheet-title"><span id="h3ReferenceTrimTitle">Trim reference video</span><button data-close aria-label="Close video trimmer">✕</button></h3>
+    <div class="h3-reference-trim-preview">
+      <video id="h3ReferenceTrimVideo" muted playsinline preload="metadata"></video>
+    </div>
+    <div class="audio-trim h3-reference-trim-track">
+      <div class="trim-row">
+        <button class="icon-btn trim-play" id="h3ReferenceTrimPlay" type="button" aria-label="Play trimmed preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13L18 12 8 5.5Z" fill="currentColor"/></svg></button>
+        <span class="trim-label" id="h3ReferenceTrimLabel"></span>
+      </div>
+      <div class="wave-wrap" id="h3ReferenceTrimWave" aria-label="Video trim range. Drag either edge to adjust the selection.">
+        <canvas class="wave-canvas" id="h3ReferenceTrimFilmstrip" aria-hidden="true"></canvas>
+        <div class="wave-shade left" id="h3ReferenceTrimShadeL"></div>
+        <div class="wave-shade wave-shade-r" id="h3ReferenceTrimShadeR"></div>
+        <div class="wave-sel" id="h3ReferenceTrimSelection"></div>
+        <div class="playhead" id="h3ReferenceTrimPlayhead"></div>
+      </div>
+    </div>
+    <div class="h3-reference-trim-actions">
+      <button type="button" id="h3ReferenceTrimReset">Use full video</button>
+      <button class="sheet-cta" type="button" id="h3ReferenceTrimApply">Apply trim</button>
     </div>
   </div>
 </div>
@@ -3767,5 +4013,7 @@
 <script src="/release-notes.js"></script>
 <script src="/lora-intents.js"></script>
 <script src="/app.js"></script>
+<script src="/model-select.js"></script>
+<script src="/splat-workspace.js"></script>
 </body>
 </html>

@@ -18,7 +18,7 @@ const DEFAULT_GALLERY_PREVIEW_FRAME_RATE = 24;
 const GALLERY_PREVIEW_RESOLUTION_OPTIONS = Object.freeze([480, 640, 720]);
 const GALLERY_PREVIEW_FRAME_RATE_OPTIONS = Object.freeze([12, 18, 24, 30]);
 const MAX_NATIVE_GALLERY_PREVIEW_EDGE = 1440;
-const DEFAULT_EDIT_ENGINE_ORDER = Object.freeze(['klein9', 'klein4', 'qwen', 'krea2ref', 'krea2remix', 'krea2']);
+const DEFAULT_EDIT_ENGINE_ORDER = Object.freeze(['klein9', 'klein4', 'qwen21', 'qwen', 'krea2ref', 'krea2remix', 'krea2']);
 // Keep every local workspace write bound to the profile that loaded this
 // document. Profile transitions update localStorage before the old page exits,
 // so consulting the live key during pagehide can otherwise copy one profile's
@@ -35,7 +35,12 @@ let firstRunTutorialGalleryLoaded = false;
 
 const state = {
   view: 'create',            // create | video | edit | gallery
-  createMode: 'image',       // image | region | video (nested under Create)
+  createMode: 'image',       // image | region | smart | video (nested under Create)
+  imageEngine: 'krea2',
+  qwen21Steps: 40,
+  qwen21Cfg: 2.5,
+  imageResolutions: {},
+  qwen21Loras: [],
   enhance: true,
   aspect: '1:1',
   mp: 1,
@@ -144,10 +149,13 @@ const state = {
   vidH3MatchSource: true,    // keep frame-mode output at the first frame's aspect unless explicitly overridden
   vidH3MatchReferenceVideo: false,
   vidH3Xl: false,
-  vidH3Manual: false,        // true when the user typed an exact H3 canvas
-  vidH3ManualWidth: 0,
-  vidH3ManualHeight: 0,
-  vidH3SageAttention: false,
+      vidH3Manual: false,        // true when the user typed an exact H3 canvas
+      vidH3ManualWidth: 0,
+      vidH3ManualHeight: 0,
+      // Attention backend for MiniMax H3. selectedH3AttentionBackend() falls back to
+      // standard on Intel Arc/XPU, where the CUDA-only backends cannot run.
+      vidH3AttentionBackend: 'sageattention',
+      vidH3SageAttention: false,
   vidH3Turbo: false,
   vidH3LongContext: false,
   vidH3TurboStrength: 1,
@@ -193,6 +201,11 @@ const state = {
     previewFrameRate: DEFAULT_GALLERY_PREVIEW_FRAME_RATE,
     previewCache: false,
     experimentalFeatures: false,
+    smartMode: false,
+  },
+  assetPickerPreferences: {
+    recentLimit: 10,
+    recentKeys: [],
   },
   metaLoras: [],
   metaLorasInfo: {},
@@ -250,6 +263,33 @@ const ASPECTS = [
   { label: '21:9', ar: 21 / 9 },
 ];
 const RESOLUTION_SIZE_OPTIONS = [0.22, 0.75, 1, 1.75];
+const QWEN21_NATIVE_MP = 2048 * 2048 / 1e6;
+const QWEN21_NATIVE_SIZES = {
+  '1:1': [2048, 2048], '4:3': [2400, 1792], '3:4': [1792, 2400],
+  '3:2': [2528, 1696], '2:3': [1696, 2528],
+  '16:9': [2752, 1536], '9:16': [1536, 2752],
+};
+function qwen21NativeDimensions(aspect) {
+  const size = QWEN21_NATIVE_SIZES[aspect];
+  if (size) return { w: size[0], h: size[1] };
+  const ratio = ASPECTS.find(a => a.label === aspect)?.ar || 1;
+  return { w: round32(Math.sqrt(2048 * 2048 * ratio)), h: round32(Math.sqrt(2048 * 2048 / ratio)) };
+}
+function captureImageResolution() {
+  return { aspect: state.aspect, mp: state.mp, width: state.width, height: state.height, customDims: state.customDims };
+}
+function switchImageResolution(engine, vramGb = 0) {
+  state.imageResolutions ||= {};
+  state.imageResolutions[state.imageEngine] = captureImageResolution();
+  const saved = state.imageResolutions[engine];
+  state.imageEngine = engine;
+  if (saved) Object.assign(state, saved);
+  else if (!state.customDims && !state.createMatchSource) {
+    // Conservative automatic choice; native 2K remains available on all machines.
+    state.mp = engine === 'qwen21' && Number(vramGb) >= 32 ? QWEN21_NATIVE_MP : 1;
+  }
+  computeDims();
+}
 
 function h3ResolutionActive() {
   return state.view === 'video' && state.vidEngine === 'h3';
@@ -257,6 +297,29 @@ function h3ResolutionActive() {
 
 function h3TurboActive() {
   return h3ResolutionActive() && state.vidH3Turbo === true;
+}
+
+function normalizeH3AttentionBackend(value, legacySageAttention = true) {
+  const requested = String(value || '').trim().toLowerCase();
+  if (requested === 'sage') return 'sageattention';
+  if (['standard', 'sageattention', 'sla', 'kitchen', 'triton'].includes(requested)) return requested;
+  return legacySageAttention === false ? 'standard' : 'sageattention';
+}
+
+// SageAttention, SLA and Kitchen are CUDA-only. Intel Arc/XPU machines get the
+// standard PyTorch attention path instead of a backend that cannot run.
+function selectedH3AttentionBackend() {
+  const backend = normalizeH3AttentionBackend(state.vidH3AttentionBackend);
+  if ((backend === 'sageattention' || backend === 'sla' || backend === 'kitchen')
+      && String(state.gpuVendor || '').toLowerCase() === 'intel') return 'standard';
+  return backend;
+}
+
+function h3AttentionBackendLabel(value) {
+  const backend = normalizeH3AttentionBackend(value, false);
+  if (backend === 'sla') return 'SLA Sparse (experimental)';
+  if (backend === 'kitchen') return 'Comfy Kitchen (experimental)';
+  return backend === 'sageattention' ? 'SageAttention (verified)' : 'Standard PyTorch';
 }
 
 function h3TurboFixed768pActive() {
@@ -357,11 +420,11 @@ const QWEN_ANGLE_DISTANCES = [
   { id: 'wide shot', label: 'Wide' },
 ];
 const EDIT_ENGINES = [...DEFAULT_EDIT_ENGINE_ORDER];
-const OUTPAINT_EDIT_ENGINES = new Set(EDIT_ENGINES.filter((engine) => engine !== 'krea2remix'));
+const OUTPAINT_EDIT_ENGINES = new Set(EDIT_ENGINES.filter((engine) => !['krea2remix', 'qwen21'].includes(engine)));
 const ANGLE_EDIT_ENGINES = new Set(['klein4', 'klein9', 'qwen']);
 const SEQUENTIAL_EDIT_ENGINES = new Set(['klein4', 'klein9', 'qwen', 'krea2ref', 'krea2remix']);
 const EDIT_MASK_ENGINES = new Set(['klein4', 'klein9', 'qwen', 'krea2']);
-const EDIT_FEATURES = { klein4: 'edit.klein4', klein9: 'edit.klein9', qwen: 'edit.qwen', krea2: 'edit.krea2', krea2ref: 'edit.krea2ref', krea2remix: 'edit.krea2remix' };
+const EDIT_FEATURES = { klein4: 'edit.klein4', klein9: 'edit.klein9', qwen21: 'edit.qwen21', qwen: 'edit.qwen', krea2: 'edit.krea2', krea2ref: 'edit.krea2ref', krea2remix: 'edit.krea2remix' };
 const VIDEO_FEATURES = { ltx: 'video.ltx', ltx25: 'video.ltx25', h3: 'video.h3', 'ltx-edit': 'video.ltxEdit', eros: 'video.eros', wan: 'video.wan', 'wan-animate2': 'video.wanAnimate2', scail: 'video.scail' };
 const VIDEO_ENGINES = Object.keys(VIDEO_FEATURES);
 const CREATE_ENGINES = Object.freeze(['krea2', 'qwen_image']);
@@ -651,6 +714,10 @@ function h3ReferenceBackedMode(mode = state.vidH3Mode) {
 
 function experimentalFeaturesEnabled() {
   return state.mediaPreferences.experimentalFeatures === true;
+}
+
+function smartModeEnabled() {
+  return experimentalFeaturesEnabled() && state.mediaPreferences.smartMode === true;
 }
 
 function h3ReplaceAvailable() {
@@ -1402,17 +1469,34 @@ function renderPromptMentionPicker() {
       media = document.createElement('img');
       media.src = ref.displayUrl || ref.url || `/api/input?name=${encodeURIComponent(ref.name)}`;
       media.alt = '';
+    } else if (entry.mediaKind === 'video') {
+      media = document.createElement('video');
+      media.className = 'prompt-mention-video';
+      media.src = ref.displayUrl || ref.url || `/api/input?name=${encodeURIComponent(ref.name)}`;
+      media.muted = true;
+      media.playsInline = true;
+      media.preload = 'metadata';
+      media.tabIndex = -1;
+      media.setAttribute('aria-hidden', 'true');
+      media.addEventListener('loadedmetadata', () => {
+        const start = Math.max(0, Number(ref.trimStart) || 0);
+        try { media.currentTime = Math.min(start + 0.05, Math.max(0, (media.duration || 0) - 0.05)); } catch { /* preview remains on its poster frame */ }
+      }, { once: true });
     } else {
       media = document.createElement('span');
       media.className = `prompt-mention-media ${entry.mediaKind}`;
       media.setAttribute('aria-hidden', 'true');
-      media.textContent = entry.mediaKind === 'audio' ? '♫' : '▶';
+      media.textContent = '♫';
     }
     const copy = document.createElement('span');
     const title = document.createElement('b');
     title.textContent = entry.label;
     const detail = document.createElement('small');
-    detail.textContent = h3Reference ? (ref.label || ref.name) : 'Insert reference into prompt';
+    detail.textContent = h3Reference
+      ? (entry.mediaKind === 'video'
+        ? 'Video reference'
+        : (entry.role === 'embedded-audio' ? 'Audio from video' : `${entry.mediaKind[0].toUpperCase()}${entry.mediaKind.slice(1)} reference`))
+      : 'Insert reference into prompt';
     copy.append(title, detail);
     const add = document.createElement('i');
     add.textContent = current ? '✓' : (replacingH3Reference ? '→' : '+');
@@ -1936,7 +2020,34 @@ const MIX_STUDIO_124_SHOWCASE = [
   },
   ...MIX_STUDIO_120_SHOWCASE,
 ];
+const MIX_STUDIO_130_SHOWCASE = [
+  {
+    eyebrow: 'Additional image model',
+    title: 'Create and edit with Qwen 2.1',
+    message: 'Choose Qwen Image 2.1 for image generation and whole-image edits, with Balance / Quality controls and hardware-aware downloads. Krea 2 remains your default.',
+    media: '/update-media/v1.3.0-qwen-2.1.mp4',
+    poster: '/update-media/v1.3.0-qwen-2.1.jpg',
+    theme: 'release',
+  },
+  {
+    eyebrow: 'Experimental · Create → 3D',
+    title: 'Turn a photo into a scene',
+    message: 'Generate an orbit video, reconstruct a Gaussian splat, and explore it in Mix Studio. Center your view, hide distant splats, and reopen scenes from Library. Enable Experimental Features to create.',
+    media: '/update-media/v1.3.0-photo-to-3d.mp4',
+    poster: '/update-media/v1.3.0-photo-to-3d.jpg',
+    theme: 'release',
+  },
+  {
+    eyebrow: 'A smoother workspace',
+    title: 'Find settings. Keep creating.',
+    message: 'Search across Preferences, use LM Studio for local Prompt AI, and choose Stable or Preview updates. Setup and video workflows include reliability improvements.',
+    media: '',
+    theme: 'release',
+  },
+  ...MIX_STUDIO_124_SHOWCASE,
+];
 const OFFICIAL_RELEASE_SHOWCASES = {
+  '1.3.0': MIX_STUDIO_130_SHOWCASE,
   '1.2.4': MIX_STUDIO_124_SHOWCASE,
   '1.2.3': [
     {
@@ -1980,7 +2091,7 @@ let updateShowcaseTimer = null;
 let updateShowcaseAutoPaused = false;
 let updateShowcaseHoverPaused = false;
 let updateShowcaseGesture = null;
-const UPDATE_SHOWCASE_INTERVAL_MS = 8000;
+const UPDATE_SHOWCASE_INTERVAL_MS = 10000;
 
 function updateSeenKey() {
   return profileStorageKey('ks-update-seen', state.profile?.id);
@@ -2136,7 +2247,8 @@ function renderUpdateShowcaseSlide(index = 0) {
     video.className = 'update-showcase-video';
     video.muted = true;
     video.loop = true;
-    video.autoplay = true;
+    video.autoplay = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (slide.poster) video.poster = slide.poster;
     video.playsInline = true;
     video.preload = 'metadata';
     video.setAttribute('aria-label', `${slide.title} preview`);
@@ -2268,7 +2380,7 @@ function renderOfficialRelease() {
 
   if (!latest) {
     setReleaseStatus('No public releases yet', 'current');
-    list.innerHTML = '<p class="updates-empty">No stable GitHub Release has been published yet.</p>';
+    list.textContent = state.releaseChannel === 'development' ? 'Development mode updates the configured Git branch. Use Update app in the menu.' : 'No release is available for this channel.';
     actions.hidden = true;
     installStatus.textContent = '';
     return;
@@ -2299,7 +2411,7 @@ function renderOfficialRelease() {
     : state.officialReleaseError
       ? 'Showing the last successful GitHub check.'
       : latestMatchesInstalled
-        ? 'This installation matches the latest stable release.'
+        ? 'This installation matches the selected channel’s release.'
         : 'This installation is newer than the latest published GitHub release.';
 }
 
@@ -2355,7 +2467,7 @@ function receiveOfficialRelease(result, options = {}) {
     closeOfficialReleaseNotice();
     return;
   }
-  showOfficialReleaseNotice(state.officialRelease);
+  if (options.showNotice !== false) showOfficialReleaseNotice(state.officialRelease);
   if (options.notify && officialReleaseId() !== previousId) showSystemUpdateNotification(state.officialRelease);
 }
 
@@ -2365,6 +2477,10 @@ async function loadOfficialRelease(options = {}) {
   renderOfficialRelease();
   try {
     const result = await api('/api/releases/latest');
+    state.releaseChannel = result.channel || 'stable';
+    $('#updateChannel').value = state.releaseChannel;
+    $('#updateChannel').disabled = !state.profileIsOwner;
+    $('#copyUpdateDiagnostics').hidden = !state.profileIsOwner;
     receiveOfficialRelease(result, options);
     renderUpdateNotificationPreference();
   } catch (error) {
@@ -2483,6 +2599,29 @@ function installOfficialRelease() {
   $('#appUpdateBtn').click();
 }
 
+$('#updateChannel').addEventListener('change', async () => {
+  const select = $('#updateChannel');
+  const previous = state.releaseChannel || 'stable';
+  const channel = select.value;
+  if (channel !== 'stable' && !await askConfirm({ title: 'Change update channel', message: channel === 'preview'
+    ? 'Preview releases may contain unfinished features. Switch this installation to Preview?'
+    : 'Development updates install unreleased commits from the configured Git branch. Continue?', confirmLabel: 'Switch channel' })) { select.value = previous; return; }
+  select.disabled = true;
+  try {
+    await api('/api/update/channel', { method: 'POST', body: JSON.stringify({ channel }) });
+    state.releaseChannel = channel;
+    state.officialRelease = null;
+    state.officialReleaseUpdateAvailable = false;
+    await loadOfficialRelease({ showNotice: false });
+    toast(`Update channel: ${channel}`);
+  } catch (error) { select.value = previous; toast(error.message, true); }
+  finally { select.disabled = !state.profileIsOwner; }
+});
+$('#copyUpdateDiagnostics').addEventListener('click', async () => {
+  try { const report = await api('/api/update/diagnostics'); await copyTextToClipboard(JSON.stringify(report, null, 2)); toast('Update diagnostics copied'); }
+  catch (error) { toast(error.message, true); }
+});
+
 $('#updatesInstallBtn').addEventListener('click', installOfficialRelease);
 $('#updateNoticeInstall').addEventListener('click', installOfficialRelease);
 
@@ -2534,6 +2673,8 @@ function actionIconMarkup(icon) {
     switch: '<path d="m15 4 5 4-5 4V9H5V7h10V4Zm-6 8v3h10v2H9v3l-5-4 5-4Z"/>',
     updates: '<path d="M12 5a7 7 0 0 1 6.3 4H16l3.3 3.3L22.6 9h-2.2A9 9 0 0 0 4 8.2L5.7 9A7 7 0 0 1 12 5Zm-7.3 6.7L1.4 15h2.2A9 9 0 0 0 20 15.8l-1.7-.8A7 7 0 0 1 5.7 15H8l-3.3-3.3Z"/>',
     image: '<path d="M4 4h16v16H4V4Zm2 2v12h12V6H6Zm2 9 3-4 2.4 2.7 1.8-2.1L18 15H8Zm7-7a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Z"/>',
+    crop: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M7 3v14a2 2 0 0 0 2 2h12M3 7h14a2 2 0 0 1 2 2v12"/>',
+    trim: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 17h16M8 4v6m8 4v6M8 10a2 2 0 1 0 0 4m8-4a2 2 0 1 1 0 4"/>',
     eye: '<path d="M12 5c5.2 0 9 5.3 9 7s-3.8 7-9 7-9-5.3-9-7 3.8-7 9-7Zm0 2c-3.8 0-6.7 3.7-7 5 .3 1.3 3.2 5 7 5s6.7-3.7 7-5c-.3-1.3-3.2-5-7-5Zm0 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z"/>',
     enhance: '<path d="m12 2 1.2 4.1L17 8l-3.8 1.9L12 14l-1.2-4.1L7 8l3.8-1.9L12 2Zm6 10 .8 2.7L21 16l-2.2 1.3L18 20l-.8-2.7L15 16l2.2-1.3L18 12ZM6 13l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3Z"/>',
     heart: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78Z"/>',
@@ -2929,7 +3070,7 @@ function renderAppRelease(release = {}) {
   const label = formatAppVersion(state.appRelease.version, state.appRelease.revision);
   const drawer = $('#appVersionLabel');
   const settings = $('#settingsAppVersion');
-  if (drawer) drawer.textContent = label;
+  if (drawer) drawer.textContent = `${label}${state.appRelease.revision ? ` · ${state.appRelease.revision.slice(0, 7)}` : ''}`;
   if (settings) settings.textContent = label;
   return label;
 }
@@ -3062,10 +3203,23 @@ $('#appUpdateBtn').addEventListener('click', async () => {
   button.disabled = true;
   button.classList.add('busy');
   label.textContent = 'Checking for updates…';
-  setAppUpdateStatus('Connecting to GitHub and checking the current branch…');
+  setAppUpdateStatus('Checking the selected update channel…');
   try {
     const previousInstanceId = state.appRelease.instanceId;
-    const result = await api('/api/update', { method: 'POST' });
+    const offered = await api('/api/releases/latest');
+    const channel = offered.channel || 'stable';
+    if (channel !== 'development' && (offered.stale || !offered.latest)) throw new Error('No verified release is available. Try again later.');
+    const tagName = offered.latest?.tagName;
+    if (!await askConfirm({ title: 'Install update', message: channel === 'development'
+      ? 'Update from the configured development branch? This can include unreleased changes.'
+      : `Install Mix Studio ${tagName} from ${channel}? Both generation queues must be idle.`, confirmLabel: 'Install' })) {
+      appUpdateRunning = false;
+      button.classList.remove('busy');
+      setAppUpdateStatus('Update cancelled');
+      renderAppUpdateAccess();
+      return;
+    }
+    const result = await api('/api/update', { method: 'POST', body: JSON.stringify({ channel, tagName }) });
     const versionLabel = renderAppRelease(result);
     button.classList.remove('busy');
     if (!result.updated) {
@@ -3117,6 +3271,7 @@ $('#appRestartBtn').addEventListener('click', async () => {
 function round32(n) { return Math.max(64, Math.round(n / 32) * 32); }
 
 function computeDims() {
+  if (state.mp === QWEN21_NATIVE_MP && (state.createMode !== 'image' || state.imageEngine !== 'qwen21')) state.mp = 1;
   if (h3ResolutionActive()) {
     const dimensions = h3CurrentDimensions();
     state.customDims = false;
@@ -3126,6 +3281,12 @@ function computeDims() {
   }
   if (state.customDims) return;
   const a = ASPECTS.find((x) => x.label === state.aspect) || ASPECTS[0];
+  if (state.imageEngine === 'qwen21' && state.createMode === 'image' && state.mp === QWEN21_NATIVE_MP) {
+    const dims = qwen21NativeDimensions(state.aspect);
+    state.width = dims.w;
+    state.height = dims.h;
+    return;
+  }
   const px = state.mp * 1e6;
   state.width = round32(Math.sqrt(px * a.ar));
   state.height = round32(Math.sqrt(px / a.ar));
@@ -3185,6 +3346,7 @@ function defaultMediaPreferences() {
     previewFrameRate: DEFAULT_GALLERY_PREVIEW_FRAME_RATE,
     previewCache: false,
     experimentalFeatures: false,
+    smartMode: false,
   };
 }
 
@@ -3192,6 +3354,7 @@ function loadMediaPreferences() {
   const key = mediaPreferencesKey();
   if (!key) {
     state.mediaPreferences = defaultMediaPreferences();
+    renderSmartFeatureAccess();
     return;
   }
   try {
@@ -3202,10 +3365,12 @@ function loadMediaPreferences() {
       previewFrameRate: normalizedGalleryPreviewFrameRate(saved?.previewFrameRate),
       previewCache: saved?.previewCache === true,
       experimentalFeatures: saved?.experimentalFeatures === true,
+      smartMode: saved?.smartMode === true,
     };
   } catch {
     state.mediaPreferences = defaultMediaPreferences();
   }
+  renderSmartFeatureAccess();
 }
 
 function saveMediaPreferences(next) {
@@ -3215,6 +3380,7 @@ function saveMediaPreferences(next) {
     previewFrameRate: normalizedGalleryPreviewFrameRate(next.previewFrameRate),
     previewCache: next.previewCache === true,
     experimentalFeatures: next.experimentalFeatures === true,
+    smartMode: next.experimentalFeatures === true && next.smartMode === true,
   };
   const key = mediaPreferencesKey();
   if (key) {
@@ -3283,15 +3449,18 @@ function saveForm() {
       kleinOutpaintConsistencyLoras: state.kleinOutpaintConsistencyLoras,
       editAutomaticLoras: state.editAutomaticLoras,
       loraTriggers: state.loraTriggers,
+      imageResolutions: state.imageResolutions, imageEngine: state.imageEngine, qwen21Steps: state.qwen21Steps, qwen21Cfg: state.qwen21Cfg, qwen21Loras: state.qwen21Loras,
       editEngine: state.editEngine, vidEngine: state.vidEngine, vidScailMode: state.vidScailMode,
       vidH3Mode: state.vidH3Mode,
       vidH3MatchSource: state.vidH3MatchSource,
       vidH3MatchReferenceVideo: state.vidH3MatchReferenceVideo,
       vidH3Xl: state.vidH3Xl,
-      vidH3Manual: state.vidH3Manual,
-      vidH3ManualWidth: state.vidH3ManualWidth,
-      vidH3ManualHeight: state.vidH3ManualHeight,
-
+          vidH3Manual: state.vidH3Manual,
+          vidH3ManualWidth: state.vidH3ManualWidth,
+          vidH3ManualHeight: state.vidH3ManualHeight,
+          vidH3AttentionBackend: selectedH3AttentionBackend(),
+          // Keep the legacy boolean so an older local checkout can still open this workspace.
+          vidH3SageAttention: selectedH3AttentionBackend() === 'sageattention',
       vidH3Turbo: state.vidH3Turbo,
       vidH3LongContext: state.vidH3LongContext,
       vidH3TurboStrength: state.vidH3TurboStrength,
@@ -3412,6 +3581,19 @@ function loadForm() {
     state.aspect = f.aspect || '1:1';
     state.mp = f.mp || 1;
     state.editAspectOverride = f.editAspectOverride === true;
+    state.imageEngine = f.imageEngine === 'qwen21' ? 'qwen21' : 'krea2';
+    state.qwen21Steps = Number(f.qwen21Steps) === 25 ? 25 : 40;
+    state.qwen21Cfg = Number.isFinite(f.qwen21Cfg) ? Math.max(1, Math.min(30, f.qwen21Cfg)) : 2.5;
+    state.imageResolutions = {};
+    for (const engine of ['krea2', 'qwen21']) {
+      const saved = f.imageResolutions?.[engine];
+      if (saved && ASPECTS.some(a => a.label === saved.aspect)
+          && [0.75, 1, 1.75, ...(engine === 'qwen21' ? [QWEN21_NATIVE_MP] : [])].includes(saved.mp)
+          && Number.isFinite(saved.width) && Number.isFinite(saved.height)) {
+        state.imageResolutions[engine] = { aspect: saved.aspect, mp: saved.mp, width: round32(saved.width), height: round32(saved.height), customDims: saved.customDims === true };
+      }
+    }
+    state.qwen21Loras = Array.isArray(f.qwen21Loras) ? f.qwen21Loras : [];
     state.editAspect = ASPECTS.some((a) => a.label === f.editAspect) ? f.editAspect : '1:1';
     state.editWidth = round32(Number(f.editWidth) || 1024);
     state.editHeight = round32(Number(f.editHeight) || 1024);
@@ -3532,7 +3714,8 @@ function loadForm() {
     });
     state.editLoras = state.editLorasByEngine[state.editEngine] || [];
     state.editLorasByEngine[state.editEngine] = state.editLoras;
-    state.createMode = ['image', 'region', 'video'].includes(f.createMode) ? f.createMode : 'image';
+    state.createMode = ['image', 'region', 'video'].includes(f.createMode) || (f.createMode === 'splat' && experimentalFeaturesEnabled()) || (f.createMode === 'smart' && smartModeEnabled())
+      ? f.createMode : 'image';
     const savedCreateInfluence = Number(f.createInfluence);
     state.createInfluence = Number.isFinite(savedCreateInfluence)
       ? Math.max(0, Math.min(100, savedCreateInfluence)) : 55;
@@ -3566,14 +3749,17 @@ function loadForm() {
     state.vidH3MatchSource = f.vidH3MatchSource !== false;
     state.vidH3MatchReferenceVideo = f.vidH3MatchReferenceVideo === true;
     state.vidH3Xl = f.vidH3Xl === true;
-    // Restore a manually typed H3 canvas only when the pair is still usable.
-    const restoredManual = f.vidH3Manual === true
-      ? H3Resolution.manualDimensions(f.vidH3ManualWidth, f.vidH3ManualHeight)
-      : null;
-    state.vidH3Manual = !!restoredManual;
-    state.vidH3ManualWidth = restoredManual ? restoredManual.width : 0;
-    state.vidH3ManualHeight = restoredManual ? restoredManual.height : 0;
-    state.vidH3SageAttention = false;
+        // Restore a manually typed H3 canvas only when the pair is still usable.
+        const restoredManual = f.vidH3Manual === true
+          ? H3Resolution.manualDimensions(f.vidH3ManualWidth, f.vidH3ManualHeight)
+          : null;
+        state.vidH3Manual = !!restoredManual;
+        state.vidH3ManualWidth = restoredManual ? restoredManual.width : 0;
+        state.vidH3ManualHeight = restoredManual ? restoredManual.height : 0;
+        state.vidH3AttentionBackend = normalizeH3AttentionBackend(
+          f.vidH3AttentionBackend,
+          f.vidH3SageAttention !== false,
+        );
     state.vidH3Turbo = f.vidH3Turbo === true;
     state.vidH3LongContext = f.vidH3LongContext === true
       && experimentalFeaturesEnabled()
@@ -3996,7 +4182,7 @@ desktopWorkspaceQuery.addEventListener('change', () => {
   if (lightboxOpen && state.currentItem) {
     const media = state.currentMedia?.type === 'video'
       ? state.currentMedia.id
-      : (state.currentMedia?.type === 'composite' ? `composite:${state.currentMedia.id}` : 'image');
+      : (state.currentMedia?.type === 'splat' ? `splat:${state.currentMedia.id}` : (state.currentMedia?.type === 'composite' ? `composite:${state.currentMedia.id}` : 'image'));
     openLightbox(state.currentItem.id, media);
   }
   document.body.classList.toggle('desktop-focused-result', !!focused);
@@ -4342,6 +4528,1244 @@ function restoreGalleryZoom() {
 $('#galleryZoom').addEventListener('input', (event) => applyGalleryZoom(event.target.value, { animate: true }));
 $('#galleryZoom').addEventListener('change', (event) => applyGalleryZoom(event.target.value, { persist: true }));
 
+let smartPlan = null;
+let smartPlanHash = '';
+let smartPlanProvider = null;
+let smartRun = null;
+let smartRuns = [];
+let smartRunsLoaded = false;
+let smartBusy = false;
+let smartClientToken = '';
+let smartPlanRequestId = '';
+let smartPlanResumeStarted = false;
+let smartReferences = [];
+let smartPlanEditing = false;
+let smartPlanEditBackup = null;
+let smartPlanEditHash = '';
+let smartRecorder = null;
+let smartRecordingChunks = [];
+let smartRecordingStartedAt = 0;
+let smartRecordingTimer = null;
+let smartRecordingLimitTimer = null;
+let smartVoiceFileFallback = false;
+
+const SMART_EMPTY_BOARD = '<div class="smart-board-empty"><span class="smart-empty-orbit" aria-hidden="true"><i></i><b></b></span><small>Director’s plan</small><h3>Your shot plan will appear here</h3><p>Smart plans the visual arc, cuts, camera angles, continuity, reference use, and individual clip jobs before anything is generated.</p><ol><li><span>1</span>Direct the brief</li><li><span>2</span>Review or modify</li><li><span>3</span>Approve the clip queue</li></ol></div>';
+
+function newSmartClientToken() {
+  return globalThis.crypto?.randomUUID?.() || `smart_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+function smartPlanRequestStorageKey() {
+  return profileStorageKey('ks-smart-plan-request');
+}
+
+function rememberSmartPlanRequest(requestId, brief, references) {
+  const key = smartPlanRequestStorageKey();
+  if (!key) return;
+  try {
+    localStorage.setItem(key, JSON.stringify({
+      requestId,
+      brief,
+      references,
+      createdAt: Date.now(),
+    }));
+  } catch { /* planning still works without resumable browser storage */ }
+}
+
+function forgetSmartPlanRequest(requestId = '') {
+  const key = smartPlanRequestStorageKey();
+  if (!key) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || 'null');
+    if (!requestId || saved?.requestId === requestId) localStorage.removeItem(key);
+  } catch {
+    localStorage.removeItem(key);
+  }
+}
+
+function storedSmartPlanRequest() {
+  const key = smartPlanRequestStorageKey();
+  if (!key) return null;
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || 'null');
+    if (!saved?.requestId || Date.now() - Number(saved.createdAt || 0) > 60 * 60_000) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return saved;
+  } catch {
+    localStorage.removeItem(key);
+    return null;
+  }
+}
+
+function smartPlanDelay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function smartPlanProgressMessage(update) {
+  const seconds = Math.max(0, Math.round((Date.now() - Number(update?.createdAt || Date.now())) / 1000));
+  const elapsed = seconds >= 60
+    ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+    : `${seconds}s`;
+  return `${update?.message || 'Smart is building the production plan…'} ${elapsed} elapsed. You can leave Smart mode while it continues.`;
+}
+
+async function waitForSmartPlanRequest(requestId) {
+  const deadline = Date.now() + 45 * 60_000;
+  let connectionFailures = 0;
+  while (Date.now() < deadline) {
+    if (smartPlanRequestId !== requestId) {
+      const error = new Error('Smart plan polling stopped');
+      error.code = 'smart_plan_poll_stopped';
+      throw error;
+    }
+    try {
+      const update = await api(`/api/smart/plan/status?id=${encodeURIComponent(requestId)}`);
+      connectionFailures = 0;
+      if (update.status === 'complete' && update.result) return update.result;
+      if (update.status === 'failed') {
+        const error = new Error(update.error || 'Smart could not build the production plan');
+        error.code = update.code || 'smart_plan_failed';
+        error.smartTerminal = true;
+        throw error;
+      }
+      setSmartStatus(smartPlanProgressMessage(update));
+    } catch (error) {
+      if (error.smartTerminal || error.code === 'smart_plan_poll_stopped' || error.status === 404) throw error;
+      connectionFailures += 1;
+      setSmartStatus(`Connection interrupted while Smart continues on the generation computer. Reconnecting${connectionFailures > 1 ? ` · attempt ${connectionFailures}` : ''}…`);
+    }
+    await smartPlanDelay(Math.min(5000, 1800 + connectionFailures * 600));
+  }
+  const error = new Error('Smart planning is still running after 45 minutes. You can reopen Smart mode to reconnect to it.');
+  error.code = 'smart_plan_wait_timeout';
+  throw error;
+}
+
+function setSmartStatus(message = '', error = false) {
+  const status = $('#smartStatus');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('error', error);
+}
+
+function smartReferencePayload() {
+  return smartReferences.slice(0, 2).map((reference, index) => ({
+    name: String(reference?.name || ''),
+    label: String(reference?.label || `Reference ${index + 1}`),
+    w: Number(reference?.w) || 0,
+    h: Number(reference?.h) || 0,
+  })).filter((reference) => reference.name);
+}
+
+function smartReferenceUrl(reference) {
+  return reference?.url || (reference?.name ? `/api/input?name=${encodeURIComponent(reference.name)}` : '');
+}
+
+function renderSmartReferences() {
+  const list = $('#smartReferenceList');
+  const add = $('#smartAddReference');
+  if (!list || !add) return;
+  add.disabled = smartReferences.length >= 2;
+  if (!smartReferences.length) {
+    list.innerHTML = '<p>Guide character identity, product details, composition, or visual style.</p>';
+    return;
+  }
+  list.innerHTML = smartReferences.map((reference, index) => `
+    <article class="smart-reference-card">
+      <img src="${escapeHtml(smartReferenceUrl(reference))}" alt="" />
+      <span><strong>${escapeHtml(reference.label || `Reference ${index + 1}`)}</strong><small>Reference ${index + 1}</small></span>
+      <button class="smart-reference-remove" type="button" data-smart-reference-remove="${index}" aria-label="Remove reference ${index + 1}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </article>`).join('');
+}
+
+function invalidateSmartPlan(message) {
+  if (smartPlan || smartRun) {
+    smartPlan = null;
+    smartPlanHash = '';
+    smartPlanProvider = null;
+    smartRun = null;
+    smartClientToken = '';
+    smartPlanEditing = false;
+    smartPlanEditBackup = null;
+    smartPlanEditHash = '';
+    $('#smartProvider').textContent = 'AI planner';
+    $('#smartBoard').innerHTML = SMART_EMPTY_BOARD;
+  }
+  setSmartStatus(message || 'References changed. Build a new plan.');
+}
+
+function addSmartReferences(assets) {
+  const available = Math.max(0, 2 - smartReferences.length);
+  const existing = new Set(smartReferences.map((reference) => reference.name));
+  const candidates = (Array.isArray(assets) ? assets : [assets])
+    .filter((asset) => asset?.name && !existing.has(asset.name))
+    .slice(0, available);
+  if (!candidates.length) return;
+  smartReferences.push(...candidates);
+  invalidateSmartPlan('References added. Build a plan when the brief is ready.');
+  renderSmartReferences();
+  if ((Array.isArray(assets) ? assets.length : 1) > candidates.length) toast('Smart mode accepts up to two image references', true);
+}
+
+function openSmartReferencePicker() {
+  const available = Math.max(0, 2 - smartReferences.length);
+  if (!available) return toast('Smart mode already has two references', true);
+  openAssetPicker('image/*', addSmartReferences, 'Add Smart references', {
+    multiple: true,
+    multipleLabel: 'reference',
+    maxSelections: available,
+  });
+}
+
+function smartDuration(value) {
+  const seconds = Math.max(0, Number(value) || 0);
+  if (seconds < 60) return `${Number(seconds.toFixed(1))} sec`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return remainder ? `${minutes}m ${remainder}s` : `${minutes} min`;
+}
+
+function smartStatusLabel(status) {
+  return ({
+    ready: 'Ready', queueing: 'Queueing', running: 'In production', review: 'Needs review',
+    complete: 'Complete', failed: 'Needs attention', attention: 'Interrupted', cancelled: 'Cancelled',
+    pending: 'Pending', editing: 'Editing', approval: 'Awaiting approval',
+  })[status] || String(status || 'Ready');
+}
+
+function smartPlanSteps(plan) {
+  const steps = [];
+  if (plan?.output?.kind === 'image') steps.push({ kind: 'image', label: 'Create final image' });
+  else {
+    smartUsedReferenceStates(plan).forEach((state) => steps.push({
+      kind: 'reference', referenceState: state, label: `Create ${state.label} reference`,
+    }));
+    (plan?.scenes || []).forEach((scene, index) => steps.push({
+      kind: 'video',
+      sceneIndex: index,
+      clip: {
+        title: scene.title,
+        durationSeconds: scene.durationSeconds,
+        usesSubjectReference: smartSceneUsesReference(plan, scene),
+        referenceStateIds: smartSceneReferenceStates(plan, scene).map((state) => state.id),
+        referenceStateLabels: smartSceneReferenceStates(plan, scene).map((state) => state.label),
+        referenceStateId: smartSceneReferenceStates(plan, scene)[0]?.id || '',
+        referenceStateLabel: smartSceneReferenceStates(plan, scene)[0]?.label || '',
+      },
+      label: `Clip ${index + 1} · ${scene.title} (${Number(scene.durationSeconds)}s)`,
+    }));
+  }
+  return steps;
+}
+
+function smartReferenceStates(plan) {
+  const states = Array.isArray(plan?.subject?.referenceStates) ? plan.subject.referenceStates : [];
+  return states.length ? states : [{
+    id: 'default', label: 'Default', referenceTarget: plan?.subject?.referenceTarget || 'Primary subject',
+    referenceType: plan?.subject?.referenceType || 'character', description: plan?.subject?.description || 'Primary subject',
+  }];
+}
+
+function smartSceneReferenceState(plan, scene) {
+  const states = smartReferenceStates(plan);
+  return states.find((state) => state.id === scene?.referenceStateId) || states[0];
+}
+
+function smartSceneReferenceStates(plan, scene) {
+  const ids = Array.isArray(scene?.referenceStateIds) && scene.referenceStateIds.length
+    ? scene.referenceStateIds : [scene?.referenceStateId].filter(Boolean);
+  const byId = new Map(smartReferenceStates(plan).map((state) => [state.id, state]));
+  return [...new Map(ids.map((id) => byId.get(id)).filter(Boolean).map((state) => [state.id, state])).values()];
+}
+
+function smartUsedReferenceStates(plan) {
+  if (plan?.output?.kind !== 'video' || plan?.subject?.needsReference !== true) return [];
+  const ids = new Set((plan.scenes || [])
+    .filter((scene) => smartSceneUsesReference(plan, scene))
+    .flatMap((scene) => smartSceneReferenceStates(plan, scene).map((state) => state.id)));
+  return smartReferenceStates(plan).filter((state) => ids.has(state.id));
+}
+
+function smartSceneUsesReference(plan, scene) {
+  return plan?.subject?.needsReference === true && scene?.usesSubjectReference === true
+    && smartSceneReferenceStates(plan, scene).length > 0;
+}
+
+function smartPlanUsesReference(plan) {
+  return plan?.output?.kind === 'video'
+    && (plan?.scenes || []).some((scene) => smartSceneUsesReference(plan, scene));
+}
+
+function smartStepDetail(step, plan) {
+  if (step.kind === 'reference') {
+    const type = ({ character: 'three-panel character', object: 'multi-angle object', place: 'wide place master' })[step.referenceState?.referenceType || plan?.subject?.referenceType] || 'canonical';
+    return `Krea 2 · ${type} · ${step.referenceState?.referenceTarget || step.referenceState?.label || 'Default'}`;
+  }
+  if (step.kind === 'video') {
+    const scene = step.clip || plan?.scenes?.[step.sceneIndex];
+    const usesReference = scene?.usesSubjectReference === true;
+    const labels = scene.referenceStateLabels?.length
+      ? scene.referenceStateLabels : smartSceneReferenceStates(plan, scene).map((state) => state.label);
+    return `MiniMax H3 · Individual clip · ${usesReference ? `${labels.join(' + ')} reference${labels.length === 1 ? '' : 's'}` : 'No reference'}`;
+  }
+  return 'Krea 2 · final image';
+}
+
+function smartDialogueEditorText(dialogue) {
+  return (Array.isArray(dialogue) ? dialogue : []).map((entry) => {
+    const role = entry.isReferenceSubject ? 'reference' : 'other';
+    const time = Number(entry.timeSeconds) > 0 ? `${Number(entry.timeSeconds)} | ` : '';
+    return `${time}${entry.speaker} [${role}; ${entry.language || 'English'}; ${entry.delivery || 'says'}]: ${entry.line}`;
+  }).join('\n');
+}
+
+function smartDialogueFromEditor(value) {
+  return String(value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 6)
+    .flatMap((line) => {
+      const timed = line.match(/^(\d+(?:\.\d+)?)\s*\|\s*(.+)$/);
+      const timeSeconds = timed ? Number(timed[1]) : 0;
+      const content = timed ? timed[2] : line;
+      const structured = content.match(/^(.*?)\s*\[(reference|other)\s*;\s*([^;]+)\s*;\s*([^\]]+)\]\s*:\s*(.+)$/i);
+      if (structured) return [{
+        speaker: structured[1].trim(),
+        isReferenceSubject: structured[2].toLowerCase() === 'reference',
+        language: structured[3].trim() || 'English',
+        delivery: structured[4].trim() || 'says',
+        line: structured[5].trim(),
+        timeSeconds,
+      }];
+      const simple = content.match(/^([^:]+):\s*(.+)$/);
+      return simple ? [{
+        speaker: simple[1].trim(), line: simple[2].trim(), language: 'English',
+        delivery: 'says', isReferenceSubject: false, timeSeconds,
+      }] : [];
+    });
+}
+
+function smartTimelineEditorText(timelineBeats) {
+  return (Array.isArray(timelineBeats) ? timelineBeats : []).map((beat) => (
+    `${Number(beat.timeSeconds)} | ${beat.kind || 'action'} | ${beat.description || ''}`
+  )).join('\n');
+}
+
+function smartTimelineFromEditor(value) {
+  return String(value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 6)
+    .flatMap((line) => {
+      const match = line.match(/^(\d+(?:\.\d+)?)\s*\|\s*(action|camera|cut)\s*\|\s*(.+)$/i);
+      return match ? [{
+        timeSeconds: Number(match[1]),
+        kind: match[2].toLowerCase(),
+        description: match[3].trim(),
+      }] : [];
+    });
+}
+
+function smartSelectMarkup(id, value, options, fieldAttribute, ariaLabel) {
+  const normalized = (Array.isArray(options) ? options : []).map((option) => ({
+    value: String(option?.value ?? ''),
+    label: String(option?.label ?? option?.value ?? ''),
+  }));
+  const current = normalized.find((option) => option.value === String(value)) || normalized[0] || { value: '', label: '' };
+  return `
+    <div class="smart-select" data-smart-select>
+      <button class="smart-select-trigger" id="${escapeHtml(id)}" type="button" ${fieldAttribute}
+        value="${escapeHtml(current.value)}" aria-label="${escapeHtml(ariaLabel)}"
+        aria-haspopup="listbox" aria-expanded="false" aria-controls="${escapeHtml(id)}-menu">
+        <span data-smart-select-label>${escapeHtml(current.label)}</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5"/></svg>
+      </button>
+      <div class="smart-select-menu" id="${escapeHtml(id)}-menu" role="listbox"
+        aria-label="${escapeHtml(ariaLabel)}" aria-hidden="true" hidden inert>
+        ${normalized.map((option) => `
+          <button type="button" role="option" data-smart-select-option
+            data-smart-select-value="${escapeHtml(option.value)}"
+            aria-selected="${option.value === current.value ? 'true' : 'false'}">
+            <span>${escapeHtml(option.label)}</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+          </button>`).join('')}
+      </div>
+    </div>`;
+}
+
+function closeSmartSelects(except = null) {
+  $$('.smart-select.open').forEach((select) => {
+    if (select === except) return;
+    select.classList.remove('open');
+    const trigger = select.querySelector('.smart-select-trigger');
+    const menu = select.querySelector('.smart-select-menu');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    if (menu) {
+      menu.hidden = true;
+      menu.inert = true;
+      menu.setAttribute('aria-hidden', 'true');
+    }
+  });
+}
+
+function openSmartSelect(trigger, focusOption = false) {
+  const select = trigger?.closest('.smart-select');
+  const menu = select?.querySelector('.smart-select-menu');
+  if (!select || !menu) return;
+  closeSmartSelects(select);
+  select.classList.add('open');
+  trigger.setAttribute('aria-expanded', 'true');
+  menu.hidden = false;
+  menu.inert = false;
+  menu.setAttribute('aria-hidden', 'false');
+  if (focusOption) {
+    requestAnimationFrame(() => (menu.querySelector('[aria-selected="true"]') || menu.querySelector('[role="option"]'))?.focus());
+  }
+}
+
+function chooseSmartSelectOption(option) {
+  const select = option?.closest('.smart-select');
+  const trigger = select?.querySelector('.smart-select-trigger');
+  if (!select || !trigger) return;
+  const value = String(option.dataset.smartSelectValue || '');
+  const label = option.querySelector('span')?.textContent || value;
+  trigger.value = value;
+  trigger.setAttribute('value', value);
+  const labelNode = trigger.querySelector('[data-smart-select-label]');
+  if (labelNode) labelNode.textContent = label;
+  select.querySelectorAll('[role="option"]').forEach((candidate) => {
+    candidate.setAttribute('aria-selected', String(candidate === option));
+  });
+  closeSmartSelects();
+  trigger.dispatchEvent(new Event('change', { bubbles: true }));
+  trigger.focus();
+}
+
+function renderSmartRecent() {
+  const section = $('#smartRecent');
+  const list = $('#smartRecentList');
+  if (!section || !list) return;
+  const visible = smartRuns.slice(0, 6);
+  section.hidden = !visible.length;
+  list.innerHTML = visible.map((run) => `
+    <button class="smart-recent-item" type="button" data-smart-run-id="${escapeHtml(run.id)}">
+      <strong>${escapeHtml(run.title || run.plan?.title || 'Smart production')}</strong>
+      <small>${escapeHtml(smartStatusLabel(run.status))} · ${escapeHtml(new Date(run.updatedAt || run.createdAt).toLocaleDateString())}</small>
+    </button>`).join('');
+}
+
+function smartSceneMarkup(plan) {
+  if (!Array.isArray(plan?.scenes) || !plan.scenes.length) return '';
+  return `<div class="smart-scene-list">${plan.scenes.map((scene) => {
+    const sceneReferences = smartSceneReferenceStates(plan, scene);
+    return `
+    <article class="smart-scene ${smartSceneUsesReference(plan, scene) ? 'with-reference' : 'without-reference'}">
+      <header><span>${escapeHtml(`${Number(scene.startSeconds || 0).toFixed(1)}–${Number(scene.endSeconds || 0).toFixed(1)} sec`)}</span><i>${smartSceneUsesReference(plan, scene) ? `${scene.referenceUseSource === 'detected' ? 'Auto matched' : (scene.referenceUseSource === 'manual' ? 'Manual' : 'Planned')} · ${escapeHtml(sceneReferences.map((state) => state.referenceTarget || state.label).join(' + '))}` : 'No reference'}</i></header>
+      <strong>${escapeHtml(scene.title)}</strong>
+      <em>${escapeHtml(scene.shot || 'Directed shot')}</em>
+      <p>${escapeHtml(scene.description)}</p>
+      <dl>
+        <div><dt>Camera</dt><dd>${escapeHtml(scene.camera || '')}</dd></div>
+        <div><dt>Spatial</dt><dd>${escapeHtml(scene.spatialComposition || '')}</dd></div>
+        <div><dt>Cut</dt><dd>${escapeHtml(scene.transition || '')}</dd></div>
+        ${scene.timelineBeats?.length ? `<div><dt>Timed beats</dt><dd>${escapeHtml(scene.timelineBeats.map((beat) => `${Number(beat.timeSeconds)}s ${beat.kind}: ${beat.description}`).join(' · '))}</dd></div>` : ''}
+        <div><dt>Continuity</dt><dd>${escapeHtml(scene.continuity || '')}</dd></div>
+        <div><dt>Audio</dt><dd>${escapeHtml(scene.audio || '')}</dd></div>
+        ${scene.music ? `<div><dt>Music</dt><dd>${escapeHtml(scene.music)}</dd></div>` : ''}
+        ${scene.dialogue?.length ? `<div><dt>Dialogue</dt><dd>${escapeHtml(scene.dialogue.map((entry) => `${Number(entry.timeSeconds) > 0 ? `${Number(entry.timeSeconds)}s ` : ''}${entry.speaker}: “${entry.line}”`).join(' · '))}</dd></div>` : ''}
+      </dl>
+    </article>`;
+  }).join('')}</div>`;
+}
+
+function smartPlanEditorMarkup(plan) {
+  const aspectOptions = ['1:1', '16:9', '9:16', '4:3', '3:4'].map((value) => ({ value, label: value }));
+  const qualityOptions = ['fast', 'balanced', 'quality'].map((value) => ({
+    value,
+    label: value[0].toUpperCase() + value.slice(1),
+  }));
+  const referenceTypeOptions = [
+    ['character', 'Character / person'], ['object', 'Object / product'], ['place', 'Place / environment'],
+  ].map(([value, label]) => ({ value, label }));
+  const referenceStates = smartReferenceStates(plan);
+  const referenceStateEditors = referenceStates.map((state, index) => `
+    <article class="smart-scene-editor smart-reference-state-editor" data-smart-reference-state-index="${index}" data-smart-reference-state-id="${escapeHtml(state.id)}">
+      <header><span>Reference unit ${index + 1}</span><div><button type="button" data-smart-action="delete-reference-state" data-smart-reference-state-index="${index}" ${referenceStates.length > 1 ? '' : 'disabled'}>Remove</button></div></header>
+      <div class="smart-editor-grid">
+        <label>Character / asset name<input data-smart-reference-state-field="referenceTarget" maxlength="100" value="${escapeHtml(state.referenceTarget || state.label || '')}" /></label>
+        <label>Reference template${smartSelectMarkup(`smart-reference-state-${index}-type`, state.referenceType || plan.subject.referenceType, referenceTypeOptions, 'data-smart-reference-state-field="referenceType"', `Reference template for unit ${index + 1}`)}</label>
+      </div>
+      <label>State label<input data-smart-reference-state-field="label" maxlength="100" value="${escapeHtml(state.label || '')}" /></label>
+      <label>Complete visible identity and state<textarea data-smart-reference-state-field="description" rows="2" maxlength="1200">${escapeHtml(state.description || '')}</textarea></label>
+    </article>`).join('');
+  const sceneEditors = (plan.scenes || []).map((scene, index) => {
+    const selectedReferenceIds = new Set(smartSceneReferenceStates(plan, scene).map((state) => state.id));
+    return `
+    <article class="smart-scene-editor" data-smart-scene-index="${index}">
+      <header><span>Clip ${index + 1}</span><div>
+        <button type="button" data-smart-action="move-clip-up" data-smart-scene-index="${index}" ${index ? '' : 'disabled'} aria-label="Move clip earlier">↑</button>
+        <button type="button" data-smart-action="move-clip-down" data-smart-scene-index="${index}" ${index < plan.scenes.length - 1 ? '' : 'disabled'} aria-label="Move clip later">↓</button>
+        <button type="button" data-smart-action="delete-clip" data-smart-scene-index="${index}" ${plan.scenes.length > 1 ? '' : 'disabled'}>Remove</button>
+      </div></header>
+      <div class="smart-editor-grid compact">
+        <label>Title<input data-smart-scene-field="title" maxlength="100" value="${escapeHtml(scene.title || '')}" /></label>
+        <label>Seconds<input data-smart-scene-field="durationSeconds" type="number" min="5" max="10" step="0.5" value="${escapeHtml(Number(scene.durationSeconds) || 5)}" /></label>
+      </div>
+      <label>Visible action<textarea data-smart-scene-field="description" rows="3" maxlength="1600">${escapeHtml(scene.description || '')}</textarea></label>
+      <label>Spatial composition<textarea data-smart-scene-field="spatialComposition" rows="2" maxlength="800">${escapeHtml(scene.spatialComposition || '')}</textarea></label>
+      <div class="smart-editor-grid">
+        <label>Shot size & angle<input data-smart-scene-field="shot" maxlength="600" value="${escapeHtml(scene.shot || '')}" /></label>
+        <label>Camera movement<input data-smart-scene-field="camera" maxlength="600" value="${escapeHtml(scene.camera || '')}" /></label>
+        <label>Transition / cut<input data-smart-scene-field="transition" maxlength="400" value="${escapeHtml(scene.transition || '')}" /></label>
+        <label>Audio<input data-smart-scene-field="audio" maxlength="600" value="${escapeHtml(scene.audio || '')}" /></label>
+        <label>Audience-only music<input data-smart-scene-field="music" maxlength="600" value="${escapeHtml(scene.music || '')}" placeholder="Defaults to N/A; add only when requested" /></label>
+      </div>
+      <label>Continuity<textarea data-smart-scene-field="continuity" rows="2" maxlength="800">${escapeHtml(scene.continuity || '')}</textarea></label>
+      <label>Timed actions, camera moves & cuts <small>One per line: 2 | cut | a front close-up of Maya</small><textarea data-smart-scene-field="timelineBeats" rows="3" maxlength="4000" placeholder="4.5 | action | Maya turns toward the tunnel\n7 | camera | slowly arcs clockwise behind Maya">${escapeHtml(smartTimelineEditorText(scene.timelineBeats))}</textarea></label>
+      <label>Dialogue <small>Optional local time: 2.5 | Maya [reference; English; whispers]: Exact words</small><textarea data-smart-scene-field="dialogue" rows="2" maxlength="4000" placeholder="Leave empty unless the original brief supplies dialogue">${escapeHtml(smartDialogueEditorText(scene.dialogue))}</textarea></label>
+      ${plan.subject.needsReference ? `<fieldset class="smart-scene-reference-bindings"><legend>Recurring references visible in this clip</legend>${referenceStates.map((state) => `
+        <label><input type="checkbox" data-smart-scene-reference-id value="${escapeHtml(state.id)}" ${selectedReferenceIds.has(state.id) ? 'checked' : ''} /> <span><strong>${escapeHtml(state.referenceTarget || state.label)}</strong><small>${escapeHtml(state.label)}</small></span></label>`).join('')}</fieldset>` : ''}
+    </article>`;
+  }).join('');
+  return `
+    <div class="smart-plan-editor">
+      <div class="smart-editor-grid">
+        <label>Title<input data-smart-plan-field="title" maxlength="100" value="${escapeHtml(plan.title || '')}" /></label>
+        <label>Summary<textarea data-smart-plan-field="summary" rows="2" maxlength="500">${escapeHtml(plan.summary || '')}</textarea></label>
+      </div>
+      <div class="smart-editor-grid compact">
+        ${plan.output.kind === 'video' ? `<label>Total runtime<input data-smart-output-field="durationSeconds" type="number" min="5" max="120" step="1" value="${escapeHtml(plan.output.durationSeconds)}" /></label>` : ''}
+        <label>Frame${smartSelectMarkup('smart-output-frame', plan.output.aspectRatio, aspectOptions, 'data-smart-output-field="aspectRatio"', 'Output frame')}</label>
+        <label>Quality${smartSelectMarkup('smart-output-quality', plan.output.quality, qualityOptions, 'data-smart-output-field="quality"', 'Output quality')}</label>
+      </div>
+      <label>Visual style<textarea data-smart-plan-field="visualStyle" rows="2" maxlength="1200">${escapeHtml(plan.visualStyle || '')}</textarea></label>
+      ${plan.output.kind === 'video' ? `
+        <div class="smart-editor-grid">
+          <label>Reference target<input data-smart-subject-field="referenceTarget" maxlength="100" value="${escapeHtml(plan.subject.referenceTarget || '')}" /><small>Repeat this exact name in clips where the target is visible.</small></label>
+          <label>Reference template${smartSelectMarkup('smart-reference-template', plan.subject.referenceType, referenceTypeOptions, 'data-smart-subject-field="referenceType"', 'Reference template')}</label>
+        </div>
+        <label>Reference subject<textarea data-smart-subject-field="description" rows="2" maxlength="1200">${escapeHtml(plan.subject.description || '')}</textarea></label>
+        ${plan.subject.needsReference ? `
+          <div class="smart-editor-clips-head"><span><strong>Reference roster</strong><small>Create one unit per recurring character, object, place, and materially changed state.</small></span><button type="button" data-smart-action="add-reference-state" ${referenceStates.length >= 6 ? 'disabled' : ''}>+ Add reference</button></div>
+          <div class="smart-scene-editor-list smart-reference-state-list">${referenceStateEditors}</div>` : ''}
+        <label>Directorial approach<textarea data-smart-plan-field="directorialApproach" rows="3" maxlength="1600">${escapeHtml(plan.directorialApproach || '')}</textarea></label>
+        <label>Story and motion direction<textarea data-smart-plan-field="videoPrompt" rows="3" maxlength="12000">${escapeHtml(plan.videoPrompt || '')}</textarea></label>
+        <div class="smart-editor-clips-head"><span><strong>Editorial clips</strong><small>Each card becomes one independent H3 generation.</small></span><button type="button" data-smart-action="add-clip" ${plan.scenes.length >= 12 ? 'disabled' : ''}>+ Add clip</button></div>
+        <div class="smart-scene-editor-list">${sceneEditors}</div>`
+        : `<label>Image prompt<textarea data-smart-plan-field="imagePrompt" rows="5" maxlength="5000">${escapeHtml(plan.imagePrompt || '')}</textarea></label>`}
+    </div>`;
+}
+
+function renderSmartWorkspace() {
+  const board = $('#smartBoard');
+  if (!board) return;
+  renderSmartReferences();
+  renderSmartRecent();
+  if (!smartPlan && !smartRun) return;
+  const run = smartRun;
+  const plan = run?.plan || smartPlan;
+  if (!plan) return;
+  const steps = run?.steps || smartPlanSteps(plan).map((step) => Object.assign(step, { status: 'pending' }));
+  const referenceResults = steps.filter((step) => step.kind === 'reference' && step.result?.thumbnail);
+  const attachedReferences = run?.references || smartReferences;
+  const status = run?.status || (smartPlanEditing ? 'editing' : 'approval');
+  const action = run
+    ? (run.status === 'review' ? ['resume', 'Continue to video']
+      : (['failed', 'attention'].includes(run.status) ? ['retry', 'Retry interrupted step']
+        : (['running', 'queueing'].includes(run.status) ? ['cancel', 'Cancel remaining']
+          : (run.status === 'complete' ? ['library', 'Open Library'] : null))))
+    : null;
+  if (!run && smartPlanEditing) {
+    board.innerHTML = `
+      <div class="smart-plan-head">
+        <span><small>Modify director's plan</small><h3>${escapeHtml(plan.title)}</h3><p>Adjust the treatment and individual H3 clips. Saving rechecks timing and prepares a new approval hash.</p></span>
+        <span class="smart-run-status">${escapeHtml(smartStatusLabel(status))}</span>
+      </div>
+      ${smartPlanEditorMarkup(plan)}
+      <div class="smart-board-actions">
+        <button class="smart-board-action" type="button" data-smart-action="cancel-plan-edit">Cancel changes</button>
+        <button class="smart-board-action primary" type="button" data-smart-action="save-plan">Save revised plan</button>
+      </div>`;
+    return;
+  }
+  const videoClips = steps.filter((step) => step.kind === 'video').length;
+  const referenceClipCount = (plan.scenes || []).filter((scene) => smartSceneUsesReference(plan, scene)).length;
+  const referenceRoute = plan.output.kind === 'video' && attachedReferences.length ? `
+    <div class="smart-reference-route ${referenceClipCount ? '' : 'warning'}">
+      <span>Reference pipeline</span>
+      <p><strong>${escapeHtml(attachedReferences.map((reference, index) => reference.label || `Reference ${index + 1}`).join(' + '))}</strong> ${referenceClipCount
+        ? `guide the canonical ${escapeHtml(plan.subject.referenceTarget || 'subject')} reference. That generated reference is attached to ${referenceClipCount} of ${plan.scenes.length} H3 clip${plan.scenes.length === 1 ? '' : 's'}; clips where the target is absent remain reference-free.`
+        : `were inspected by the planner, but no clip currently contains the canonical ${escapeHtml(plan.subject.referenceTarget || 'subject')} target. Modify the plan if that target should appear on screen.`}</p>
+    </div>` : '';
+  board.innerHTML = `
+    <div class="smart-plan-head">
+      <span><small>${run ? 'Production run' : 'Proposed production plan'}</small><h3>${escapeHtml(plan.title)}</h3><p>${escapeHtml(plan.summary)}</p></span>
+      <span class="smart-run-status">${escapeHtml(smartStatusLabel(status))}</span>
+    </div>
+    <div class="smart-plan-facts">
+      <span><b>Output</b>${escapeHtml(plan.output.kind)}</span>
+      ${plan.output.kind === 'video' ? `<span><b>Runtime</b>${escapeHtml(smartDuration(plan.output.durationSeconds))}</span>` : ''}
+      <span><b>Frame</b>${escapeHtml(plan.output.aspectRatio)}</span>
+      <span><b>Quality</b>${escapeHtml(plan.output.quality)}</span>
+      ${attachedReferences.length ? `<span><b>References</b>${attachedReferences.length} image${attachedReferences.length === 1 ? '' : 's'}</span>` : ''}
+      ${smartUsedReferenceStates(plan).length ? `<span><b>States</b>${smartUsedReferenceStates(plan).length} visual state${smartUsedReferenceStates(plan).length === 1 ? '' : 's'}</span>` : ''}
+      ${plan.output.kind === 'video' ? `<span><b>Editorial</b>${videoClips} independent clip${videoClips === 1 ? '' : 's'}</span>` : ''}
+      <span><b>Queue</b>${steps.length} job${steps.length === 1 ? '' : 's'}</span>
+    </div>
+    ${run?.brief ? `<div class="smart-original-brief"><span>Original prompt</span><p>${escapeHtml(run.brief)}</p></div>` : ''}
+    ${plan.output.kind === 'video' ? `<div class="smart-director-treatment"><span>Director's treatment</span><p>${escapeHtml(plan.directorialApproach || 'Purposeful shot progression with motivated cuts and visual continuity.')}</p></div>` : ''}
+    ${referenceRoute}
+    <div class="smart-step-list">${steps.map((step, index) => `
+      <article class="smart-step ${escapeHtml(step.status || 'pending')}">
+        <span class="smart-step-index">0${index + 1}</span>
+        <span><strong>${escapeHtml(step.label)}</strong><small>${escapeHtml(smartStepDetail(step, plan))}${step.progress ? ` · ${step.progress.completed}/${step.progress.total} clips` : ''}</small></span>
+        <span class="smart-step-state">${escapeHtml(smartStatusLabel(step.status))}</span>
+      </article>`).join('')}</div>
+    ${referenceResults.length ? `<div class="smart-reference-results">${referenceResults.map((reference) => {
+      const referenceLabel = reference.referenceState?.referenceTarget || reference.referenceState?.label || 'Canonical';
+      return `<article class="smart-reference-result">
+        <button class="smart-reference-result-preview" type="button" data-smart-reference-item="${escapeHtml(reference.result.itemId)}" aria-label="Open ${escapeHtml(referenceLabel)} reference in Library" title="Open full image in Library">
+          <img src="${escapeHtml(reference.result.thumbnail)}" alt="Generated ${escapeHtml(referenceLabel)} reference" />
+          <small>Open</small>
+        </button>
+        <div class="smart-reference-result-copy"><strong>${escapeHtml(referenceLabel)} reference ready</strong><p>${run.status === 'review' ? 'Review this state before H3 begins.' : 'Attached only to clips using this state.'}</p></div>
+        ${run.status === 'review' ? `<div class="smart-reference-feedback">
+          <label>Optional feedback<textarea data-smart-reference-feedback="${escapeHtml(reference.id)}" rows="2" maxlength="1000" placeholder="Example: keep the face, but make the jacket dark red and simplify the boots.">${escapeHtml(reference.referenceFeedback || '')}</textarea></label>
+          <button type="button" data-smart-action="reroll-reference" data-smart-step-id="${escapeHtml(reference.id)}">Regenerate reference</button>
+        </div>` : ''}
+      </article>`;
+    }).join('')}</div>` : ''}
+    ${smartSceneMarkup(plan)}
+    ${!run && smartPlanUsesReference(plan) ? `<label class="smart-review-toggle"><input id="smartReviewReference" type="checkbox" ${plan.reviewReference || $('#smartPauseReferences')?.getAttribute('aria-checked') === 'true' ? 'checked' : ''}/> Pause after all reference states so I can review them before H3 begins</label>` : ''}
+    ${run?.error ? `<div class="smart-run-error">${escapeHtml(run.error)}</div>` : ''}
+    <div class="smart-board-actions">
+      ${!run ? '<button class="smart-board-action" type="button" data-smart-action="reset">Start over</button><button class="smart-board-action" type="button" data-smart-action="edit-plan">Modify plan</button>' : ''}
+      ${!run ? `<button class="smart-board-action primary" type="button" data-smart-action="queue">Approve &amp; queue${plan.output.kind === 'video' ? ` ${videoClips} clips` : ''}</button>` : ''}
+      ${action ? `<button class="smart-board-action ${action[0] === 'cancel' ? '' : 'primary'}" type="button" data-smart-action="${action[0]}">${escapeHtml(action[1])}</button>` : ''}
+    </div>`;
+}
+
+function cloneSmartPlan(plan) {
+  return plan ? JSON.parse(JSON.stringify(plan)) : null;
+}
+
+function captureSmartPlanEditor() {
+  if (!smartPlan) return null;
+  const next = cloneSmartPlan(smartPlan);
+  const planValue = (field, fallback = '') => $(`[data-smart-plan-field="${field}"]`)?.value ?? fallback;
+  const outputValue = (field, fallback = '') => $(`[data-smart-output-field="${field}"]`)?.value ?? fallback;
+  next.title = planValue('title', next.title);
+  next.summary = planValue('summary', next.summary);
+  next.visualStyle = planValue('visualStyle', next.visualStyle);
+  next.directorialApproach = planValue('directorialApproach', next.directorialApproach);
+  next.videoPrompt = planValue('videoPrompt', next.videoPrompt);
+  next.imagePrompt = planValue('imagePrompt', next.imagePrompt);
+  const subjectValue = (field, fallback = '') => $(`[data-smart-subject-field="${field}"]`)?.value ?? fallback;
+  next.subject.referenceTarget = subjectValue('referenceTarget', next.subject.referenceTarget || 'Primary subject');
+  next.subject.description = subjectValue('description', next.subject.description);
+  next.subject.referenceType = subjectValue('referenceType', next.subject.referenceType || 'character');
+  const stateCards = $$('.smart-reference-state-editor');
+  if (stateCards.length) next.subject.referenceStates = stateCards.map((card, index) => {
+    const value = (field, fallback = '') => card.querySelector(`[data-smart-reference-state-field="${field}"]`)?.value ?? fallback;
+    return {
+      id: card.dataset.smartReferenceStateId || `state-${index + 1}`,
+      label: value('label', index ? `State ${index + 1}` : 'Default'),
+      referenceTarget: value('referenceTarget', next.subject.referenceTarget || `Reference ${index + 1}`),
+      referenceType: value('referenceType', next.subject.referenceType || 'character'),
+      description: value('description', next.subject.description),
+    };
+  });
+  if (next.output.kind === 'video') next.output.durationSeconds = Number(outputValue('durationSeconds', next.output.durationSeconds));
+  next.output.aspectRatio = outputValue('aspectRatio', next.output.aspectRatio);
+  next.output.quality = outputValue('quality', next.output.quality);
+  if (next.output.kind === 'video') {
+    const previousScenes = Array.isArray(next.scenes) ? next.scenes : [];
+    next.scenes = $$('.smart-scene-editor').map((card, index) => {
+      const value = (field, fallback = '') => card.querySelector(`[data-smart-scene-field="${field}"]`)?.value ?? fallback;
+      const referenceStateIds = next.subject.needsReference === true
+        ? Array.from(card.querySelectorAll('[data-smart-scene-reference-id]:checked')).map((input) => input.value)
+        : [];
+      const usesSubjectReference = referenceStateIds.length > 0;
+      const previousScene = previousScenes[index] || {};
+      const previousReferenceIds = Array.isArray(previousScene.referenceStateIds)
+        ? previousScene.referenceStateIds : [previousScene.referenceStateId].filter(Boolean);
+      return {
+        title: value('title', `Clip ${index + 1}`),
+        durationSeconds: Number(value('durationSeconds', 5)),
+        description: value('description', ''),
+        shot: value('shot', ''),
+        camera: value('camera', ''),
+        transition: value('transition', ''),
+        spatialComposition: value('spatialComposition', ''),
+        continuity: value('continuity', ''),
+        audio: value('audio', ''),
+        music: value('music', ''),
+        timelineBeats: smartTimelineFromEditor(value('timelineBeats', '')),
+        dialogue: smartDialogueFromEditor(value('dialogue', '')),
+        usesSubjectReference,
+        referenceUseSource: previousScene.usesSubjectReference === usesSubjectReference
+          && previousReferenceIds.join('|') === referenceStateIds.join('|')
+          ? (previousScene.referenceUseSource || 'planner') : 'manual',
+        referenceStateIds,
+        referenceStateId: referenceStateIds[0] || '',
+      };
+    });
+  }
+  return next;
+}
+
+function beginSmartPlanEdit() {
+  if (!smartPlan || smartRun || smartBusy) return;
+  smartPlanEditBackup = cloneSmartPlan(smartPlan);
+  smartPlanEditHash = smartPlanHash;
+  smartPlanEditing = true;
+  setSmartStatus('Editing the proposed treatment. Nothing will queue until you approve it.');
+  renderSmartWorkspace();
+}
+
+function cancelSmartPlanEdit() {
+  if (!smartPlanEditing || smartBusy) return;
+  smartPlan = smartPlanEditBackup || smartPlan;
+  smartPlanHash = smartPlanEditHash || smartPlanHash;
+  smartPlanEditing = false;
+  smartPlanEditBackup = null;
+  smartPlanEditHash = '';
+  setSmartStatus('Changes discarded. Review the original plan, then approve it when ready.');
+  renderSmartWorkspace();
+}
+
+function mutateSmartPlanClips(action, index) {
+  if (!smartPlanEditing || smartBusy) return;
+  smartPlan = captureSmartPlanEditor() || smartPlan;
+  const scenes = smartPlan.scenes || (smartPlan.scenes = []);
+  if (action === 'add-clip' && scenes.length < 12) {
+    const previous = scenes.at(-1);
+    scenes.push({
+      title: `New clip ${scenes.length + 1}`,
+      durationSeconds: Math.min(10, Math.max(5, Number(previous?.durationSeconds) || 7)),
+      description: previous?.description || 'Describe one visible action for this editorial beat',
+      shot: 'Purposeful contrasting shot size and angle',
+      camera: 'Controlled camera movement motivated by the action',
+      transition: 'Hard cut on action or a visual match',
+      spatialComposition: previous?.spatialComposition || 'Readable foreground, midground, and background separation with one uncluttered focal plane',
+      continuity: previous?.continuity || 'The location geometry, palette, screen direction, key-light direction, and spatial layout remain stable for the full shot',
+      audio: previous?.audio || 'Natural environmental sound',
+      music: previous?.music || '',
+      timelineBeats: [],
+      dialogue: [],
+      usesSubjectReference: smartPlan.subject.needsReference === true && previous?.usesSubjectReference === true,
+      referenceStateIds: previous?.usesSubjectReference
+        ? smartSceneReferenceStates(smartPlan, previous).map((state) => state.id) : [],
+      referenceStateId: previous?.usesSubjectReference
+        ? (previous.referenceStateId || smartReferenceStates(smartPlan)[0].id) : '',
+    });
+  } else if (action === 'delete-clip' && scenes.length > 1 && scenes[index]) {
+    scenes.splice(index, 1);
+  } else if (action === 'move-clip-up' && index > 0 && scenes[index]) {
+    [scenes[index - 1], scenes[index]] = [scenes[index], scenes[index - 1]];
+  } else if (action === 'move-clip-down' && index < scenes.length - 1 && scenes[index]) {
+    [scenes[index + 1], scenes[index]] = [scenes[index], scenes[index + 1]];
+  }
+  renderSmartWorkspace();
+}
+
+function mutateSmartReferenceStates(action, index) {
+  if (!smartPlanEditing || smartBusy) return;
+  smartPlan = captureSmartPlanEditor() || smartPlan;
+  const states = smartPlan.subject.referenceStates || (smartPlan.subject.referenceStates = []);
+  if (action === 'add-reference-state' && states.length < 6) {
+    const used = new Set(states.map((state) => state.id));
+    let number = states.length + 1;
+    while (used.has(`state-${number}`)) number += 1;
+    states.push({
+      id: `state-${number}`,
+      label: `Reference ${number}`,
+      referenceTarget: `Character or asset ${number}`,
+      referenceType: smartPlan.subject.referenceType || 'character',
+      description: 'Describe this recurring character, object, or place with every visible trait needed for continuity.',
+    });
+  } else if (action === 'delete-reference-state' && states.length > 1 && states[index]) {
+    const [removed] = states.splice(index, 1);
+    (smartPlan.scenes || []).forEach((scene) => {
+      scene.referenceStateIds = (Array.isArray(scene.referenceStateIds)
+        ? scene.referenceStateIds : [scene.referenceStateId]).filter((id) => id && id !== removed.id);
+      scene.referenceStateId = scene.referenceStateIds[0] || '';
+      scene.usesSubjectReference = scene.referenceStateIds.length > 0;
+    });
+  }
+  renderSmartWorkspace();
+}
+
+async function saveSmartPlanEdit() {
+  if (!smartPlanEditing || smartBusy) return;
+  const revisedPlan = captureSmartPlanEditor();
+  if (!revisedPlan) return;
+  smartBusy = true;
+  setSmartStatus('Checking clip timing and continuity…');
+  try {
+    const result = await api('/api/smart/plan/review', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: revisedPlan, references: smartReferencePayload() }),
+    });
+    smartPlan = result.plan;
+    smartPlanHash = result.planHash;
+    smartPlanEditing = false;
+    smartPlanEditBackup = null;
+    smartPlanEditHash = '';
+    smartClientToken = newSmartClientToken();
+    setSmartStatus('Revised plan ready. Review it once more, then approve and queue it.');
+  } catch (error) {
+    setSmartStatus(error.message, true);
+  } finally {
+    smartBusy = false;
+    renderSmartWorkspace();
+  }
+}
+
+function openSmartAiSettings() {
+  setSettingsTab('suggestions');
+  const providerSettings = $('[data-settings-preference-section="prompting-external"]');
+  if (providerSettings) providerSettings.open = true;
+  $('#settingsBtn').click();
+  let attempts = 0;
+  const reveal = () => {
+    if ($('#settingsSheet').classList.contains('show')) {
+      providerSettings?.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      $('#promptAiModeSwitch')?.focus({ preventScroll: true });
+      return;
+    }
+    attempts += 1;
+    if (attempts < 30) setTimeout(reveal, 80);
+  };
+  reveal();
+}
+
+function activateSmartRun(run, options = {}) {
+  if (!run) return false;
+  smartRun = run;
+  smartPlan = run.plan;
+  smartPlanHash = run.planHash;
+  smartReferences = Array.isArray(run.references) ? run.references.slice(0, 2) : [];
+  smartPlanEditing = false;
+  smartPlanEditBackup = null;
+  smartPlanEditHash = '';
+  if (run.brief) $('#smartBriefInput').value = run.brief;
+  if (options.render !== false) {
+    renderSmartReferences();
+    renderSmartWorkspace();
+  }
+  return true;
+}
+
+function mergeSmartRun(run) {
+  if (!run) return;
+  smartRuns = [run, ...smartRuns.filter((candidate) => candidate.id !== run.id)]
+    .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0));
+  if (!smartRun || smartRun.id === run.id) {
+    activateSmartRun(run, { render: false });
+  }
+  renderSmartRecent();
+  renderSmartReferences();
+  renderSmartWorkspace();
+}
+
+async function loadSmartRuns(force = false) {
+  if (smartRunsLoaded && !force) {
+    renderSmartWorkspace();
+    return;
+  }
+  const result = await api('/api/smart/runs');
+  smartRuns = result.runs || [];
+  smartRunsLoaded = true;
+  const refreshedCurrent = smartRun && smartRuns.find((run) => run.id === smartRun.id);
+  const activeRun = smartRuns.find((run) => ['ready', 'running', 'queueing', 'review', 'failed', 'attention'].includes(run.status));
+  const restorableRun = refreshedCurrent
+    || activeRun
+    || (!storedSmartPlanRequest() ? smartRuns[0] : null);
+  if (restorableRun && (!smartPlan || refreshedCurrent)) activateSmartRun(restorableRun, { render: false });
+  renderSmartRecent();
+  renderSmartReferences();
+  renderSmartWorkspace();
+}
+
+function acceptSmartPlanResult(result, requestId) {
+  smartPlan = result.plan;
+  smartPlanHash = result.planHash;
+  smartPlanProvider = result.provider;
+  if (Array.isArray(result.references)) {
+    const localByName = new Map(smartReferences.map((reference) => [reference.name, reference]));
+    smartReferences = result.references.map((reference) => Object.assign({}, reference, {
+      url: localByName.get(reference.name)?.url || '',
+    }));
+    renderSmartReferences();
+  }
+  smartRun = null;
+  smartClientToken = requestId || newSmartClientToken();
+  smartPlanEditing = false;
+  smartPlanEditBackup = null;
+  smartPlanEditHash = '';
+  $('#smartProvider').textContent = `${result.provider.label} · ${result.provider.model}`;
+  renderSmartWorkspace();
+  return smartExecutionOption('smartAutoApprove');
+}
+
+async function startAndWaitForSmartPlan(brief, references, requestId) {
+  let accepted = null;
+  let startError = null;
+  for (let attempt = 0; attempt < 2 && !accepted; attempt += 1) {
+    try {
+      accepted = await api('/api/smart/plan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brief, references, requestId }),
+      });
+    } catch (error) {
+      if (error.status) throw error;
+      startError = error;
+      setSmartStatus('Connection interrupted while starting Smart. Checking the generation computer…');
+      await smartPlanDelay(1000 + attempt * 800);
+    }
+  }
+  if (accepted?.status === 'complete' && accepted.result) return accepted.result;
+  try {
+    return await waitForSmartPlanRequest(requestId);
+  } catch (error) {
+    if (error.status === 404 && startError) {
+      const connectionError = new Error('Could not reach the generation computer to start Smart planning. Check the connection and try again.');
+      connectionError.code = 'smart_plan_start_failed';
+      throw connectionError;
+    }
+    throw error;
+  }
+}
+
+async function buildSmartPlan() {
+  const brief = $('#smartBriefInput').value.trim();
+  if (!brief) {
+    setSmartStatus('Describe the finished piece first.', true);
+    $('#smartBriefInput').focus();
+    return;
+  }
+  smartBusy = true;
+  $('#smartPlanBtn').disabled = true;
+  setSmartStatus('Starting the production planner…');
+  let autoQueue = false;
+  const requestId = newSmartClientToken();
+  const references = smartReferencePayload();
+  smartPlanRequestId = requestId;
+  rememberSmartPlanRequest(requestId, brief, references);
+  try {
+    const result = await startAndWaitForSmartPlan(brief, references, requestId);
+    autoQueue = acceptSmartPlanResult(result, requestId);
+    forgetSmartPlanRequest(requestId);
+    setSmartStatus(autoQueue ? 'Plan ready. Auto approve is queueing production…' : 'Plan ready. Review the workflow before queueing.');
+  } catch (error) {
+    if (error.code !== 'smart_plan_poll_stopped') setSmartStatus(error.message, true);
+    if (error.code !== 'smart_plan_wait_timeout') forgetSmartPlanRequest(requestId);
+  } finally {
+    if (smartPlanRequestId === requestId) smartPlanRequestId = '';
+    smartBusy = false;
+    $('#smartPlanBtn').disabled = false;
+  }
+  if (autoQueue && smartPlan && !smartRun) {
+    await queueSmartProduction({ reviewReference: smartExecutionOption('smartPauseReferences') });
+  }
+}
+
+async function resumeSmartPlanRequest() {
+  if (smartPlanResumeStarted || smartBusy || smartPlan) return;
+  const saved = storedSmartPlanRequest();
+  if (!saved) return;
+  smartPlanResumeStarted = true;
+  smartBusy = true;
+  smartPlanRequestId = saved.requestId;
+  $('#smartPlanBtn').disabled = true;
+  if (saved.brief) $('#smartBriefInput').value = saved.brief;
+  if (Array.isArray(saved.references)) {
+    smartReferences = saved.references.slice(0, 2);
+    renderSmartReferences();
+  }
+  setSmartStatus('Reconnecting to the production planner…');
+  let autoQueue = false;
+  try {
+    const result = await waitForSmartPlanRequest(saved.requestId);
+    autoQueue = acceptSmartPlanResult(result, saved.requestId);
+    forgetSmartPlanRequest(saved.requestId);
+    setSmartStatus(autoQueue ? 'Plan ready. Auto approve is queueing production…' : 'Plan ready. Review the workflow before queueing.');
+  } catch (error) {
+    if (error.status === 404) {
+      forgetSmartPlanRequest(saved.requestId);
+      setSmartStatus('The previous Smart planning request is no longer available. Build the plan again.', true);
+    } else if (error.code !== 'smart_plan_poll_stopped') {
+      setSmartStatus(error.message, true);
+      if (error.code !== 'smart_plan_wait_timeout') forgetSmartPlanRequest(saved.requestId);
+    }
+  } finally {
+    if (smartPlanRequestId === saved.requestId) smartPlanRequestId = '';
+    smartBusy = false;
+    smartPlanResumeStarted = false;
+    $('#smartPlanBtn').disabled = false;
+  }
+  if (autoQueue && smartPlan && !smartRun) {
+    await queueSmartProduction({ reviewReference: smartExecutionOption('smartPauseReferences') });
+  }
+}
+
+async function queueSmartProduction(options = {}) {
+  if (!smartPlan || !smartPlanHash || smartBusy || smartPlanEditing) return;
+  if (!(await ensureGenerationSetup())) return;
+  const reviewCheckbox = $('#smartReviewReference');
+  const reviewReference = options.reviewReference
+    ?? (reviewCheckbox ? reviewCheckbox.checked : smartExecutionOption('smartPauseReferences'));
+  const brief = $('#smartBriefInput').value.trim();
+  smartBusy = true;
+  setSmartStatus('Queueing the first production step…');
+  renderSmartWorkspace();
+  try {
+    const result = await api('/api/smart/runs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        plan: smartPlan, planHash: smartPlanHash, clientToken: smartClientToken || newSmartClientToken(),
+        brief,
+        references: smartReferencePayload(),
+        approved: true,
+        reviewReference,
+        attentionBackend: selectedH3AttentionBackend(),
+        sageAttention: selectedH3AttentionBackend() === 'sageattention',
+      }),
+    });
+    mergeSmartRun(result.run);
+    setSmartStatus('Production queued. You can leave Smart mode while it runs.');
+    queueRefreshSoon();
+  } catch (error) {
+    setSmartStatus(error.message, true);
+  } finally {
+    smartBusy = false;
+    renderSmartWorkspace();
+  }
+}
+
+function smartExecutionOption(id) {
+  return $(`#${id}`)?.getAttribute('aria-checked') === 'true';
+}
+
+function toggleSmartExecutionOption(button) {
+  if (!button) return;
+  const enabled = button.getAttribute('aria-checked') !== 'true';
+  button.setAttribute('aria-checked', String(enabled));
+  if (button.id === 'smartAutoApprove') {
+    $('#smartPlanBtn span').textContent = enabled ? 'Plan & queue' : "Build director's plan";
+    setSmartStatus(enabled
+      ? 'Auto approve enabled. The next plan will queue without waiting for plan review.'
+      : 'Plan review enabled. The next plan will wait for your approval.');
+  }
+}
+
+async function actOnSmartRun(action) {
+  if (!smartRun || smartBusy) return;
+  if (action === 'library') {
+    setView('gallery');
+    return;
+  }
+  smartBusy = true;
+  setSmartStatus(action === 'cancel' ? 'Cancelling remaining work…' : 'Updating production…');
+  try {
+    const result = await api(`/api/smart/runs/${encodeURIComponent(smartRun.id)}/${action}`, { method: 'POST' });
+    mergeSmartRun(result.run);
+    if (action === 'resume') setSmartStatus('Reference approved. H3 is now queueing.');
+    else if (action === 'retry') setSmartStatus('Interrupted step queued again.');
+    else {
+      setSmartStatus('Production cancelled. The queue now shows the cancelled run.');
+      await refreshQueue().catch(() => { /* the Smart run is already safely cancelled */ });
+    }
+  } catch (error) {
+    setSmartStatus(error.message, true);
+  } finally {
+    smartBusy = false;
+    renderSmartWorkspace();
+  }
+}
+
+async function rerollSmartReference(stepId) {
+  if (!smartRun || smartRun.status !== 'review' || smartBusy || !stepId) return;
+  const feedback = $(`[data-smart-reference-feedback="${stepId}"]`)?.value.trim() || '';
+  smartBusy = true;
+  setSmartStatus(feedback ? 'Regenerating this reference with your feedback…' : 'Generating a new reference variation…');
+  renderSmartWorkspace();
+  try {
+    const result = await api(`/api/smart/runs/${encodeURIComponent(smartRun.id)}/references/${encodeURIComponent(stepId)}/reroll`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback }),
+    });
+    mergeSmartRun(result.run);
+    setSmartStatus('Reference regeneration queued. Smart will pause here again when it is ready.');
+    queueRefreshSoon();
+  } catch (error) {
+    setSmartStatus(error.message, true);
+  } finally {
+    smartBusy = false;
+    renderSmartWorkspace();
+  }
+}
+
+async function openSmartReferenceInLibrary(itemId) {
+  if (!itemId) return;
+  if (!state.items.some((item) => item.id === itemId)) await refreshGallery(true);
+  if (!state.items.some((item) => item.id === itemId)) {
+    toast('That reference is no longer available in the Library.', true);
+    return;
+  }
+  setView('gallery', { focusedResult: true });
+  openLightbox(itemId, 'image');
+}
+
+function resetSmartComposer() {
+  if (smartPlanRequestId) forgetSmartPlanRequest(smartPlanRequestId);
+  smartPlanRequestId = '';
+  smartReferences.forEach((reference) => {
+    if (String(reference?.url || '').startsWith('blob:')) URL.revokeObjectURL(reference.url);
+  });
+  smartPlan = null;
+  smartPlanHash = '';
+  smartPlanProvider = null;
+  smartRun = null;
+  smartClientToken = '';
+  smartReferences = [];
+  smartPlanEditing = false;
+  smartPlanEditBackup = null;
+  smartPlanEditHash = '';
+  $('#smartBriefInput').value = '';
+  $('#smartProvider').textContent = 'AI planner';
+  setSmartStatus('');
+  $('#smartBoard').innerHTML = SMART_EMPTY_BOARD;
+  renderSmartReferences();
+  $('#smartBriefInput').focus();
+}
+
+function stopSmartRecording() {
+  if (smartRecorder && smartRecorder.state !== 'inactive') smartRecorder.stop();
+}
+
+function renderSmartRecordingTime() {
+  const elapsed = Math.floor((Date.now() - smartRecordingStartedAt) / 1000);
+  $('#smartVoiceTime').textContent = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
+}
+
+function smartAudioContentType(audio) {
+  const declared = String(audio?.type || '').split(';')[0].trim().toLowerCase();
+  if (declared.startsWith('audio/')) return declared;
+  const extension = /\.([a-z0-9]+)$/i.exec(String(audio?.name || ''))?.[1]?.toLowerCase();
+  return ({
+    mp3: 'audio/mpeg', m4a: 'audio/mp4', mp4: 'audio/mp4', wav: 'audio/wav',
+    webm: 'audio/webm', ogg: 'audio/ogg', opus: 'audio/ogg', flac: 'audio/flac', aac: 'audio/aac',
+  })[extension] || '';
+}
+
+async function transcribeSmartAudio(audio) {
+  if (!audio?.size) return setSmartStatus('No audio was captured. Try again.', true);
+  const contentType = smartAudioContentType(audio);
+  if (!contentType) return setSmartStatus('Choose an MP3, M4A, WAV, WebM, OGG, FLAC, or AAC recording.', true);
+  const button = $('#smartVoiceBtn');
+  button.disabled = true;
+  setSmartStatus('Transcribing your brief…');
+  try {
+    const result = await api('/api/smart/transcribe', {
+      method: 'POST', headers: { 'Content-Type': contentType }, body: audio,
+    });
+    const current = $('#smartBriefInput').value.trim();
+    $('#smartBriefInput').value = [current, result.text].filter(Boolean).join(current ? '\n' : '');
+    invalidateSmartPlan('Voice brief ready. Edit it if needed, then build the plan.');
+  } catch (error) {
+    setSmartStatus(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function openSmartVoiceFileFallback(message) {
+  const input = $('#smartVoiceFile');
+  input.value = '';
+  setSmartStatus(message);
+  input.click();
+}
+
+async function startSmartRecording() {
+  if (smartRecorder && smartRecorder.state !== 'inactive') {
+    stopSmartRecording();
+    return;
+  }
+  if (smartVoiceFileFallback) {
+    smartVoiceFileFallback = false;
+    openSmartVoiceFileFallback('Opening your phone recorder instead…');
+    return;
+  }
+  if (!window.isSecureContext) {
+    openSmartVoiceFileFallback('Chrome requires HTTPS for live microphone access on a phone. Opening the phone recorder instead; enable the private HTTPS address in Preferences → System → Phone access for one-tap recording.');
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    openSmartVoiceFileFallback('Live microphone recording is unavailable here. Opening your phone recorder instead…');
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const preferred = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus']
+      .find((type) => MediaRecorder.isTypeSupported?.(type));
+    smartRecordingChunks = [];
+    smartRecorder = new MediaRecorder(stream, preferred ? { mimeType: preferred } : undefined);
+    smartRecorder.addEventListener('dataavailable', (event) => { if (event.data.size) smartRecordingChunks.push(event.data); });
+    smartRecorder.addEventListener('stop', async () => {
+      clearInterval(smartRecordingTimer);
+      clearTimeout(smartRecordingLimitTimer);
+      stream.getTracks().forEach((track) => track.stop());
+      const button = $('#smartVoiceBtn');
+      button.classList.remove('recording');
+      button.setAttribute('aria-pressed', 'false');
+      button.setAttribute('aria-label', 'Speak brief');
+      button.title = 'Speak brief';
+      $('#smartVoiceTime').textContent = '';
+      const blob = new Blob(smartRecordingChunks, { type: smartRecorder.mimeType || 'audio/webm' });
+      await transcribeSmartAudio(blob);
+    }, { once: true });
+    smartRecorder.start(500);
+    smartRecordingStartedAt = Date.now();
+    const button = $('#smartVoiceBtn');
+    button.classList.add('recording');
+    button.setAttribute('aria-pressed', 'true');
+    button.setAttribute('aria-label', 'Stop recording');
+    button.title = 'Stop recording';
+    renderSmartRecordingTime();
+    smartRecordingTimer = setInterval(renderSmartRecordingTime, 1000);
+    smartRecordingLimitTimer = setTimeout(stopSmartRecording, 120000);
+    setSmartStatus('Listening… speak naturally. Recording stops after two minutes.');
+  } catch (error) {
+    if (error.name === 'NotAllowedError') {
+      smartVoiceFileFallback = true;
+      setSmartStatus('Microphone access was denied. Allow it in Chrome, or tap the microphone again to use the phone recorder.', true);
+    } else setSmartStatus(`Could not start voice input: ${error.message}`, true);
+  }
+}
+
+function renderSmartFeatureAccess() {
+  const experimental = experimentalFeaturesEnabled();
+  const enabled = smartModeEnabled();
+  $('#openSplats').hidden = !experimental;
+  $('#splatModeTab').hidden = !experimental;
+  const row = $('#smartModeExperimentalRow');
+  if (row) row.hidden = !experimental;
+  const toggle = $('#smartModeToggle');
+  if (toggle) toggle.setAttribute('aria-checked', String(enabled));
+  const tab = $('#createMiddleTab');
+  const drawer = $('#drawerMiddleCreate');
+  const regionPath = 'M3 3h6v2H5v4H3V3Zm12 0h6v6h-2V5h-4V3ZM3 15h2v4h4v2H3v-6Zm16 0h2v6h-6v-2h4v-4ZM8 8h8v8H8V8Zm2 2v4h4v-4h-4Z';
+  const smartPath = 'm12 2 1.7 5.1L19 9l-5.3 1.9L12 16l-1.7-5.1L5 9l5.3-1.9L12 2Zm7 12 .9 2.6 2.6.9-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9L19 14Z';
+  if (tab) {
+    tab.dataset.createMode = enabled ? 'smart' : 'region';
+    tab.querySelector('span').textContent = enabled ? 'Smart' : 'Region';
+    tab.querySelector('path').setAttribute('d', enabled ? smartPath : regionPath);
+    tab.setAttribute('aria-label', enabled ? 'Smart production · experimental' : 'Region');
+  }
+  if (drawer) {
+    drawer.dataset.drawerCreateMode = enabled ? 'smart' : 'region';
+    drawer.querySelectorAll('span')[1].textContent = enabled ? 'Smart' : 'Region';
+    drawer.querySelector('path').setAttribute('d', enabled ? smartPath : regionPath);
+  }
+}
+
 function syncNavigation() {
   const createActive = state.view === 'create' || state.view === 'video';
   const focusedResult = desktopWorkspaceActive() && document.body.classList.contains('desktop-focused-result');
@@ -4458,7 +5882,9 @@ function setView(view, opts = {}) {
   }
   if (view === 'video') state.createMode = 'video';
   if (view === 'create') {
-    state.createMode = ['image', 'region'].includes(opts.createMode) ? opts.createMode : 'image';
+    const allowedCreateModes = smartModeEnabled() ? ['image', 'smart'] : ['image', 'region'];
+    if (experimentalFeaturesEnabled()) allowedCreateModes.push('splat');
+    state.createMode = allowedCreateModes.includes(opts.createMode) ? opts.createMode : 'image';
     if (state.createMode === 'region' && !state.regions.length) createRegion();
   }
   state.view = view;
@@ -4493,6 +5919,10 @@ function setView(view, opts = {}) {
     else schedulePrimaryOrSidePanelGuide('library-basics', 760);
   } else if (view === 'create' && state.createMode === 'image') {
     schedulePrimaryOrSidePanelGuide('prompt-entry', 960);
+  } else if (view === 'create' && state.createMode === 'smart') {
+    loadSmartRuns(true)
+      .then(() => resumeSmartPlanRequest())
+      .catch((error) => setSmartStatus(error.message, true));
   } else if (view === 'edit' && prev !== view) {
     scheduleContextualGuide('edit-inputs', 760);
   }
@@ -4524,8 +5954,112 @@ document.addEventListener('pointerdown', () => {
 createTabButtons.forEach((button) => button.addEventListener('click', () => {
   setCreateMode(button.dataset.createMode, button.dataset.createMode === 'region');
 }));
+$('#smartPlanBtn').addEventListener('click', buildSmartPlan);
+$('#smartVoiceBtn').addEventListener('click', startSmartRecording);
+$('#smartVoiceFile').addEventListener('change', async (event) => {
+  const file = event.target.files?.[0];
+  if (file) await transcribeSmartAudio(file);
+  event.target.value = '';
+});
+$('#smartConfigureAi').addEventListener('click', openSmartAiSettings);
+$('#smartAddReference').addEventListener('click', openSmartReferencePicker);
+$('#smartAutoApprove').addEventListener('click', (event) => toggleSmartExecutionOption(event.currentTarget));
+$('#smartPauseReferences').addEventListener('click', (event) => toggleSmartExecutionOption(event.currentTarget));
+$('#smartReferenceList').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-smart-reference-remove]');
+  if (!button) return;
+  const index = Number(button.dataset.smartReferenceRemove);
+  const [removed] = smartReferences.splice(index, 1);
+  if (String(removed?.url || '').startsWith('blob:')) URL.revokeObjectURL(removed.url);
+  invalidateSmartPlan('Reference removed. Build a new plan when ready.');
+  renderSmartReferences();
+});
+$$('[data-smart-example]').forEach((button) => button.addEventListener('click', () => {
+  $('#smartBriefInput').value = button.dataset.smartExample;
+  setSmartStatus('Example loaded. Make it yours, then build the plan.');
+  $('#smartBriefInput').focus();
+}));
+$('#smartBoard').addEventListener('click', (event) => {
+  const referencePreview = event.target.closest('[data-smart-reference-item]');
+  if (referencePreview) {
+    openSmartReferenceInLibrary(referencePreview.dataset.smartReferenceItem).catch((error) => toast(error.message, true));
+    return;
+  }
+  const selectOption = event.target.closest('[data-smart-select-option]');
+  if (selectOption) {
+    chooseSmartSelectOption(selectOption);
+    return;
+  }
+  const selectTrigger = event.target.closest('.smart-select-trigger');
+  if (selectTrigger) {
+    const select = selectTrigger.closest('.smart-select');
+    if (select?.classList.contains('open')) closeSmartSelects();
+    else openSmartSelect(selectTrigger);
+    return;
+  }
+  const control = event.target.closest('[data-smart-action]');
+  const action = control?.dataset.smartAction;
+  if (!action) return;
+  if (action === 'reset') resetSmartComposer();
+  else if (action === 'edit-plan') beginSmartPlanEdit();
+  else if (action === 'cancel-plan-edit') cancelSmartPlanEdit();
+  else if (action === 'save-plan') saveSmartPlanEdit();
+  else if (['add-clip', 'delete-clip', 'move-clip-up', 'move-clip-down'].includes(action)) {
+    mutateSmartPlanClips(action, Number(control.dataset.smartSceneIndex));
+  }
+  else if (['add-reference-state', 'delete-reference-state'].includes(action)) {
+    mutateSmartReferenceStates(action, Number(control.dataset.smartReferenceStateIndex));
+  }
+  else if (action === 'reroll-reference') rerollSmartReference(control.dataset.smartStepId);
+  else if (action === 'queue') queueSmartProduction();
+  else actOnSmartRun(action);
+});
+$('#smartBoard').addEventListener('keydown', (event) => {
+  const trigger = event.target.closest('.smart-select-trigger');
+  const option = event.target.closest('[data-smart-select-option]');
+  if (trigger && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+    event.preventDefault();
+    openSmartSelect(trigger, true);
+    return;
+  }
+  if (!option) {
+    if (event.key === 'Escape') closeSmartSelects();
+    return;
+  }
+  const menu = option.closest('.smart-select-menu');
+  const options = Array.from(menu?.querySelectorAll('[data-smart-select-option]') || []);
+  const currentIndex = options.indexOf(option);
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const offset = event.key === 'ArrowDown' ? 1 : -1;
+    options[(currentIndex + offset + options.length) % options.length]?.focus();
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault();
+    options[event.key === 'Home' ? 0 : options.length - 1]?.focus();
+  } else if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    chooseSmartSelectOption(option);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    const owner = option.closest('.smart-select')?.querySelector('.smart-select-trigger');
+    closeSmartSelects();
+    owner?.focus();
+  } else if (event.key === 'Tab') {
+    closeSmartSelects();
+  }
+});
+document.addEventListener('pointerdown', (event) => {
+  if (!event.target.closest('.smart-select')) closeSmartSelects();
+});
+$('#smartRecentList').addEventListener('click', (event) => {
+  const id = event.target.closest('[data-smart-run-id]')?.dataset.smartRunId;
+  const run = smartRuns.find((candidate) => candidate.id === id);
+  if (!run) return;
+  activateSmartRun(run);
+});
 
 function genLabel() {
+  if (state.view === 'create' && state.createMode === 'splat') return window.mixSplatBusy ? 'Creating 3D…' : 'Generate 3D';
   const setupAction = currentGenerationSetupAction();
   const generateButton = $('#generateBtn');
   if (generateButton) {
@@ -4824,14 +6358,55 @@ function renderH3LongContext() {
   }
 }
 
-function renderH3SageAttention() {
-  // SageAttention removed: incompatible with Intel Arc XPU; pytorch attention is used instead
+function renderH3AttentionBackend() {
+  const field = $('#vidH3AttentionField');
+  const status = $('#vidH3AttentionStatus');
+  const buttons = $$('[data-h3-attention]');
+  if (!field || !status || !buttons.length) return;
+  const visible = state.view === 'video' && state.vidEngine === 'h3';
+  field.hidden = !visible;
+  const selected = selectedH3AttentionBackend();
+  const capability = selected === 'sageattention'
+    ? lastMeta?.dependencies?.sageAttention
+    : (selected === 'sla' ? lastMeta?.dependencies?.slaAttention : selected === 'kitchen' ? lastMeta?.dependencies?.kitchenAttention : { ready: true });
+  buttons.forEach((button) => {
+    const active = button.dataset.h3Attention === selected;
+    const backendCapability = button.dataset.h3Attention === 'sageattention'
+      ? lastMeta?.dependencies?.sageAttention
+      : (button.dataset.h3Attention === 'sla' ? lastMeta?.dependencies?.slaAttention : button.dataset.h3Attention === 'kitchen' ? lastMeta?.dependencies?.kitchenAttention : { ready: true });
+    button.setAttribute('aria-checked', String(active));
+    button.dataset.ready = String(backendCapability?.ready === true);
+  });
+  if (selected === 'kitchen') {
+    status.textContent = capability?.ready ? 'Built in · experimental INT8 attention' : capability?.reason || 'Checking ComfyUI support…';
+    field.title = 'Native Comfy Kitchen attention. Speed and output can vary by GPU. Uses one backend at a time; does not stack with Sage or SLA.';
+  } else if (selected === 'standard') {
+    status.textContent = 'Built in · maximum compatibility';
+    field.title = 'H3 will use the standard PyTorch attention backend.';
+  } else if (capability?.ready === true) {
+    status.textContent = selected === 'sla'
+      ? `Runtime ready${capability.tritonVersion ? ` · Triton ${capability.tritonVersion}` : ''} · self-checks on first run`
+      : `Verified in ComfyUI${capability.sageVersion ? ` · SageAttention ${capability.sageVersion}` : ''}`;
+    field.title = selected === 'sla'
+      ? 'The pinned H3 SLA node and compatible CUDA Triton runtime are present. SLA is experimental, most useful for longer sequences, and safely falls back to dense attention if its kernel cannot run.'
+      : 'The matching package, Triton runtime, CUDA kernel, and KJ graph patch are verified.';
+  } else if (capability) {
+    status.textContent = capability.reason || `Install the H3 ${selected === 'sla' ? 'SLA' : 'SageAttention'} workflow to use this backend`;
+    field.title = status.textContent;
+  } else {
+    status.textContent = 'Verifying the ComfyUI runtime…';
+    field.title = status.textContent;
+  }
 }
 
 function updateVideoPanels() {
+  if (typeof renderSplatWorkspace === 'function') renderSplatWorkspace();
   const isVideo = state.view === 'video';
   const isEdit = state.view === 'edit';
   const isRegion = state.view === 'create' && state.createMode === 'region';
+  const isSmart = state.view === 'create' && state.createMode === 'smart' && smartModeEnabled();
+  $('#smartWorkspace').hidden = !isSmart;
+  if (isSmart) renderSmartWorkspace();
   const useSharedRegionResolution = isRegion && wideRegionResolutionQuery.matches;
   if (isVideo) syncVideoDurationLimit();
   const promptPanel = $('#promptPanel');
@@ -4871,6 +6446,8 @@ function updateVideoPanels() {
         : 'Describe your image…'));
   $('#vidAttachRow').hidden = !isVideo;
   $('#vidModelPanel').hidden = !isVideo;
+  $('#imageModelPanel').hidden = state.view !== 'create' || state.createMode !== 'image';
+  renderImageModel();
   $('#editModelPanel').hidden = !isEdit;
   if (!isEdit) setEditModelExpanded(false);
   $('#vidOptsPanel').hidden = !isVideo;
@@ -4919,9 +6496,10 @@ $('#vidLtxToggles').hidden = !(isVideo && state.vidEngine === 'ltx');
   $('#vidScailFpsField').hidden = !(isVideo && state.vidEngine === 'scail');
   renderH3LongContext();
   renderH3TurboMode();
-  renderH3SageAttention();
+  renderH3AttentionBackend();
   renderWanAnimate2Strengths();
   renderVideoStepControl();
+  renderQwen21Sampling();
   $('#videoAdvancedNote').hidden = !isVideo;
   $('#videoAdvancedNote').textContent = wanAnimate2InputFirst
     ? 'The official workflow uses a fixed six-step LCM schedule. Identity and Motion both default to 1.00.'
@@ -4937,7 +6515,12 @@ $('#vidLtxToggles').hidden = !(isVideo && state.vidEngine === 'ltx');
   schedulePromptIntentHint();
 }
 
-// SageAttention toggle removed: incompatible with Intel Arc XPU
+$$('[data-h3-attention]').forEach((button) => button.addEventListener('click', () => {
+  state.vidH3AttentionBackend = normalizeH3AttentionBackend(button.dataset.h3Attention);
+  renderH3AttentionBackend();
+  $('#genLbl').textContent = genLabel();
+  saveForm();
+}));
 
 $('#vidH3TurboToggle').addEventListener('click', () => {
   if ($('#vidH3TurboToggle').disabled) return;
@@ -4979,6 +6562,85 @@ let assetPickerState = null;
 let assetPickerReturnFocus = null;
 let resetAssetPickerSwipeVisuals = () => {};
 let animateAssetPickerNavigation = () => {};
+let assetPickerPreferenceSave = Promise.resolve();
+
+const ASSET_PICKER_RECENT_FOLDER = 'recently-used';
+
+function normalizedAssetPickerPreferences(value = state.assetPickerPreferences) {
+  const source = value && typeof value === 'object' ? value : {};
+  const recentKeys = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(source.recentKeys) ? source.recentKeys : []) {
+    const key = typeof raw === 'string' ? raw.trim().slice(0, 500) : '';
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    recentKeys.push(key);
+    if (recentKeys.length >= 20) break;
+  }
+  const requestedLimit = Number(source.recentLimit);
+  return {
+    recentLimit: Number.isFinite(requestedLimit) ? Math.round(Math.max(5, Math.min(20, requestedLimit))) : 10,
+    recentKeys,
+  };
+}
+
+function assetPickerRecentKey(asset) {
+  return String(asset?.recentKey || asset?.key || '').trim();
+}
+
+function allAssetPickerAssets(accept) {
+  return [...uploadedAssetPickerAssets(accept), ...previousGenerationAssets(accept)];
+}
+
+function recentlyUsedAssetPickerAssets(accept) {
+  const preferences = normalizedAssetPickerPreferences();
+  const byKey = new Map(allAssetPickerAssets(accept).map((asset) => [assetPickerRecentKey(asset), asset]));
+  return preferences.recentKeys.slice(0, preferences.recentLimit)
+    .map((key) => byKey.get(key))
+    .filter(Boolean);
+}
+
+function renderAssetPickerRecentAction() {
+  const button = $('#assetPickerRecent');
+  const copy = $('#assetPickerRecentCopy');
+  if (!button || !copy || !assetPickerState) return;
+  const preferences = normalizedAssetPickerPreferences();
+  const available = recentlyUsedAssetPickerAssets(assetPickerState.accept).length;
+  button.disabled = available === 0;
+  copy.textContent = available
+    ? `${available} of the last ${preferences.recentLimit} selections`
+    : 'Used assets will appear here';
+}
+
+function persistAssetPickerPreferences() {
+  const snapshot = normalizedAssetPickerPreferences();
+  state.assetPickerPreferences = snapshot;
+  assetPickerPreferenceSave = assetPickerPreferenceSave.catch(() => {}).then(async () => {
+    const prefs = await api('/api/preferences', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assetPicker: snapshot }),
+    });
+    state.assetPickerPreferences = normalizedAssetPickerPreferences(prefs.assetPicker);
+    renderAssetPickerPreferenceControl();
+    renderAssetPickerRecentAction();
+  }).catch(() => { /* recency never blocks using the selected asset */ });
+  return assetPickerPreferenceSave;
+}
+
+function rememberRecentlyUsedAssets(assets) {
+  const keys = (Array.isArray(assets) ? assets : [assets])
+    .map(assetPickerRecentKey)
+    .filter(Boolean);
+  if (!keys.length) return;
+  const current = normalizedAssetPickerPreferences();
+  const used = new Set(keys);
+  state.assetPickerPreferences = {
+    recentLimit: current.recentLimit,
+    recentKeys: [...keys, ...current.recentKeys.filter((key) => !used.has(key))].slice(0, 20),
+  };
+  renderAssetPickerPreferenceControl();
+  persistAssetPickerPreferences();
+}
 
 function assetPickerKinds(accept) {
   const normalized = String(accept || '').toLowerCase();
@@ -5010,6 +6672,7 @@ function uploadedAssetPickerAssets(accept) {
         .filter(Boolean).join(' · ');
       return {
         key: `upload:${asset.id}`,
+        recentKey: `upload:${asset.id}`,
         id: asset.id,
         uploaded: true,
         kind,
@@ -5039,6 +6702,7 @@ function previousGenerationAssets(accept) {
         const createdAt = Number(video.createdAt || item.createdAt || 0);
         assets.push({
           key: `${item.id}:video:${video.id || video.file}`,
+          recentKey: `generation:${item.id}:video:${video.id || video.file}`,
           kind: 'video', file: video.file, itemId: item.id, videoId: video.id,
           label: video.info?.motionPrompt || item.prompt || 'Previous video',
           detail: `${engine} · ${new Date(createdAt || Date.now()).toLocaleDateString()}`,
@@ -5053,6 +6717,7 @@ function previousGenerationAssets(accept) {
       const createdAt = Number(item.createdAt || 0);
       assets.push({
         key: `${item.id}:image:${item.upscaled || item.file}`,
+        recentKey: `generation:${item.id}:image`,
         kind: 'image', file: item.upscaled || item.file, itemId: item.id,
         label: item.prompt || 'Previous image',
         detail: `${model || 'Image'} · ${new Date(item.createdAt || Date.now()).toLocaleDateString()}`,
@@ -5084,20 +6749,25 @@ function assetMatchesQuery(asset, query) {
 
 function assetPickerVisibleAssets() {
   if (!assetPickerState) return [];
-  const source = assetPickerState.folder === 'uploaded-assets'
-    ? uploadedAssetPickerAssets(assetPickerState.accept)
-    : previousGenerationAssets(assetPickerState.accept);
+  const recent = assetPickerState.folder === ASSET_PICKER_RECENT_FOLDER;
+  const source = recent
+    ? recentlyUsedAssetPickerAssets(assetPickerState.accept)
+    : (assetPickerState.folder === 'uploaded-assets'
+      ? uploadedAssetPickerAssets(assetPickerState.accept)
+      : previousGenerationAssets(assetPickerState.accept));
   let assets = source.filter((asset) => {
     if (assetPickerState.mediaKind !== 'all' && asset.kind !== assetPickerState.mediaKind) return false;
     if (!assetMatchesQuery(asset, assetPickerState.query)) return false;
-    if (!['all', 'uploaded-assets'].includes(assetPickerState.folder) && asset.folder !== assetPickerState.folder) return false;
+    if (!['all', 'uploaded-assets', ASSET_PICKER_RECENT_FOLDER].includes(assetPickerState.folder) && asset.folder !== assetPickerState.folder) return false;
     if (assetPickerState.likes && !asset.liked) return false;
     return true;
   });
-  if (assetPickerState.sort === 'old') assets.sort((a, b) => a.createdAt - b.createdAt);
-  else if (assetPickerState.sort === 'az') assets.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
-  else if (assetPickerState.sort === 'active') assets.sort((a, b) => b.activity - a.activity);
-  else assets.sort((a, b) => b.createdAt - a.createdAt);
+  if (!recent) {
+    if (assetPickerState.sort === 'old') assets.sort((a, b) => a.createdAt - b.createdAt);
+    else if (assetPickerState.sort === 'az') assets.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+    else if (assetPickerState.sort === 'active') assets.sort((a, b) => b.activity - a.activity);
+    else assets.sort((a, b) => b.createdAt - a.createdAt);
+  }
   assetPickerState.assets = assets;
   return assets;
 }
@@ -5135,13 +6805,16 @@ function renderAssetPickerFilters() {
   kindFilter.classList.toggle('has-audio', visibleKindButtons.length === 4);
   kindFilter.style.setProperty('--filter-index', String(Math.max(0, visibleKindButtons.indexOf(activeKindButton))));
   const folder = (state.folders || []).find((entry) => entry.id === assetPickerState.folder);
-  if (!['all', 'uploaded-assets'].includes(assetPickerState.folder) && !folder) assetPickerState.folder = 'all';
+  if (!['all', 'uploaded-assets', ASSET_PICKER_RECENT_FOLDER].includes(assetPickerState.folder) && !folder) assetPickerState.folder = 'all';
+  const recent = assetPickerState.folder === ASSET_PICKER_RECENT_FOLDER;
   $('#assetPickerFolderLabel').textContent = assetPickerState.folder === 'uploaded-assets'
-    ? 'Uploaded assets' : (folder?.name || 'All generations');
+    ? 'Uploaded assets' : (recent ? 'Recently used' : (folder?.name || 'All generations'));
   const uploads = assetPickerState.folder === 'uploaded-assets';
   $('#assetPickerLikes').hidden = uploads;
   if (uploads) assetPickerState.likes = false;
   $('#assetPickerLikes').setAttribute('aria-pressed', String(assetPickerState.likes));
+  $('#assetPickerSortDropdown').hidden = recent;
+  if (recent) closeAssetPickerMenus();
   const sortLabels = { new: 'Newest', active: 'Active', old: 'Oldest', az: 'A–Z' };
   $('#assetPickerSortLabel').textContent = sortLabels[assetPickerState.sort] || 'Newest';
   $$('#assetPickerSortMenu [data-asset-sort]').forEach((button) => {
@@ -5153,6 +6826,7 @@ function renderAssetPickerFilters() {
   menu.replaceChildren();
   [
     { id: 'all', name: 'All generations' },
+    { id: ASSET_PICKER_RECENT_FOLDER, name: 'Recently used', virtual: true, recent: true },
     { id: 'uploaded-assets', name: 'Uploaded assets', virtual: true },
     ...(state.folders || []),
   ].forEach((entry) => {
@@ -5163,7 +6837,9 @@ function renderAssetPickerFilters() {
     const folderIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     folderIcon.setAttribute('viewBox', '0 0 24 24');
     folderIcon.setAttribute('aria-hidden', 'true');
-    folderIcon.innerHTML = '<path d="M3.5 6.5h6l2 2h9v9.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>';
+    folderIcon.innerHTML = entry.recent
+      ? '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>'
+      : '<path d="M3.5 6.5h6l2 2h9v9.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>';
     const label = document.createElement('span');
     label.textContent = entry.name;
     button.append(folderIcon, label);
@@ -5199,10 +6875,11 @@ function renderAssetPickerMultiBar() {
   if (!bar) return;
   const multiple = assetPickerState?.multiple === true;
   const count = multiple ? assetPickerState.selected.size : 0;
+  const noun = assetPickerState?.multipleLabel || 'keyframe';
   bar.hidden = !multiple;
   $('#assetPickerMultiCount').textContent = `${count} image${count === 1 ? '' : 's'} selected`;
   $('#assetPickerMultiUse').disabled = count === 0;
-  $('#assetPickerMultiUse').textContent = count ? `Add ${count} keyframe${count === 1 ? '' : 's'}` : 'Add keyframes';
+  $('#assetPickerMultiUse').textContent = count ? `Add ${count} ${noun}${count === 1 ? '' : 's'}` : `Add ${noun}s`;
 }
 
 function renderAssetPickerList() {
@@ -5211,21 +6888,24 @@ function renderAssetPickerList() {
   const count = $('#assetPickerCount');
   if (!list || !gallery || !assetPickerState) return;
   const browsingUploads = assetPickerState.folder === 'uploaded-assets';
-  const allAssets = browsingUploads
-    ? uploadedAssetPickerAssets(assetPickerState.accept)
-    : previousGenerationAssets(assetPickerState.accept);
+  const browsingRecent = assetPickerState.folder === ASSET_PICKER_RECENT_FOLDER;
+  const allAssets = browsingRecent
+    ? recentlyUsedAssetPickerAssets(assetPickerState.accept)
+    : (browsingUploads
+      ? uploadedAssetPickerAssets(assetPickerState.accept)
+      : previousGenerationAssets(assetPickerState.accept));
   const assets = assetPickerVisibleAssets();
   list.replaceChildren();
   const filtered = assetPickerState.mediaKind !== 'all' || assetPickerState.query
-    || (!browsingUploads && assetPickerState.folder !== 'all') || assetPickerState.likes;
+    || (!browsingUploads && !browsingRecent && assetPickerState.folder !== 'all') || assetPickerState.likes;
   count.textContent = filtered
     ? `${assets.length} of ${allAssets.length}`
-    : `${allAssets.length} available`;
+    : (browsingRecent ? `${allAssets.length} used recently` : `${allAssets.length} available`);
   if (!assets.length) {
     const kind = assetPickerKind(assetPickerState.accept);
     list.innerHTML = `<div class="asset-picker-empty">${allAssets.length
-      ? `No ${browsingUploads ? 'uploads' : 'generations'} match these filters.`
-      : (browsingUploads ? `No uploaded ${kind}s yet.` : `No previous ${kind} generations yet.`)}</div>`;
+      ? `No ${browsingRecent ? 'recent items' : (browsingUploads ? 'uploads' : 'generations')} match these filters.`
+      : (browsingRecent ? `No recently used ${kind}s yet.` : (browsingUploads ? `No uploaded ${kind}s yet.` : `No previous ${kind} generations yet.`))}</div>`;
     renderAssetPickerMultiBar();
     return;
   }
@@ -5282,7 +6962,9 @@ function renderAssetPickerList() {
     button.addEventListener('click', () => {
       if (!assetPickerState?.multiple) return openAssetPickerPreview(asset);
       if (assetPickerState.selected.has(asset.key)) assetPickerState.selected.delete(asset.key);
-      else assetPickerState.selected.set(asset.key, asset);
+      else if (assetPickerState.maxSelections && assetPickerState.selected.size >= assetPickerState.maxSelections) {
+        toast(`Choose up to ${assetPickerState.maxSelections} ${assetPickerState.multipleLabel || 'image'}${assetPickerState.maxSelections === 1 ? '' : 's'}`, true);
+      } else assetPickerState.selected.set(asset.key, asset);
       renderAssetPickerList();
     });
     list.appendChild(button);
@@ -5331,7 +7013,9 @@ function openAssetPickerPreview(asset) {
   $('#assetPickerPreviewPrompt').textContent = canonical.label || '';
   $('#assetPickerPreviewUse').textContent = canonical.kind === 'audio'
     ? 'Use audio' : (canonical.kind === 'video' ? 'Use video' : 'Use image');
-  $('#assetPickerPreviewBack').textContent = canonical.uploaded ? '‹ Back to uploads' : '‹ Back to generations';
+  $('#assetPickerPreviewBack').textContent = assetPickerState.folder === ASSET_PICKER_RECENT_FOLDER
+    ? '‹ Back to recently used'
+    : (canonical.uploaded ? '‹ Back to uploads' : '‹ Back to generations');
 }
 
 function closeAssetPickerPreview() {
@@ -5371,6 +7055,8 @@ function openAssetPicker(accept, callback, title, options = {}) {
     accept, callback, query: '', preview: null, assets: [], folder, mediaKind: 'all',
     galleryReference: options.galleryReference === true,
     multiple: options.multiple === true && assetPickerKind(accept) === 'image',
+    multipleLabel: String(options.multipleLabel || 'keyframe').replace(/[^a-z\s-]/gi, '').trim() || 'keyframe',
+    maxSelections: Math.max(0, Math.round(Number(options.maxSelections) || 0)),
     selected: new Map(),
     likes: state.likesOnly === true,
     sort: ['new', 'active', 'old', 'az'].includes(state.sortMode) ? state.sortMode : 'new',
@@ -5395,6 +7081,7 @@ function openAssetPicker(accept, callback, title, options = {}) {
       ? 'Use an image, video, or audio clip from your device, generations, or uploaded assets.'
       : `Use ${kind === 'audio' ? 'audio' : `a ${kind}`} from your device, generations, or uploaded assets.`);
   renderAssetPickerMultiBar();
+  renderAssetPickerRecentAction();
   $('#assetPickerSheet').classList.add('show');
   animateAssetPickerEntrance(panel, assetPickerReturnFocus);
   $('#assetPickerGallery').hidden = true;
@@ -5519,10 +7206,18 @@ function pickDeviceUpload(accept, cb, options = {}) {
           const metadata = await directorProbeVideo(url);
           dims = { w: metadata.width, h: metadata.height, dur: metadata.seconds };
         }
-        assets.push({ kind, name: res.name, url, w: dims.w, h: dims.h, dur: dims.dur, label: file.name, hasAudio: res.hasAudio === true });
+        assets.push({
+          kind, name: res.name, url, w: dims.w, h: dims.h, dur: dims.dur,
+          label: file.name, hasAudio: res.hasAudio === true,
+          uploadedAssetId: res.asset?.id,
+          recentKey: res.asset?.id ? `upload:${res.asset.id}` : '',
+        });
       } catch (e) { toast(`${file.name}: ${e.message}`, true); }
     }
-    if (assets.length) await cb(input.multiple ? assets : assets[0]);
+    if (assets.length) {
+      await cb(input.multiple ? assets : assets[0]);
+      rememberRecentlyUsedAssets(assets);
+    }
   });
   input.click();
 }
@@ -6061,6 +7756,7 @@ async function usePreviousGenerations(assets) {
       }
       closeAssetPicker();
       await picker.callback(picker.multiple ? prepared : prepared[0]);
+      rememberRecentlyUsedAssets(chosen);
       return;
     }
     if (picker.galleryReference) {
@@ -6084,11 +7780,32 @@ async function usePreviousGenerations(assets) {
         return result;
       }));
       await picker.callback(picker.multiple ? prepared : prepared[0]);
+      rememberRecentlyUsedAssets(chosen);
       return;
     }
     toast(chosen.length > 1 ? `Loading ${chosen.length} previous generations…` : 'Loading previous generation…');
     const prepared = [];
     for (const asset of chosen) {
+      if (asset.uploaded) {
+        const url = assetPickerMediaUrl(asset);
+        const metadata = asset.kind === 'video' ? await directorProbeVideo(url) : null;
+        const dims = asset.kind === 'image' ? await imageDimensions(url) : {
+          w: metadata?.width || 0,
+          h: metadata?.height || 0,
+        };
+        prepared.push({
+          kind: asset.kind,
+          name: asset.file,
+          url,
+          w: dims.w,
+          h: dims.h,
+          dur: metadata?.seconds || 0,
+          label: asset.label || `Uploaded ${asset.kind}`,
+          hasAudio: asset.hasAudio === true,
+          uploadedAssetId: asset.id,
+        });
+        continue;
+      }
       const path = asset.kind === 'video' ? '/videos/' : '/images/';
       const response = await fetch(path + encodeURIComponent(asset.file));
       if (!response.ok) throw new Error(`${asset.label || asset.file} is no longer available`);
@@ -6110,6 +7827,7 @@ async function usePreviousGenerations(assets) {
     }
     closeAssetPicker();
     await picker.callback(picker.multiple ? prepared : prepared[0]);
+    rememberRecentlyUsedAssets(chosen);
   } catch (e) {
     toast(e.message, true);
   }
@@ -6364,6 +8082,18 @@ $('#assetPickerPrevious').addEventListener('click', () => {
   panel.scrollTop = 0;
   panel.classList.add('browsing');
   $('#assetPickerGallery').hidden = false;
+  renderAssetPickerList();
+  requestAnimationFrame(() => $('#assetPickerSearch').focus());
+});
+$('#assetPickerRecent').addEventListener('click', () => {
+  if (!assetPickerState || $('#assetPickerRecent').disabled) return;
+  assetPickerState.folder = ASSET_PICKER_RECENT_FOLDER;
+  assetPickerState.likes = false;
+  const panel = $('#assetPickerSheet .asset-picker-panel');
+  panel.scrollTop = 0;
+  panel.classList.add('browsing');
+  $('#assetPickerGallery').hidden = false;
+  renderAssetPickerFilters();
   renderAssetPickerList();
   requestAnimationFrame(() => $('#assetPickerSearch').focus());
 });
@@ -6662,7 +8392,7 @@ function detachKrea2RawTurboLora() {
 function renderKrea2Mode() {
   const button = $('#kreaTurboToggle');
   if (!button) return;
-  const visible = state.view === 'create' && state.createMode === 'image';
+  const visible = state.view === 'create' && state.createMode === 'image' && state.imageEngine !== 'qwen21';
   $('#kreaModelPanel').hidden = !visible;
   button.hidden = !visible;
   if (!visible) {
@@ -6882,7 +8612,8 @@ function derivedAspectLabel(width, height) {
 }
 
 function createSizeLabel(megapixels = state.mp) {
-  return Number(megapixels) === 0.22 ? 'T' : (Number(megapixels) === 0.75 ? 'S' : (Number(megapixels) === 1.75 ? 'L' : 'M'));
+      if (Number(megapixels) === QWEN21_NATIVE_MP) return '2K';
+      return Number(megapixels) === 0.22 ? 'T' : (Number(megapixels) === 0.75 ? 'S' : (Number(megapixels) === 1.75 ? 'L' : 'M'));
 }
 
 function normalizeResolutionMegapixels(value, fallback = 1) {
@@ -6930,6 +8661,16 @@ function resolutionPresetForDimensions(width, height) {
 function restoreCreateResolution(width, height) {
   const actualWidth = Math.max(64, Math.round(Number(width) || 1024));
   const actualHeight = Math.max(64, Math.round(Number(height) || 1024));
+  if (state.imageEngine === 'qwen21') {
+    const aspect = ASPECTS.find(a => {
+      const size = qwen21NativeDimensions(a.label);
+      return size.w === actualWidth && size.h === actualHeight;
+    });
+    if (aspect) {
+      Object.assign(state, { aspect: aspect.label, mp: QWEN21_NATIVE_MP, width: actualWidth, height: actualHeight, customDims: false });
+      return { aspect: aspect.label, megapixels: QWEN21_NATIVE_MP, width: actualWidth, height: actualHeight };
+    }
+  }
   const preset = resolutionPresetForDimensions(actualWidth, actualHeight);
   if (preset) {
     state.aspect = preset.aspect;
@@ -7076,7 +8817,7 @@ function renderCreateImageGuide() {
   const chip = $('#createImageGuideChip');
   const toggle = $('#createImageGuideToggle');
   const toolbar = $('#createPromptTools');
-  const visible = state.view === 'create' && state.createMode === 'image';
+  const visible = state.view === 'create' && state.createMode === 'image' && state.imageEngine !== 'qwen21';
   if (section.previousElementSibling !== toolbar) toolbar.after(section);
   section.hidden = !visible;
   chip.hidden = !visible;
@@ -8720,7 +10461,7 @@ function syncEditAreaChrome() {
   const outpaint = editOutpaintActive();
   const localizedActive = active && !outpaint;
   const preserve = $('#editComposite');
-  preserve.hidden = localizedActive || (!outpaint && (kreaEdit || kreaRef || kreaRemix));
+  preserve.hidden = usingQwen21() || localizedActive || (!outpaint && (kreaEdit || kreaRef || kreaRemix));
   const preserveLabel = outpaint ? 'Keep the source at native resolution and blend the generated border' : 'Preserve unchanged areas';
   preserve.setAttribute('aria-label', preserveLabel);
   preserve.title = preserveLabel;
@@ -12679,7 +14420,9 @@ function renderDims() {
   }
   $$('#sizeSeg button').forEach((b) => {
     const fixedCanvasSize = !b.hasAttribute('data-h3-xl') && Number(b.dataset.mp) === 1.75;
-    b.hidden = h3FixedTurboCanvas ? !fixedCanvasSize : (b.hasAttribute('data-h3-xl') && !h3Resolution);
+    b.hidden = b.hasAttribute('data-qwen-native')
+      ? !(state.createMode === 'image' && state.imageEngine === 'qwen21')
+      : h3FixedTurboCanvas ? !fixedCanvasSize : (b.hasAttribute('data-h3-xl') && !h3Resolution);
     const selected = h3FixedTurboCanvas
       ? fixedCanvasSize
       : h3Resolution
@@ -12691,7 +14434,7 @@ function renderDims() {
     b.classList.toggle('active', selected);
     b.setAttribute('aria-pressed', String(selected));
     b.disabled = false;
-    b.title = h3FixedTurboCanvas ? 'LightX2V v1.0 four-step 768p requires this L canvas.' : '';
+    b.title = b.hasAttribute('data-qwen-native') ? 'Native 2K · more detail, more memory' : h3FixedTurboCanvas ? 'LightX2V v1.0 four-step 768p requires this L canvas.' : '';
   });
   syncRegionStageAspect();
   renderRegionResolutionPicker();
@@ -13185,11 +14928,11 @@ $$('#sizeSeg button').forEach((b) => b.addEventListener('click', async () => {
     state.vidH3Xl = false;
     state.mp = Number(b.dataset.mp);
   }
-  // Picking a tier replaces any manually typed canvas.
-  state.vidH3Manual = false;
-  state.vidH3ManualWidth = 0;
-  state.vidH3ManualHeight = 0;
-  const keepImageMatch = !h3ResolutionActive() && state.createMatchSource && !!state.createRef;
+      // Picking a tier replaces any manually typed canvas.
+      state.vidH3Manual = false;
+      state.vidH3ManualWidth = 0;
+      state.vidH3ManualHeight = 0;
+      const keepImageMatch = !b.hasAttribute('data-qwen-native') && !h3ResolutionActive() && state.createMatchSource && !!state.createRef;
   if (keepImageMatch) {
     applyCreateMatchedDimensions();
   } else {
@@ -13258,7 +15001,7 @@ for (const id of ['#wInput', '#hInput']) {
 function curLoras() {
   if (state.view === 'video') return state.videoLoras;
   if (state.view === 'edit') return state.editLoras;
-  return state.loras;
+  return state.view === 'create' && state.createMode === 'image' && state.imageEngine === 'qwen21' ? state.qwen21Loras : state.loras;
 }
 
 function loraCategory(name) {
@@ -13266,7 +15009,6 @@ function loraCategory(name) {
 }
 
 function compatibleLoraCategories() {
-  if (state.view === 'create' && state.createEngine === 'qwen_image') return [];
   if (state.view === 'video') return state.vidEngine === 'h3'
     ? ['h3', 'unknown']
     : ['video', 'unknown'];
@@ -13276,6 +15018,8 @@ function compatibleLoraCategories() {
     if (['krea2', 'krea2ref', 'krea2remix'].includes(state.editEngine)) return ['krea2', 'unknown'];
     return ['klein4', 'unknown'];
   }
+  if (state.createEngine === 'qwen_image') return [];
+  if (usingQwen21()) return ['qwen21', 'unknown'];
   return ['krea2', 'unknown'];
 }
 
@@ -13476,6 +15220,7 @@ function renderVideoQualityControl() {
 }
 
 function negativePromptAvailability(view = state.view) {
+  if (usingQwen21()) return { supported: true, hint: 'Effective above CFG 1; use to describe unwanted details' };
   if (view === 'create') return { supported: true, hint: 'Most effective above CFG 1' };
   if (view === 'video') {
     if (state.vidEngine === 'wan' && videoQualityActive()) {
@@ -13664,7 +15409,8 @@ function normalizeGenerationTuning(mode, value) {
 function captureGenerationTuning(mode = generationTuningMode()) {
   if (!mode) return;
   const previous = state.generationTuning[mode] || defaultGenerationTuning(mode);
-  const qwenLocked = mode === 'edit' && state.editEngine === 'qwen';
+  if (usingQwen21() && $('#cfgInput').value !== '') state.qwen21Cfg = Math.max(1, Math.min(30, Number($('#cfgInput').value) || 1));
+  const qwenLocked = usingQwen21() || (mode === 'edit' && state.editEngine === 'qwen');
   state.generationTuning[mode] = normalizeGenerationTuning(mode, {
     steps: mode === 'video'
       ? (h3TurboActive() ? normalizedH3TurboSteps() : normalizedH3Steps())
@@ -13692,6 +15438,7 @@ function restoreGenerationTuning(mode = generationTuningMode()) {
   renderNegativePromptControl();
   renderVideoStepControl();
   renderKrea2Mode();
+  if (usingQwen21()) renderQwen21Sampling();
 }
 
 function resetGenerationControl(control) {
@@ -13711,7 +15458,8 @@ function resetGenerationControl(control) {
       state.vidH3Steps = 20;
       control.value = 20;
     }
-  } else if (key === 'seed') control.value = defaults.seed;
+  } else if (usingQwen21() && key === 'cfg') control.value = 2.5;
+  else if (key === 'seed') control.value = defaults.seed;
   else if (Object.prototype.hasOwnProperty.call(defaults, key)) control.value = defaults[key];
   if (key === 'denoise') $('#denoiseVal').textContent = Number(control.value).toFixed(2);
   captureGenerationTuning(mode);
@@ -13791,8 +15539,10 @@ async function loadUserPreferences() {
   try {
     const prefs = await api('/api/preferences');
     state.userDefaults = prefs.defaults || state.userDefaults;
+    state.assetPickerPreferences = normalizedAssetPickerPreferences(prefs.assetPicker);
     state.contextOverrides = prefs.contextOverrides || {};
     renderGenerationDefaults();
+    renderAssetPickerPreferenceControl();
     applyGenerationDefaults();
     renderPromptComposer();
   } catch { /* profile gate handles auth */ }
@@ -13800,17 +15550,42 @@ async function loadUserPreferences() {
 
 async function saveUserPreferences(options = {}) {
   state.userDefaults = generationDefaultsFromControls();
+  state.assetPickerPreferences = assetPickerPreferencesFromControls();
   const prefs = await api('/api/preferences', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ defaults: state.userDefaults, contextOverrides: state.contextOverrides }),
+    body: JSON.stringify({
+      defaults: state.userDefaults,
+      assetPicker: state.assetPickerPreferences,
+      contextOverrides: state.contextOverrides,
+    }),
   });
   state.userDefaults = prefs.defaults;
+  state.assetPickerPreferences = normalizedAssetPickerPreferences(prefs.assetPicker);
   state.contextOverrides = prefs.contextOverrides;
   renderGenerationDefaults();
+  renderAssetPickerPreferenceControl();
   applyGenerationDefaults();
   renderPromptComposer();
   if (options.refreshContext !== false) await refreshLoraContext();
   else renderPromptSuggestions();
+}
+
+function assetPickerPreferencesFromControls() {
+  const current = normalizedAssetPickerPreferences();
+  const control = $('#assetPickerRecentLimit');
+  return normalizedAssetPickerPreferences({
+    recentLimit: control ? control.value : current.recentLimit,
+    recentKeys: current.recentKeys,
+  });
+}
+
+function renderAssetPickerPreferenceControl() {
+  const control = $('#assetPickerRecentLimit');
+  const value = $('#assetPickerRecentLimitValue');
+  const preferences = normalizedAssetPickerPreferences();
+  state.assetPickerPreferences = preferences;
+  if (control) control.value = String(preferences.recentLimit);
+  if (value) value.textContent = String(preferences.recentLimit);
 }
 
 function renderContextPreferences() {
@@ -14497,6 +16272,7 @@ function editEngineLabel(engine) {
   if (engine === 'krea2') return 'Krea2';
   if (engine === 'krea2ref') return 'Krea 2 Edit';
   if (engine === 'krea2remix') return 'Krea 2 Remix';
+  if (engine === 'qwen21') return 'Qwen Image 2.1';
   if (engine === 'qwen') return 'Qwen Edit';
   if (engine === 'klein9') return 'Flux Klein 9B';
   return 'Flux Klein 4B';
@@ -14555,6 +16331,7 @@ const VIDEO_ENGINE_TASKS = {
 };
 
 const EDIT_ENGINE_TASKS = {
+  qwen21: { task: 'Detailed Image Editing', model: 'Qwen Image 2.1', copy: 'Follow detailed instructions and combine references. Research and evaluation only.' },
   klein9: {
     task: 'Precision Editing', model: 'Flux Klein 9B',
     copy: 'Best detail retention and instruction fit.',
@@ -17167,6 +18944,84 @@ window.addEventListener('resize', () => {
   requestAnimationFrame(directorRevealSelection);
 });
 
+$('#installQwen21Models').addEventListener('click', async () => {
+  if (!state.profileIsOwner) return;
+  try {
+    await openInitialSetup({ components: ['qwen21'], initialStep: 'install' });
+    await startSetupDependencies(['qwen21']);
+  } catch (error) { toast(error.message, true); }
+});
+
+function usingQwen21() {
+  return state.view === 'edit' ? state.editEngine === 'qwen21'
+    : state.view === 'create' && state.createMode === 'image' && state.imageEngine === 'qwen21';
+}
+function setImageModelExpanded(open) {
+  $('#imageModelPanel').classList.toggle('expanded', open);
+  $('#imageModelBody').inert = !open;
+  $('#imageModelBody').setAttribute('aria-hidden', String(!open));
+  $('#imageModelHeader').setAttribute('aria-expanded', String(open));
+}
+function renderImageModel() {
+  const qwen = state.imageEngine === 'qwen21';
+  $('#imageEngineSelected').textContent = qwen ? 'Qwen Image 2.1' : 'Krea 2';
+  $('#imageEngineNote').textContent = qwen ? 'Text + detailed compositions' : 'Fast image generation';
+  $$('#imageEngineRow button').forEach((button) => {
+    const active = button.dataset.imageEngine === state.imageEngine;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+function renderQwen21Sampling() {
+  const active = usingQwen21();
+  const panel = $('#qwen21SamplingPanel');
+  panel.hidden = !active;
+  const anchor = state.view === 'edit' ? $('#editAspectControl') : $('#kreaModelPanel');
+  if (panel.previousElementSibling !== anchor) anchor.after(panel);
+  const quality = state.qwen21Steps === 40;
+  $('#qwen21QualityToggle').setAttribute('aria-checked', String(quality));
+  $('#qwen21QualityLabel').textContent = quality ? 'Quality' : 'Balance';
+  $('#qwen21QualitySummary').textContent = quality ? 'Qwen 2.1 · more refinement' : 'Qwen 2.1 · faster';
+  if (active) {
+    $('#stepsInput').value = state.qwen21Steps;
+    $('#cfgInput').value = state.qwen21Cfg;
+    $('#stepsInput').disabled = true;
+    $('#cfgInput').disabled = false;
+    $('#cfgInput').title = 'Qwen guidance · 2–3 recommended; 1 disables negative guidance';
+  }
+}
+$('#imageModelHeader').addEventListener('click', () => setImageModelExpanded($('#imageModelHeader').getAttribute('aria-expanded') !== 'true'));
+$('#imageModelPanel').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { setImageModelExpanded(false); $('#imageModelHeader').focus(); }
+});
+let imageEngineSelection = 0;
+$$('#imageEngineRow button').forEach((button) => button.addEventListener('click', async () => {
+  const selection = ++imageEngineSelection;
+  const originalView = state.view;
+  const originalMode = state.createMode;
+  const engine = button.dataset.imageEngine;
+  if (engine === state.imageEngine) { setImageModelExpanded(false); return; }
+  let vramGb = setupViewStatus?.hardware?.vramGb || 0;
+  if (engine === 'qwen21' && !state.imageResolutions?.qwen21 && !vramGb) {
+    const info = await api('/api/setup/status').catch(() => null);
+    vramGb = info?.hardware?.vramGb || 0;
+  }
+  if (selection !== imageEngineSelection || state.view !== originalView || state.createMode !== originalMode) return;
+  if (!usingQwen21()) captureGenerationTuning();
+  switchImageResolution(engine, vramGb);
+  renderAspects();
+  renderDims();
+  setImageModelExpanded(false);
+  restoreGenerationTuning();
+  updateVideoPanels();
+  $('#imageModelHeader').focus({ preventScroll: true });
+  saveForm();
+}));
+$('#qwen21QualityToggle').addEventListener('click', () => {
+  state.qwen21Steps = state.qwen21Steps === 40 ? 25 : 40;
+  renderQwen21Sampling(); saveForm();
+});
+
 function setEditModelExpanded(open) {
   const expand = open === true;
   const body = $('#editModelBody');
@@ -18152,8 +20007,22 @@ function galleryImageDestinationActions(item, { includeReuse = true } = {}) {
     { label: 'Depth guide', detail: 'Preserve camera and scene structure', icon: 'depth', tone: 'reuse', action: () => useGalleryItemAsGuide(item, 'depth') },
     { label: 'First frame', detail: 'Start a video here', icon: 'first-frame', tone: 'video', action: () => sendToVideoTab(item, 'start') },
     { label: 'Last frame', detail: 'End a video here', icon: 'last-frame', tone: 'video', action: () => sendToVideoTab(item, 'end') },
+    experimentalFeaturesEnabled() ? { label: 'Create 3D splat', detail: 'Experimental · photo to 3D', icon: 'depth', action: () => prepareSplatOrbit(item) } : null,
     includeReuse ? { label: 'Reuse', detail: 'Load generation settings', icon: 'reuse', tone: 'reuse', action: () => reuseItem(item) } : null,
   ].filter(Boolean);
+}
+
+function openSplatWorkspace(item, video) {
+  if (!experimentalFeaturesEnabled()) return;
+  closeLightbox(); $('#settingsSheet').classList.remove('show');
+  setCreateMode('splat');
+  if (typeof selectSplatVideo === 'function' && item && video) selectSplatVideo(item, video);
+}
+$('#openSplats').addEventListener('click', () => openSplatWorkspace());
+function prepareSplatOrbit(item) {
+  if (!experimentalFeaturesEnabled()) return;
+  openSplatWorkspace();
+  if (typeof selectSplatPhoto === 'function') selectSplatPhoto(item);
 }
 
 async function continueEditingResult(item) {
@@ -18415,6 +20284,161 @@ function pickH3ReferenceReplacement(kind, index) {
   const labels = { images: 'Picture', videos: 'Video', audios: 'Audio' };
   const mediaKind = kind.slice(0, -1);
   pickUpload(`${mediaKind}/*`, (asset) => replaceH3Reference(kind, index, asset), `Replace ${labels[kind]} ${index + 1}`);
+}
+
+function commitH3ReferenceEdit(kind, index, asset) {
+  const refs = h3References();
+  if (!refs[kind]?.[index] || !asset) return;
+  refs[kind][index] = asset;
+  renderH3References();
+  renderPromptComposer();
+  refreshH3ReferenceResolution();
+  saveForm();
+}
+
+let h3ReferenceTrimState = null;
+let h3ReferenceTrimFilmstripToken = 0;
+
+function layoutH3ReferenceTrim() {
+  const trim = h3ReferenceTrimState;
+  if (!trim?.duration) return;
+  const start = Math.max(0, Math.min(trim.start, trim.duration));
+  const end = Math.max(start, Math.min(trim.end, trim.duration));
+  const startPct = (start / trim.duration) * 100;
+  const endPct = (end / trim.duration) * 100;
+  $('#h3ReferenceTrimSelection').style.left = `${startPct}%`;
+  $('#h3ReferenceTrimSelection').style.width = `${endPct - startPct}%`;
+  $('#h3ReferenceTrimShadeL').style.width = `${startPct}%`;
+  $('#h3ReferenceTrimShadeR').style.width = `${100 - endPct}%`;
+  $('#h3ReferenceTrimLabel').textContent = `${fmtT(start)} – ${fmtT(end)} · ${(end - start).toFixed(1)}s of ${trim.duration.toFixed(1)}s`;
+}
+
+async function drawH3ReferenceTrimFilmstrip() {
+  const trim = h3ReferenceTrimState;
+  const wrap = $('#h3ReferenceTrimWave');
+  const canvas = $('#h3ReferenceTrimFilmstrip');
+  if (!trim?.duration || !wrap.clientWidth) return;
+  const token = ++h3ReferenceTrimFilmstripToken;
+  const dpr = window.devicePixelRatio || 1;
+  const width = wrap.clientWidth;
+  const height = wrap.clientHeight;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const context = canvas.getContext('2d');
+  context.scale(dpr, dpr);
+  context.fillStyle = 'rgba(255,255,255,.04)';
+  context.fillRect(0, 0, width, height);
+  try {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.src = trim.asset.url || `/api/input?name=${encodeURIComponent(trim.asset.name)}`;
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = resolve;
+      video.onerror = () => reject(new Error('Could not read video preview'));
+    });
+    const count = Math.max(6, Math.floor(width / 58));
+    const tileWidth = width / count;
+    const seek = (time) => new Promise((resolve) => {
+      video.onseeked = resolve;
+      video.currentTime = time;
+    });
+    for (let index = 0; index < count; index += 1) {
+      if (token !== h3ReferenceTrimFilmstripToken || h3ReferenceTrimState !== trim) return;
+      await seek(Math.max(0, Math.min(trim.duration - .05, ((index + .5) / count) * trim.duration)));
+      const scale = Math.max(tileWidth / (video.videoWidth || 1), height / (video.videoHeight || 1));
+      const drawWidth = (video.videoWidth || 1) * scale;
+      const drawHeight = (video.videoHeight || 1) * scale;
+      context.save();
+      context.beginPath();
+      context.rect(index * tileWidth, 0, tileWidth, height);
+      context.clip();
+      context.drawImage(video, index * tileWidth + (tileWidth - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+      context.restore();
+    }
+  } catch { /* The range remains fully usable without decorative frames. */ }
+}
+
+function closeH3ReferenceTrim() {
+  const video = $('#h3ReferenceTrimVideo');
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  $('#h3ReferenceTrimSheet').classList.remove('show');
+  h3ReferenceTrimState = null;
+  h3ReferenceTrimFilmstripToken += 1;
+  syncSheetScrollLock();
+}
+
+async function openH3ReferenceTrim(kind, index) {
+  const asset = h3References()[kind]?.[index];
+  if (!asset || kind !== 'videos') return;
+  await prepareH3ReferenceAsset(asset);
+  const video = $('#h3ReferenceTrimVideo');
+  const src = asset.url || `/api/input?name=${encodeURIComponent(asset.name)}`;
+  h3ReferenceTrimState = {
+    kind,
+    index,
+    asset,
+    duration: Math.max(0, Number(asset.dur) || 0),
+    start: Math.max(0, Number(asset.trimStart) || 0),
+    end: Math.max(0, Number(asset.trimEnd) || Number(asset.dur) || 0),
+    drag: null,
+  };
+  $('#h3ReferenceTrimTitle').textContent = `Trim ${asset.label || `Video ${index + 1}`}`;
+  video.src = src;
+  video.onloadedmetadata = () => {
+    const trim = h3ReferenceTrimState;
+    if (!trim || trim.asset !== asset) return;
+    trim.duration = Number(video.duration) || trim.duration || 0;
+    trim.start = Math.min(trim.start, Math.max(0, trim.duration - .5));
+    trim.end = Math.max(trim.start + .5, Math.min(trim.end || trim.duration, trim.duration));
+    asset.dur = trim.duration;
+    asset.w = Number(asset.w) || Number(video.videoWidth) || 0;
+    asset.h = Number(asset.h) || Number(video.videoHeight) || 0;
+    try { video.currentTime = trim.start; } catch { /* preview can remain at frame zero */ }
+    layoutH3ReferenceTrim();
+    drawH3ReferenceTrimFilmstrip();
+  };
+  $('#h3ReferenceTrimSheet').classList.add('show');
+  syncSheetScrollLock();
+  requestAnimationFrame(layoutH3ReferenceTrim);
+}
+
+async function addH3ReferenceFirstFrame(asset) {
+  try {
+    const frame = await extractVideoFirstFrameAsset(asset, Number(asset.trimStart) || 0, 'H3 video first frame');
+    await addH3Reference(Object.assign({}, frame, { kind: 'image' }));
+    toast('First frame added as the next Picture reference');
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function openH3ReferenceTools(anchor, entry) {
+  const { kind, index, asset, tag } = entry;
+  const label = tag.replace(/[<>]/g, '');
+  const items = [];
+  if (kind === 'images') {
+    items.push({
+      label: 'Crop picture', detail: 'Reframe this reference', icon: 'crop', tone: 'edit',
+      action: () => openInputImageCrop(asset, (next) => commitH3ReferenceEdit(kind, index, next), `Crop ${label}`),
+    });
+  } else if (kind === 'videos') {
+    items.push({
+      label: 'Preview and trim', detail: 'Choose the section H3 receives', icon: 'trim', tone: 'video',
+      action: () => openH3ReferenceTrim(kind, index),
+    }, {
+      label: 'Extract first frame', detail: 'Add it as a Picture reference', icon: 'first-frame', tone: 'reuse',
+      action: () => addH3ReferenceFirstFrame(asset),
+    });
+  }
+  items.push({
+    label: `Replace ${label}`, detail: 'Keep the prompt card in place', icon: 'switch',
+    action: () => pickH3ReferenceReplacement(kind, index),
+  });
+  openActionMenu(anchor, items, { menuTitle: `${label} tools`, tone: kind === 'videos' ? 'video' : 'image' });
 }
 
 function removeH3Reference(kind, index) {
@@ -18811,12 +20835,12 @@ function renderH3References() {
       const swap = document.createElement('button');
       swap.className = 'ref-swap';
       swap.type = 'button';
-      swap.setAttribute('aria-label', `Replace ${tag.replace(/[<>]/g, '')} and keep its prompt reference`);
-      swap.title = `Replace ${tag.replace(/[<>]/g, '')}`;
-      swap.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h12m0 0-3-3m3 3-3 3M19 16H7m0 0 3-3m-3 3 3 3"/></svg>';
+      swap.setAttribute('aria-label', `Open tools for ${tag.replace(/[<>]/g, '')}`);
+      swap.title = `${tag.replace(/[<>]/g, '')} tools`;
+      swap.innerHTML = '<svg class="h3-reference-more" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
       swap.addEventListener('click', (event) => {
         event.stopPropagation();
-        pickH3ReferenceReplacement(kind, index);
+        openH3ReferenceTools(swap, entry);
       });
       slot.append(role, swap, remove);
       slot.setAttribute('aria-label', `${role.textContent}, ${asset.label || asset.name}`);
@@ -18914,6 +20938,107 @@ $('#vidH3AddReference').addEventListener('click', () => {
   renderH3References();
   saveForm();
 });
+
+{
+  const wrap = $('#h3ReferenceTrimWave');
+  const video = $('#h3ReferenceTrimVideo');
+  const timeAt = (clientX) => {
+    const trim = h3ReferenceTrimState;
+    const rect = wrap.getBoundingClientRect();
+    if (!trim?.duration || !rect.width) return 0;
+    return Math.max(0, Math.min(trim.duration, ((clientX - rect.left) / rect.width) * trim.duration));
+  };
+  const applyDrag = (time) => {
+    const trim = h3ReferenceTrimState;
+    if (!trim?.duration || !trim.drag) return;
+    const minimum = Math.min(.5, trim.duration);
+    if (trim.drag.mode === 'start') trim.start = Math.max(0, Math.min(time, trim.end - minimum));
+    else if (trim.drag.mode === 'end') trim.end = Math.min(trim.duration, Math.max(time, trim.start + minimum));
+    else {
+      const length = trim.end - trim.start;
+      const start = Math.max(0, Math.min(trim.duration - length, time - trim.drag.offset));
+      trim.start = start;
+      trim.end = start + length;
+    }
+    layoutH3ReferenceTrim();
+  };
+  wrap.addEventListener('pointerdown', (event) => {
+    const trim = h3ReferenceTrimState;
+    if (!trim?.duration) return;
+    const time = timeAt(event.clientX);
+    const pixelsPerSecond = wrap.getBoundingClientRect().width / trim.duration;
+    const startDistance = Math.abs(time - trim.start) * pixelsPerSecond;
+    const endDistance = Math.abs(time - trim.end) * pixelsPerSecond;
+    let mode;
+    let offset = 0;
+    if (startDistance < 28 && startDistance <= endDistance) mode = 'start';
+    else if (endDistance < 28) mode = 'end';
+    else if (time > trim.start && time < trim.end) {
+      mode = 'move';
+      offset = time - trim.start;
+    } else mode = time < trim.start ? 'start' : 'end';
+    trim.drag = { pointerId: event.pointerId, mode, offset };
+    applyDrag(time);
+    try { wrap.setPointerCapture(event.pointerId); } catch { /* optional pointer capture */ }
+  });
+  wrap.addEventListener('pointermove', (event) => {
+    if (h3ReferenceTrimState?.drag?.pointerId === event.pointerId) applyDrag(timeAt(event.clientX));
+  });
+  const finish = (event) => {
+    const trim = h3ReferenceTrimState;
+    if (!trim?.drag || trim.drag.pointerId !== event.pointerId) return;
+    trim.drag = null;
+    try { video.currentTime = trim.start; } catch { /* preview can remain in place */ }
+  };
+  wrap.addEventListener('pointerup', finish);
+  wrap.addEventListener('pointercancel', finish);
+  video.addEventListener('timeupdate', () => {
+    const trim = h3ReferenceTrimState;
+    if (!trim?.duration) return;
+    if (!video.paused && video.currentTime >= trim.end - .02) {
+      try { video.currentTime = trim.start; } catch { /* allow playback to end */ }
+    }
+    const playhead = $('#h3ReferenceTrimPlayhead');
+    playhead.style.display = 'block';
+    playhead.style.left = `${Math.min(100, (video.currentTime / trim.duration) * 100)}%`;
+  });
+  video.addEventListener('play', () => setTrimPlaybackIcon($('#h3ReferenceTrimPlay'), true));
+  video.addEventListener('pause', () => setTrimPlaybackIcon($('#h3ReferenceTrimPlay'), false));
+  $('#h3ReferenceTrimPlay').addEventListener('click', () => {
+    const trim = h3ReferenceTrimState;
+    if (!trim) return;
+    if (video.paused) {
+      if (video.currentTime < trim.start || video.currentTime >= trim.end) video.currentTime = trim.start;
+      video.play().catch(() => {});
+    } else video.pause();
+  });
+  $('#h3ReferenceTrimReset').addEventListener('click', () => {
+    const trim = h3ReferenceTrimState;
+    if (!trim) return;
+    trim.start = 0;
+    trim.end = trim.duration;
+    layoutH3ReferenceTrim();
+    try { video.currentTime = 0; } catch { /* preview can remain in place */ }
+  });
+  $('#h3ReferenceTrimApply').addEventListener('click', () => {
+    const trim = h3ReferenceTrimState;
+    if (!trim) return;
+    const next = Object.assign({}, trim.asset, {
+      dur: trim.duration,
+      trimStart: trim.start,
+      trimEnd: trim.end,
+    });
+    commitH3ReferenceEdit(trim.kind, trim.index, next);
+    closeH3ReferenceTrim();
+    toast(`Reference trim applied · ${(next.trimEnd - next.trimStart).toFixed(1)}s`);
+  });
+  $('#h3ReferenceTrimSheet [data-close]').addEventListener('click', closeH3ReferenceTrim);
+  window.addEventListener('resize', () => {
+    if (!h3ReferenceTrimState || !$('#h3ReferenceTrimSheet').classList.contains('show')) return;
+    layoutH3ReferenceTrim();
+    drawH3ReferenceTrimFilmstrip();
+  });
+}
 
 function renderVidAttach() {
   if (h3ResolutionActive()) {
@@ -19598,17 +21723,16 @@ $('#driveTrimPlay').addEventListener('click', () => {
 
 /* Extract the first frame of the trimmed motion video once, then route it to
    Edit, image-to-image, or depth guidance without asking for another upload. */
-async function extractDriveFirstFrame() {
-  const d = state.vidDrive;
-  if (!d) throw new Error('Add a motion video first');
-  const trimStart = Number(d.trimStart) || 0;
-  if (d.firstFrame && Math.abs(Number(d.firstFrame.trimStart) - trimStart) < 0.001) return d.firstFrame;
+async function extractVideoFirstFrameAsset(asset, requestedTime = 0, label = 'Video first frame') {
+  if (!asset) throw new Error('Add a video first');
+  const trimStart = Math.max(0, Number(requestedTime) || 0);
+  if (asset.firstFrame && Math.abs(Number(asset.firstFrame.trimStart) - trimStart) < 0.001) return asset.firstFrame;
   toast('Extracting first frame…');
   const video = document.createElement('video');
   video.muted = true;
   video.playsInline = true;
   video.preload = 'auto';
-  video.src = d.url;
+  video.src = asset.url || `/api/input?name=${encodeURIComponent(asset.name)}`;
   await new Promise((resolve, reject) => {
     video.onloadedmetadata = resolve;
     video.onerror = () => reject(new Error('Could not read the video'));
@@ -19628,16 +21752,22 @@ async function extractDriveFirstFrame() {
     headers: { 'x-filename': encodeURIComponent('motion_first_frame.png') },
     body: await blob.arrayBuffer(),
   });
-  if (d.firstFrame?.url) try { URL.revokeObjectURL(d.firstFrame.url); } catch { /* noop */ }
-  d.firstFrame = {
+  if (asset.firstFrame?.url) try { URL.revokeObjectURL(asset.firstFrame.url); } catch { /* noop */ }
+  asset.firstFrame = {
     name: response.name,
     url: URL.createObjectURL(blob),
     w: canvas.width,
     h: canvas.height,
-    label: 'Motion video first frame',
+    label,
     trimStart,
   };
-  return d.firstFrame;
+  return asset.firstFrame;
+}
+
+async function extractDriveFirstFrame() {
+  const drive = state.vidDrive;
+  if (!drive) throw new Error('Add a motion video first');
+  return extractVideoFirstFrameAsset(drive, Number(drive.trimStart) || 0, 'Motion video first frame');
 }
 
 async function useDriveFirstFrame(destination) {
@@ -20092,6 +22222,7 @@ $('#editComposite').addEventListener('click', () => {
   saveForm();
 });
 $('#generateBtn').addEventListener('click', async () => {
+  if (state.view === 'create' && state.createMode === 'splat') { await generateSplat(); return; }
   if (currentGenerationSetupAction()) {
     await ensureGenerationSetup();
     $('#genLbl').textContent = genLabel();
@@ -20222,7 +22353,8 @@ $('#generateBtn').addEventListener('click', async () => {
         ? h3MatchSourceActive() : undefined,
       h3MatchReferenceVideo: state.vidEngine === 'h3' && state.vidH3Mode === 'reference'
         ? h3MatchReferenceVideoActive() : undefined,
-      sageAttention: false,
+          attentionBackend: state.vidEngine === 'h3' ? selectedH3AttentionBackend() : undefined,
+          sageAttention: state.vidEngine === 'h3' ? selectedH3AttentionBackend() === 'sageattention' : undefined,
       h3RefImageSize: h3Reference ? state.vidH3RefImageSize : undefined,
       h3References: h3Reference ? Object.fromEntries(Object.entries(h3GenerationReferences).map(([kind, assets]) => [
         kind,
@@ -20232,6 +22364,9 @@ $('#generateBtn').addEventListener('click', async () => {
           hasAudio: asset.hasAudio === true,
           w: Math.max(0, Math.round(Number(asset.w) || 0)),
           h: Math.max(0, Math.round(Number(asset.h) || 0)),
+          dur: Math.max(0, Number(asset.dur) || 0),
+          trimStart: Math.max(0, Number(asset.trimStart) || 0),
+          trimEnd: Math.max(0, Number(asset.trimEnd) || 0),
         })),
       ])) : undefined,
       cameraMotions: cameraMotionsForEngine(),
@@ -20312,7 +22447,7 @@ $('#generateBtn').addEventListener('click', async () => {
   const sequenceSteps = mode === 'edit' && !outpaintActive && state.editSequential && SEQUENTIAL_EDIT_ENGINES.has(state.editEngine)
     ? sequentialEditPrompts(prompt)
     : [];
-  const strengthHuntLoras = (mode === 'edit' ? state.editLoras : state.loras)
+  const strengthHuntLoras = curLoras()
     .filter((lora) => lora && lora.name && lora.on && lora.strengthHunt);
   const strengthHuntAxes = strengthHuntLoras.map((lora) => ({
     lora,
@@ -20342,10 +22477,10 @@ $('#generateBtn').addEventListener('click', async () => {
     if (!confirmed) return;
   }
   if (!(await ensureGenerationSetup())) return;
-  const createImageGuide = mode === 't2i' && state.createMode === 'image' && state.createGuideActive
+  const createImageGuide = mode === 't2i' && state.createMode === 'image' && state.imageEngine !== 'qwen21' && state.createGuideActive
     ? state.createRef : null;
   const createImageGuideName = createImageGuide ? createGuideInput(createImageGuide).name : undefined;
-  const krea2Raw = mode === 't2i' && state.createMode === 'image' && state.createEngine === 'krea2' && state.krea2Turbo === false;
+  const krea2Raw = mode === 't2i' && state.createMode === 'image' && state.imageEngine !== 'qwen21' && state.krea2Turbo === false;
   const seedRaw = $('#seedInput').value.trim();
   const nativePreserve = mode === 'edit'
     && !$('#editComposite').hidden
@@ -20373,6 +22508,7 @@ $('#generateBtn').addEventListener('click', async () => {
   };
   const body = {
     mode,
+    imageEngine: mode === 't2i' && state.createMode === 'image' ? state.imageEngine : 'krea2',
     editEngine: mode === 'edit' ? state.editEngine : undefined,
     createEngine: mode === 't2i' ? state.createEngine : undefined,
     createModelVariant: mode === 't2i' && state.createEngine === 'qwen_image' ? state.createModelVariant : undefined,
@@ -20408,13 +22544,13 @@ $('#generateBtn').addEventListener('click', async () => {
       profile: upscaleFinish.profile,
       noise: upscaleFinish.noise,
     } : undefined,
-    steps: Number($('#stepsInput').value) || (mode === 't2i' && state.krea2Turbo ? 8 : 12),
-    cfg: Number($('#cfgInput').value) || 1,
+    steps: usingQwen21() ? state.qwen21Steps : Number($('#stepsInput').value) || (mode === 't2i' && state.krea2Turbo ? 8 : 12),
+    cfg: usingQwen21() ? state.qwen21Cfg : Number($('#cfgInput').value) || 1,
     batch: sequenceSteps.length ? 1 : (strengthHuntCount ? 1 : (Number($('#batchInput').value) || 1)),
     denoise: mode === 'edit' ? Number($('#denoiseInput').value)
       : (createImageGuide && state.createGuideMode === 'image' ? createDenoiseFromInfluence() : 1),
     seed: seedRaw === '' ? undefined : Number(seedRaw),
-    loras: mode === 'edit' ? state.editLoras : (state.createEngine === 'qwen_image' ? [] : state.loras),
+    loras: curLoras(),
     refImages: mode === 'edit'
       ? state.refs.slice(0, editReferenceCapacity()).filter(Boolean).map((r) => r.name)
       : [],
@@ -20558,15 +22694,16 @@ let queueDownloadsWereActive = false;
 async function refreshQueue() {
   const q = await api('/api/queue');
   reconcileGenerationState(q);
-  const total = (q.running || []).length + (q.pending || []).length + (q.finalizing || []).length + (q.downloads || []).length;
+  const total = (q.preparing || []).length + (q.running || []).length + (q.pending || []).length
+    + (q.upcoming || []).length + (q.finalizing || []).length + (q.downloads || []).length;
   $('#queueCount').hidden = total === 0;
   $('#queueCount').textContent = String(total);
   if ($('#queueSheet').classList.contains('show')) renderQueue(q);
   return q;
 }
-function queueRefreshSoon() {
+function queueRefreshSoon(force = false) {
   const now = Date.now();
-  if (now - queueRefreshAt > 2500) {
+  if (force || now - queueRefreshAt > 2500) {
     queueRefreshAt = now;
     refreshQueue().catch(() => { /* noop */ });
   }
@@ -20795,6 +22932,11 @@ function reconcileGenerationState(queue) {
   if (!plan.authoritative) return false;
 
   let changed = false;
+  for (const adoption of plan.adoptedJobs || []) {
+    state.activeJobs.add(adoption.jobId);
+    if (adoption.sequenceId) state.activeJobSequences.set(adoption.jobId, adoption.sequenceId);
+    changed = true;
+  }
   for (const migration of plan.migrations) {
     applyQueueJobMapping({ [migration.oldJobId]: migration.newJobId });
     changed = true;
@@ -20822,7 +22964,13 @@ function reconcileGenerationState(queue) {
   }
   if (!changed) return false;
 
-  if (!state.activeJobs.size && !state.motionPromptRequestsPending) {
+  if ((plan.adoptedJobs || []).length) {
+    const phases = new Set(plan.adoptedJobs.map((job) => job.phase));
+    const status = phases.has('running')
+      ? 'Generation in progress…'
+      : (phases.has('finalizing') ? 'Finalizing generation…' : 'Generation queued…');
+    setGenerating(true, status);
+  } else if (!state.activeJobs.size && !state.motionPromptRequestsPending) {
     stopLivePreviewSimulation();
     setGenerating(false);
     $('#liveStatusText').textContent = 'Finished — check Library';
@@ -20900,7 +23048,8 @@ function setQueueView(view) {
 
 function syncQueueTabs(q) {
   const downloads = q.downloads || [];
-  const jobs = (q.running || []).length + (q.pending || []).length + (q.finalizing || []).length;
+  const jobs = (q.preparing || []).length + (q.running || []).length
+    + (q.pending || []).length + (q.upcoming || []).length + (q.finalizing || []).length;
   const hasDownloads = downloads.length > 0;
   $('#queueTabs').hidden = !hasDownloads;
   $('#queueJobsCount').textContent = String(jobs);
@@ -20964,9 +23113,11 @@ function renderQueue(q) {
   const list = $('#queueList');
   list.innerHTML = '';
   const rows = [
+    ...(q.preparing || []).map((j) => ({ ...j, run: true, preparing: true })),
     ...(q.running || []).map((j) => ({ ...j, run: true })),
     ...(q.finalizing || []).map((j) => ({ ...j, run: true, finalizing: true })),
     ...(q.pending || []).map((j) => ({ ...j, run: false })),
+    ...(q.upcoming || []).map((j) => ({ ...j, run: false, upcoming: true })),
   ];
   if (!rows.length) {
     list.innerHTML = '<div class="queue-empty">Queue is empty — nothing running.</div>';
@@ -20977,6 +23128,13 @@ function renderQueue(q) {
   if (hint) hint.hidden = !canReorder;
   const clearHistory = $('#queueClearHistoryBtn');
   if (clearHistory) clearHistory.disabled = !(q.history || []).length;
+  const reviewRows = (q.upcoming || []).filter((job) => job.waitingForReview && job.smartRunId);
+  const clearReviews = $('#queueClearReviewsBtn');
+  if (clearReviews) {
+    clearReviews.hidden = !reviewRows.length;
+    clearReviews.dataset.itemCount = String(reviewRows.length);
+    clearReviews.dataset.runCount = String(new Set(reviewRows.map((job) => job.smartRunId)).size);
+  }
   for (const j of rows) {
     const row = document.createElement('div');
     row.className = 'queue-row';
@@ -20986,7 +23144,9 @@ function renderQueue(q) {
     st.dataset.jobId = j.jobId;
     const pct = state.queueProgress[j.jobId];
     const elapsed = j.elapsedMs != null ? formatDuration(j.elapsedMs) : '';
-    st.textContent = j.finalizing ? 'Finalizing' : (j.run ? (pct != null ? pct + '%' : 'Running') : 'Queued');
+    st.textContent = j.preparing ? 'Enhancing' : (j.finalizing ? 'Finalizing'
+      : (j.upcoming ? (j.waitingForReview ? 'Review' : 'Upcoming')
+        : (j.run ? (pct != null ? pct + '%' : 'Running') : 'Queued')));
     const lb = document.createElement('span');
     lb.className = 'q-label';
     lb.textContent = elapsed ? `${j.label} - ${elapsed}` : j.label;
@@ -21003,23 +23163,25 @@ function renderQueue(q) {
     x.className = 'q-cancel';
     x.textContent = '✕';
     x.type = 'button';
-    x.setAttribute('aria-label', j.run ? 'Stop job' : 'Remove queued job');
-    x.hidden = !!j.finalizing || j.owned !== true;
+    x.setAttribute('aria-label', j.waitingForReview ? 'Remove Smart review items' : (j.run ? 'Stop job' : 'Remove queued job'));
+    x.hidden = !!j.preparing || !!j.finalizing || j.cancellable === false || j.owned !== true;
     x.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (!await askConfirm({
-        title: j.run ? 'Stop this job?' : 'Remove queued job?',
-        message: j.run ? 'The current generation will be interrupted.' : 'This generation will not run.',
-        confirmLabel: j.run ? 'Stop job' : 'Remove job',
+        title: j.waitingForReview ? 'Remove this Smart production?' : (j.run ? 'Stop this job?' : 'Remove queued job?'),
+        message: j.waitingForReview
+          ? 'All clips from this production that are waiting for review will be removed. Completed gallery media will not be deleted.'
+          : (j.run ? 'The current generation will be interrupted.' : 'This generation will not run.'),
+        confirmLabel: j.waitingForReview ? 'Remove reviews' : (j.run ? 'Stop job' : 'Remove job'),
         danger: true,
       })) return;
       try {
-        await api('/api/queue/cancel', {
+        await api(j.waitingForReview ? '/api/queue/reviews/clear' : '/api/queue/cancel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jobId: j.jobId }),
+          body: JSON.stringify(j.waitingForReview ? { smartRunId: j.smartRunId } : { jobId: j.jobId }),
         });
-        toast(j.run ? 'Job stopped' : 'Removed from queue');
+        toast(j.waitingForReview ? 'Smart review items removed' : (j.run ? 'Job stopped' : 'Removed from queue'));
         refreshQueue();
       } catch (e2) { toast(e2.message, true); }
     });
@@ -21043,14 +23205,16 @@ function renderQueue(q) {
     h.textContent = 'Recent';
     list.appendChild(h);
     for (const e of hist) {
+      const cancelled = e.kind === 'cancelled';
       const row = document.createElement('div');
-      row.className = 'queue-row' + (e.itemId ? ' q-click' : '');
+      row.className = 'queue-row' + (cancelled ? ' cancelled' : '') + (e.itemId ? ' q-click' : '');
       const st = document.createElement('span');
-      st.className = 'q-state' + (e.kind === 'error' ? ' q-err' : '');
-      st.textContent = agoStr(e.ts);
+      st.className = 'q-state' + (e.kind === 'error' ? ' q-err' : '') + (cancelled ? ' cancelled' : '');
+      st.textContent = cancelled ? 'Cancelled' : agoStr(e.ts);
       const lb = document.createElement('span');
       lb.className = 'q-label';
       lb.textContent = (e.kind === 'error' ? '⚠ ' : '') + e.label;
+      if (cancelled) lb.textContent += ` · ${agoStr(e.ts)} ago`;
       if (e.durationMs) lb.textContent += ` - ${formatDuration(e.durationMs)}`;
       row.append(queueThumbnail(e), st, lb);
       if (e.itemId) row.addEventListener('click', () => openFromQueue(e.itemId, e.videoId));
@@ -21099,6 +23263,33 @@ $('#queueClearHistoryBtn').addEventListener('click', async () => {
     await refreshQueue();
   } catch (error) {
     toast(error.message, true);
+    btn.disabled = false;
+  }
+});
+
+$('#queueClearReviewsBtn').addEventListener('click', async () => {
+  const btn = $('#queueClearReviewsBtn');
+  if (btn.hidden || btn.disabled) return;
+  const itemCount = Math.max(0, Number(btn.dataset.itemCount) || 0);
+  const runCount = Math.max(0, Number(btn.dataset.runCount) || 0);
+  if (!await askConfirm({
+    title: `Remove ${itemCount} Smart review item${itemCount === 1 ? '' : 's'}?`,
+    message: `${runCount} pending Smart production${runCount === 1 ? '' : 's'} will be cancelled. Completed gallery media will not be deleted.`,
+    confirmLabel: 'Clear reviews',
+    danger: true,
+  })) return;
+  btn.disabled = true;
+  try {
+    const result = await api('/api/queue/reviews/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    toast(`${result.clearedItems || 0} Smart review item${result.clearedItems === 1 ? '' : 's'} removed`);
+    await refreshQueue();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
     btn.disabled = false;
   }
 });
@@ -21182,6 +23373,11 @@ function connectEvents() {
   es.addEventListener('status', (ev) => {
     renderGenerationStatus(JSON.parse(ev.data));
   });
+  es.addEventListener('queueChanged', (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.profileId && (!state.profile || data.profileId !== state.profile.id)) return;
+    queueRefreshSoon(true);
+  });
   es.addEventListener('preview', (ev) => {
     const d = JSON.parse(ev.data);
     if (state.activeJobs.size && (!d.jobId || state.activeJobs.has(d.jobId))) {
@@ -21212,6 +23408,19 @@ function connectEvents() {
     }
     toast(`${toastLabel} ${d.completedChunk} complete · running ${d.nextChunk} of ${d.total}`);
     queueRefreshSoon();
+  });
+  es.addEventListener('smartRunUpdated', (ev) => {
+    const data = JSON.parse(ev.data);
+    mergeSmartRun(data.run);
+    if (data.run?.status === 'complete') {
+      setSmartStatus('Production complete. The result is ready in Library.');
+      refreshGallery(true);
+    } else if (data.run?.status === 'review') {
+      setSmartStatus('Canonical reference ready. Review it before continuing to video.');
+      refreshGallery(true);
+    } else if (['failed', 'attention'].includes(data.run?.status)) {
+      setSmartStatus(data.run.error || 'This production needs attention.', true);
+    }
   });
   es.addEventListener('jobDone', (ev) => {
     const d = JSON.parse(ev.data);
@@ -21725,12 +23934,14 @@ function videoEngineLabel(engine, info) {
 function galleryImageModelLabel(item) {
   if (!item) return '';
   if (item.mode === 'edit') return editEngineLabel(item.editEngine || 'klein4');
+  if (item.mode === 't2i' && item.imageEngine === 'qwen21') return 'Qwen Image 2.1';
   if (item.mode === 't2i') return item.krea2Turbo === false ? 'Krea 2 Raw' : 'Krea 2 Turbo';
   return '';
 }
 
 function galleryCardModelLabel(item) {
   if (!item) return '';
+  if (item.mode === 't2i' && item.imageEngine === 'qwen21') return 'Qwen Image 2.1';
   if (item.mode === 't2i') return item.krea2Turbo === false ? 'Raw' : 'Turbo';
   return galleryImageModelLabel(item);
 }
@@ -21875,6 +24086,11 @@ function desktopStageChoices(item) {
       });
     });
   });
+  group.forEach((groupItem) => (groupItem.splats || []).forEach((scene) => choices.push({
+    item: groupItem, media: 'splat:' + scene.id, splat: scene,
+    src: '/images/' + (groupItem.upscaled || groupItem.file),
+    label: 'Open 3D scene: ' + scene.title, badge: '3D', video: false,
+  })));
   return choices;
 }
 
@@ -21978,7 +24194,7 @@ function renderDesktopStagePicker(item, media = 'image') {
       : escapeHtml(choice.badge);
     thumbnail.appendChild(badge);
     button.appendChild(thumbnail);
-    button.addEventListener('click', () => selectDesktopLibraryItem(choice.item, choice.media));
+    button.addEventListener('click', () => choice.splat ? openLibrarySplat(choice.splat, choice.item) : selectDesktopLibraryItem(choice.item, choice.media));
     picker.appendChild(button);
   });
   picker.scrollLeft = previousScrollLeft;
@@ -21989,6 +24205,7 @@ function renderDesktopStagePicker(item, media = 'image') {
 }
 
 function renderDesktopStage(item, mediaSel) {
+  if (state.view === 'create' && state.createMode === 'splat') return;
   const open = $('#desktopStageOpen');
   if (!open) return;
   if (!desktopWorkspaceActive()) {
@@ -22169,6 +24386,7 @@ const DESKTOP_INPUT_STATE_KEYS = [
   'editAspectOverride', 'editAspect', 'editMp', 'editWidth', 'editHeight', 'editOutpaint', 'editOutpaintPosition', 'editOutpaintOffsetX', 'editOutpaintOffsetY', 'editOutpaintScale', 'editOutpaintFeather', 'editOutpaintMaskOffset',
   'editUpscaleEnabled', 'editUpscaleResolution', 'editUpscaleProfile', 'editUpscaleNoise', 'editUpscaleExpanded', 'editSequential',
   'createUpscaleEnabled', 'createUpscaleResolution', 'createUpscaleProfile', 'createUpscaleNoise', 'createUpscaleExpanded',
+  'imageEngine', 'qwen21Steps', 'qwen21Cfg', 'qwen21Loras', 'imageResolutions',
   'qwenAngles', 'qwenAnglesMode', 'qwenAngleElevations', 'qwenAngleDistances', 'qwenQuality', 'krea2RefBoost',
   'prompts', 'promptPresetSelections', 'loras', 'videoLoras', 'editLoras', 'editLorasByEngine', 'editEngine', 'refs', 'promptSourceImage', 'promptAssistantUseSource',
   'createRef', 'createImageGuideOpen', 'createGuideMode', 'createGuideActive', 'createMatchSource', 'createMatchNative',
@@ -22178,7 +24396,7 @@ const DESKTOP_INPUT_STATE_KEYS = [
   'kreaBrush', 'kreaMaskFeather', 'editMaskInfluence', 'editMaskExpand', 'kreaMaskInvert', 'kreaMaskPoints',
   'kreaMaskPointForeground', 'kreaMaskPointDeleteMode', 'kreaMaskPreviewCutout', 'kreaMaskViewMode',
   'vidRef', 'vidEnd', 'vidDrive', 'vidFace', 'vidAudio', 'vidEngine', 'vidSigma', 'vidSmooth', 'vidWanQuality', 'vidLtx25Quality',
-  'vidH3Mode', 'vidH3MatchSource', 'vidH3MatchReferenceVideo', 'vidH3Xl', 'vidH3SageAttention', 'vidH3Turbo', 'vidH3LongContext', 'vidH3TurboStrength', 'vidH3TurboSteps', 'vidH3RefTurboSteps', 'vidH3Steps', 'vidH3RefImageSize', 'vidH3RefSlots', 'vidH3References',
+  'vidH3Mode', 'vidH3MatchSource', 'vidH3MatchReferenceVideo', 'vidH3Xl', 'vidH3AttentionBackend', 'vidH3Turbo', 'vidH3LongContext', 'vidH3TurboStrength', 'vidH3TurboSteps', 'vidH3RefTurboSteps', 'vidH3Steps', 'vidH3RefImageSize', 'vidH3RefSlots', 'vidH3References',
   'vidScailMode', 'vidScailFps', 'vidScailStableTracking', 'vidScailChunkFrames', 'vidScailChunkOverlap', 'vidAutoMotionPrompt',
   'videoCameraMotions', 'videoCameraMotionPhrase', 'videoCameraGuide',
   'generationTuning',
@@ -22337,7 +24555,7 @@ function resetActiveGenerationForm() {
     state.vidH3MatchSource = true;
     state.vidH3MatchReferenceVideo = false;
     state.vidH3Xl = false;
-    state.vidH3SageAttention = false;
+    state.vidH3AttentionBackend = 'sageattention';
     state.vidH3Turbo = false;
     state.vidH3LongContext = false;
     state.vidH3TurboStrength = 1;
@@ -22416,14 +24634,11 @@ function resetActiveGenerationForm() {
 }
 
 function clearDesktopStageSelection() {
-  checkpointDesktopInputSetup();
   state.desktopReuseToken += 1;
   state.desktopItemId = null;
   state.desktopMediaId = 'image';
   state.desktopSettingsReady = false;
   state.desktopStageDismissed = true;
-  resetActiveGenerationForm();
-  appendDesktopInputSetup();
   renderDesktopStage();
   syncDesktopGallerySelection();
 }
@@ -24803,6 +27018,12 @@ function renderGrid() {
       ov.innerHTML = `<span><span class="spin"></span> ${state.animating.has(it.id) ? 'Animating…' : 'Upscaling…'}</span>`;
       card.appendChild(ov);
     }
+    const splat = it.splats?.[0];
+    if (splat) {
+      const badge = document.createElement('span'); badge.className = 'badge splat-badge';
+      badge.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Zm0 9 8-4.5M12 12 4 7.5M12 12v9"/></svg>3D';
+      card.append(badge); card.setAttribute('aria-label', `${splat.title} · Open 3D scene`);
+    }
     card.dataset.id = it.id;
     card.dataset.groupItemIds = entry.items.map((groupItem) => groupItem.id).join(',');
     if (galleryGroup) {
@@ -24922,6 +27143,7 @@ function renderGrid() {
     card.addEventListener('click', () => {
       if (lpFired) { lpFired = false; return; }
       if (state.selectMode) toggleSelect(it.id);
+      else if (state.view === 'create' && state.createMode === 'splat') openLightbox(it.id, card.dataset.media || 'image');
       else if (desktopWorkspaceActive() && ($('#lightbox').classList.contains('show') || state.view !== 'gallery')) handleDesktopGalleryTap(it, card, galleryGroup);
       else handleGalleryTap(it, card);
     });
@@ -26790,6 +29012,7 @@ function preloadLightboxNeighbors(item) {
 function openLightbox(id, mediaSel, options = {}) {
   const it = state.items.find((x) => x.id === id);
   if (!it) return;
+  resetLibrarySplat();
   handoffGalleryPreviewsToFocusedMedia();
   clearLightboxTap();
   resetLightboxZoom();
@@ -26815,11 +29038,12 @@ function openLightbox(id, mediaSel, options = {}) {
   preloadLightboxGroupThumbnails(generationItems.length > 1 ? generationItems : angleItems, it.id);
   const videos = Array.isArray(it.videos) ? it.videos : [];
   const composites = Array.isArray(it.composites) ? it.composites : [];
+  const selSplat = (it.splats || []).find(scene => 'splat:' + scene.id === mediaSel) || null;
   let sel = mediaSel;
-  if (sel !== 'image' && !videos.some((v) => v.id === sel) && !composites.some((composite) => 'composite:' + composite.id === sel)) sel = 'image';
+  if (!selSplat && sel !== 'image' && !videos.some((v) => v.id === sel) && !composites.some((composite) => 'composite:' + composite.id === sel)) sel = 'image';
   const selVideo = videos.find((v) => v.id === sel) || null;
   const selComposite = composites.find((composite) => 'composite:' + composite.id === sel) || null;
-  state.currentMedia = selVideo ? { type: 'video', id: selVideo.id }
+  state.currentMedia = selSplat ? { type: 'splat', id: selSplat.id } : selVideo ? { type: 'video', id: selVideo.id }
     : (selComposite ? { type: 'composite', id: selComposite.id } : { type: 'image', id: 'image' });
   if (desktopWorkspaceActive()) {
     document.body.classList.add('desktop-focused-result');
@@ -26921,7 +29145,7 @@ function openLightbox(id, mediaSel, options = {}) {
       generationOptions.appendChild(button);
     });
   }
-  if (generationItems.length > 1 || videos.length || composites.length) {
+  if (generationItems.length > 1 || videos.length || composites.length || it.splats?.length) {
     const groupedGeneration = generationItems.length > 1;
     let mediaLabel = groupedGeneration ? `Generation ${generationIndex + 1} media` : 'Media';
     if (groupedGeneration && strengthHuntItemLabel(it)) mediaLabel = `${strengthHuntItemLabel(it)} media`;
@@ -26940,7 +29164,7 @@ function openLightbox(id, mediaSel, options = {}) {
         : '<svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="7" cy="8" r="1.5"/><path d="m5 14 4-4 2.5 2 1.5-1.5 2 3.5"/></svg>');
     const mkChip = (label, key, liked = false, kind = 'image') => {
       const b = document.createElement('button');
-      b.className = 'chip' + ((key === 'image' ? (!selVideo && !selComposite) : (selVideo && selVideo.id === key) || (selComposite && 'composite:' + selComposite.id === key)) ? ' active' : '');
+      b.className = 'chip' + ((key === 'image' ? (!selSplat && !selVideo && !selComposite) : (selVideo && selVideo.id === key) || (selComposite && 'composite:' + selComposite.id === key)) ? ' active' : '');
       b.innerHTML = `<span class="lb-media-kind-icon" aria-hidden="true">${mediaGlyph(kind)}</span><span>${escapeHtml(label)}</span>${liked ? '<span class="lb-media-like" aria-label="Liked">♥</span>' : ''}`;
       b.addEventListener('click', () => openFocusedGalleryItem(it, key));
       mediaOptions.appendChild(b);
@@ -26948,6 +29172,20 @@ function openLightbox(id, mediaSel, options = {}) {
     mkChip('Image', 'image', !!it.liked);
     composites.forEach((composite) => mkChip(composite.label || 'Before + after', 'composite:' + composite.id, false, 'composite'));
     videos.forEach((v, i) => mkChip(`Video ${i + 1}`, v.id, !!v.liked, 'video'));
+    (it.splats || []).forEach((scene, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chip splat-media-chip' + (selSplat?.id === scene.id ? ' active' : '');
+      button.setAttribute('aria-label', 'Open 3D scene: ' + scene.title);
+      const thumbnail = document.createElement('img');
+      thumbnail.src = '/images/' + (it.upscaled || it.file);
+      thumbnail.alt = '';
+      const label = document.createElement('span');
+      label.textContent = it.splats.length > 1 ? `3D ${index + 1}` : '3D';
+      button.append(thumbnail, label);
+      button.addEventListener('click', () => openLibrarySplat(scene, it));
+      mediaOptions.appendChild(button);
+    });
   }
   headerContext.hidden = !activeGroup && headerMedia.hidden;
   $$('#lbMedia .lb-media-options, #lbHeaderMedia').forEach((mediaOptionsElement) => {
@@ -26978,7 +29216,7 @@ function openLightbox(id, mediaSel, options = {}) {
     const workflowModel = info.workflow === 'director' ? videoEngineLabel(info.engine, info) : model;
     meta.push(`<b>Model:</b> ${escapeHtml(workflowModel)}`);
     if (info.attentionBackend) {
-      meta.push(`<b>Attention:</b> ${info.attentionBackend === 'sageattention' ? 'SageAttention (verified)' : 'Standard PyTorch'}`);
+      meta.push(`<b>Attention:</b> ${escapeHtml(h3AttentionBackendLabel(info.attentionBackend))}`);
     }
     if (hasDocumentationValue(info.steps)) meta.push(`<b>Steps:</b> ${escapeHtml(String(info.steps))}`);
     if (info.h3TurboLora) meta.push(copyableMeta('Turbo adapter', prettyLora(String(info.h3TurboLora))));
@@ -27059,6 +29297,13 @@ function openLightbox(id, mediaSel, options = {}) {
       toast(`Could not copy ${copy.label.toLowerCase()}`, true);
     }
   }));
+
+  if (selSplat) {
+    mountLibrarySplat(selSplat, it);
+    if (freshOpen) requestAnimationFrame(() => focusIconControlSilently($('#lbClose')));
+    if (focusFromExpandedLibrary) startDesktopSharedFocusTransition(options.focusSource);
+    return;
+  }
 
   const actions = $('#lbActions');
   actions.innerHTML = '';
@@ -27258,6 +29503,7 @@ function openLightbox(id, mediaSel, options = {}) {
   if (selVideo) {
     const vinfo = selVideo.info || {};
     const videoUseItems = [];
+    if (experimentalFeaturesEnabled() && !vinfo.composite) videoUseItems.push({ label: 'Create Gaussian splat', detail: 'Experimental · reconstruct this orbit', icon: 'depth', action: () => openSplatWorkspace(it, selVideo) });
     if (!vinfo.composite) videoUseItems.push({ label: 'Extend video', detail: 'Continue from its last frame', icon: 'extend', tone: 'video', action: () => openDirectorExtension(it, selVideo) });
     if (!vinfo.composite) videoUseItems.push({ label: 'Reuse', detail: 'Settings', icon: 'reuse', tone: 'reuse', action: () => reuseVideo(it, selVideo) });
     // Toggle between the result and the motion video that drove it
@@ -27382,6 +29628,7 @@ function openLightbox(id, mediaSel, options = {}) {
   if (focusFromExpandedLibrary) startDesktopSharedFocusTransition(options.focusSource);
 }
 function closeLightbox(fromPop) {
+  resetLibrarySplat();
   const returnFocus = lightboxReturnFocus;
   lightboxReturnFocus = null;
   clearLightboxTap();
@@ -27849,7 +30096,7 @@ function restoredLoraList(loras) {
 }
 
 function restoredEditEngine(engine) {
-  return ['qwen', 'klein9', 'krea2', 'krea2ref', 'krea2remix'].includes(engine) ? engine : 'klein4';
+  return ['qwen21', 'qwen', 'klein9', 'krea2', 'krea2ref', 'krea2remix'].includes(engine) ? engine : 'klein4';
 }
 
 function restoredEditAspect(width, height) {
@@ -28008,7 +30255,8 @@ async function reuseItem(it, useEnhanced) {
   } else {
     restoreCreateResolution(it.width, it.height);
   }
-  state.loras = restoringEdit ? state.loras : restoredLoraList(it.loras);
+  if (!restoringEdit && it.imageEngine === 'qwen21') state.qwen21Loras = restoredLoraList(it.loras);
+  else state.loras = restoringEdit ? state.loras : restoredLoraList(it.loras);
   state.regions = restoringEdit ? state.regions : restoredRegions;
   if (!restoringEdit) {
     state.createRef = null;
@@ -28036,6 +30284,11 @@ async function reuseItem(it, useEnhanced) {
     state.createUpscaleNoise = ['off', 'low', 'medium'].includes(it.postUpscale?.noise) ? it.postUpscale.noise : 'low';
   }
   state.activeRegionId = state.regions[0] ? state.regions[0].id : null;
+  if (!restoringEdit) state.imageEngine = it.imageEngine === 'qwen21' ? 'qwen21' : 'krea2';
+  if (it.imageEngine === 'qwen21' || it.editEngine === 'qwen21') {
+    state.qwen21Steps = Number(it.steps) === 40 ? 40 : 25;
+    state.qwen21Cfg = Number.isFinite(Number(it.cfg)) ? Math.max(1, Math.min(30, Number(it.cfg))) : 1;
+  }
   if (restoringEdit) {
     switchEditEngine(restoredEditEngine(it.editEngine));
     state.editOutpaint = OUTPAINT_EDIT_ENGINES.has(state.editEngine) && !!it.editOutpaint;
@@ -28204,7 +30457,9 @@ async function reuseVideo(it, v) {
     ? H3Resolution.restoredGenerationSize(info, state.mp)
     : state.mp;
   state.vidH3Xl = engine === 'h3' && reusedH3ResolutionSize === H3Resolution.XL_SIZE;
-  state.vidH3SageAttention = false;
+  state.vidH3AttentionBackend = engine === 'h3'
+    ? normalizeH3AttentionBackend(info.attentionBackend, true)
+    : 'sageattention';
   state.vidH3Turbo = engine === 'h3' && info.h3Turbo === true;
   state.vidH3LongContext = engine === 'h3'
     && info.h3LongContext === true
@@ -29073,10 +31328,14 @@ function documentationVideoMimeType() {
   ].find((type) => MediaRecorder.isTypeSupported(type)) || '';
 }
 
-async function convertDocumentationVideoToMp4(blob, signal) {
+async function convertDocumentationVideoToMp4(blob, fps, signal) {
   const response = await fetch('/api/video/convert-mp4', {
     method: 'POST',
-    headers: { 'Content-Type': blob.type || 'video/webm', Accept: 'video/mp4' },
+    headers: {
+      'Content-Type': blob.type || 'video/webm',
+      'X-Video-FPS': String(Math.max(1, Math.min(120, Number(fps) || 30))),
+      Accept: 'video/mp4',
+    },
     body: blob,
     signal,
   });
@@ -29137,7 +31396,7 @@ function applyDocumentationVideoAspect(run, aspect) {
     canvas.width = dimensions.width;
     canvas.height = dimensions.height;
     syncDocumentationVideoInputs(run.inputs || [], run.video.currentTime || 0);
-    drawDocumentationVideoFrame(canvas.getContext('2d'), canvas, run.inputs || [], run.item, run.videoRecord, run.video);
+    drawDocumentationVideoFrame(canvas.getContext('2d'), canvas, run.inputs || [], run.item, run.videoRecord, run.video, run.splatRenderer);
   }
   syncDocumentationVideoAspectControls(run);
 }
@@ -29349,14 +31608,14 @@ function documentationVideoDetails(item, video, inputMedia = [], resultMedia = n
     info.processed === 'extend' && 'Video extension',
   ].filter(Boolean).join(', ');
   const facts = [
-    ['Model', videoEngineLabel(info.engine, info)],
+    ['Model', info.splatDocumentation ? 'MiniMax H3 → Brush' : videoEngineLabel(info.engine, info)],
+    ['Splats', info.splatDocumentation ? Number(info.splatCount).toLocaleString() : ''],
+    ['Training', info.splatDocumentation && info.trainingSteps ? `${Number(info.trainingSteps).toLocaleString()} steps` : ''],
     ['Turbo adapter', info.h3TurboLora ? prettyLora(String(info.h3TurboLora)) : ''],
     ['Size', width && height ? `${width} × ${height}` : ''],
     ['Playback', seconds ? `${seconds.toFixed(1)}s${info.fps ? ` · ${info.fps} fps` : ''}` : ''],
     ['Inputs', inputSummary],
-    ['Attention', info.attentionBackend === 'sageattention'
-      ? 'SageAttention (verified)'
-      : (info.attentionBackend === 'standard' ? 'Standard PyTorch' : '')],
+    ['Attention', info.attentionBackend ? h3AttentionBackendLabel(info.attentionBackend) : ''],
     ['Options', options],
     ['Mix Pack presets', promptPresetNames(promptPresets).join(', ')],
     ['Seed', hasDocumentationValue(info.seed) ? info.seed : ''],
@@ -29548,7 +31807,7 @@ function syncDocumentationVideoInputs(inputMedia, resultTime) {
   });
 }
 
-function drawDocumentationVideoFrame(ctx, canvas, inputMedia, item, video, resultMedia) {
+function drawDocumentationVideoFrame(ctx, canvas, inputMedia, item, video, resultMedia, splatRenderer = null) {
   ctx.fillStyle = '#050506';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   const mediaWidth = resultMedia.videoWidth || resultMedia.naturalWidth || resultMedia.width || canvas.width;
@@ -29556,7 +31815,8 @@ function drawDocumentationVideoFrame(ctx, canvas, inputMedia, item, video, resul
   const storyboardMedia = inputMedia.filter((input) => input.storyboard);
   const standardInputMedia = inputMedia.filter((input) => !input.storyboard);
   const layout = documentationVideoLayout(canvas.width, canvas.height, mediaWidth / mediaHeight, standardInputMedia.length, storyboardMedia.length);
-  drawDocumentationVideoMedia(ctx, resultMedia, layout.result, 'Final Result', '#ea4335', { quiet: true });
+  const finalMedia = splatRenderer ? splatRenderer.frame(resultMedia.currentTime / resultMedia.duration) : resultMedia;
+  drawDocumentationVideoMedia(ctx, finalMedia, layout.result, splatRenderer ? '3D scene' : 'Final Result', '#ea4335', { quiet: true });
   standardInputMedia.forEach((input, index) => {
     const box = layout.inputs[index];
     if (box) drawDocumentationVideoMedia(ctx, input.media, box, input.label, input.accent);
@@ -29597,6 +31857,7 @@ function documentationResultAudioStream(result) {
 
 function cleanupDocumentationVideoRun(run) {
   if (!run) return;
+  try { run.splatRenderer?.end(); } catch { /* scene may have closed */ }
   try { run.video && run.video.pause(); } catch { /* noop */ }
   (run.inputs || []).forEach((input) => {
     if (input.type !== 'video' || !input.media) return;
@@ -29621,7 +31882,7 @@ function closeDocumentationVideoExport() {
   syncSheetScrollLock();
 }
 
-async function saveDocumentationVideo(item, video) {
+async function saveDocumentationVideo(item, video, options = {}) {
   const mimeType = documentationVideoMimeType();
   const canvas = $('#documentationVideoCanvas');
   if (!mimeType || !canvas.captureStream) {
@@ -29653,7 +31914,10 @@ async function saveDocumentationVideo(item, video) {
   updateDocumentationVideoProgress(0, 'Preparing aspect-ratio preview…');
 
   try {
-    const inputMedia = await loadDocumentationVideoInputs(item, video);
+    const inputMedia = options.inputs
+      ? await Promise.all(options.inputs.map(async spec => ({ ...spec, media: await loadDocumentationMedia(spec) })))
+      : await loadDocumentationVideoInputs(item, video);
+    if (options.splatRenderer) { run.splatRenderer = options.splatRenderer; run.splatRenderer.begin(); }
     run.inputs = inputMedia;
     if (run.cancelled || documentationVideoRun !== run) return;
     const result = document.createElement('video');
@@ -29700,7 +31964,7 @@ async function recordDocumentationVideo(run) {
 
   try {
     syncDocumentationVideoInputs(inputMedia, 0);
-    drawDocumentationVideoFrame(ctx, canvas, inputMedia, item, video, result);
+    drawDocumentationVideoFrame(ctx, canvas, inputMedia, item, video, result, run.splatRenderer);
 
     const savedInfo = video.info || {};
     const savedSeconds = savedInfo.frames && savedInfo.fps ? savedInfo.frames / savedInfo.fps : 0;
@@ -29728,7 +31992,7 @@ async function recordDocumentationVideo(run) {
     recorder.start(500);
     while (!run.cancelled && documentationVideoRun === run) {
       syncDocumentationVideoInputs(inputMedia, result.currentTime);
-      drawDocumentationVideoFrame(ctx, canvas, inputMedia, item, video, result);
+      drawDocumentationVideoFrame(ctx, canvas, inputMedia, item, video, result, run.splatRenderer);
       updateDocumentationVideoProgress(Math.min(1, result.currentTime * 1000 / durationMs), 'Recording combined documentation view…');
       if (result.ended || result.currentTime >= result.duration - .04) break;
       await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -29740,16 +32004,23 @@ async function recordDocumentationVideo(run) {
     let exportBlob = recordedBlob;
     let extension = 'mp4';
     let conversionError = null;
-    if (recordedBlob.type !== 'video/mp4') {
-      run.phase = 'converting';
-      syncDocumentationVideoAspectControls(run);
-      updateDocumentationVideoProgress(1, 'Converting WebM recording to MP4…');
-      try {
-        exportBlob = await convertDocumentationVideoToMp4(recordedBlob, run.abortController.signal);
-      } catch (error) {
-        if (run.cancelled || error?.name === 'AbortError') throw error;
+    run.phase = 'converting';
+    syncDocumentationVideoAspectControls(run);
+    updateDocumentationVideoProgress(1, 'Finalizing editor-compatible MP4…');
+    try {
+      // Even a native MediaRecorder MP4 needs this pass: Chromium commonly
+      // emits fragmented browser timing that plays on the web but is rejected
+      // or misread by NLEs. The server rebuilds conventional CFR metadata.
+      exportBlob = await convertDocumentationVideoToMp4(recordedBlob, captureFps, run.abortController.signal);
+    } catch (error) {
+      if (run.cancelled || error?.name === 'AbortError') throw error;
+      if (recordedBlob.type !== 'video/mp4') {
         conversionError = error;
         extension = 'webm';
+      } else {
+        const finalizationError = new Error(`Could not finalize an editor-compatible MP4: ${error.message}`);
+        finalizationError.cause = error;
+        throw finalizationError;
       }
     }
     if (run.cancelled || documentationVideoRun !== run) return;
@@ -30354,7 +32625,10 @@ function renderVideoPreviewQualityControls() {
 
 let externalLlmKeyConfigured = { openai: false, gemini: false };
 let externalLlmKeyStored = { openai: false, gemini: false };
-let localPromptAiSettings = { clip: '', clipType: 'krea2', activeModel: '', activeType: 'krea2' };
+let localPromptAiSettings = {
+  clip: '', clipType: 'krea2', activeModel: '', activeType: 'krea2',
+  smartPlannerOverride: false, smartPlannerModel: '', smartPlannerType: 'krea2',
+};
 
 function localPromptAiTypeLabel(value) {
   return {
@@ -30373,17 +32647,18 @@ function localPromptAiModelLabel(value) {
 }
 
 function renderPromptingSummaries() {
-  const local = $('#localPromptAiSummary');
   const external = $('#externalPromptAiSummary');
-  if (local) {
-    const model = $('#setLocalPromptAiClip')?.value;
-    local.textContent = model ? localPromptAiModelLabel(model) : 'Automatic · Krea 2 prompt model';
-  }
   if (external) {
-    const provider = $('#setExternalLlmProvider')?.selectedOptions?.[0]?.textContent || 'OpenAI';
-    const routed = ['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance']
-      .filter((id) => mediaPreferenceControlValue(id)).length;
-    external.textContent = routed ? `${provider} · ${routed} feature${routed === 1 ? '' : 's'} routed` : `${provider} · No feature overrides`;
+    const provider = $('#setExternalLlmProvider')?.value || 'local';
+    const localMode = ['local', 'ollama', 'lmstudio'].includes(provider);
+    const providerLabel = {
+      local: 'ComfyUI',
+      ollama: 'Ollama',
+      lmstudio: 'LM Studio',
+      openai: 'OpenAI',
+      gemini: 'Gemini',
+    }[provider] || provider;
+    external.textContent = `${localMode ? 'Local' : 'External'} · ${providerLabel}`;
   }
 }
 
@@ -30424,12 +32699,52 @@ function syncLocalPromptAiTypeAvailability() {
   $('#localPromptAiClipTypeField').classList.toggle('is-inherited', !model.value);
 }
 
+function renderSmartPlannerModelStatus(catalog = null) {
+  const status = $('#smartPlannerModelStatus');
+  const enabled = $('#smartPlannerModelOverride').getAttribute('aria-checked') === 'true';
+  const model = $('#setSmartPlannerClip').value;
+  status.className = '';
+  if (!enabled) {
+    status.textContent = 'Using the Prompt enhance model above';
+    return;
+  }
+  if (!model) {
+    status.className = 'bad';
+    status.textContent = 'Choose a model to enable the Smart-only override';
+    return;
+  }
+  if (catalog && !catalog.models.includes(model)) {
+    status.className = 'bad';
+    status.textContent = 'Configured Smart model is not listed by ComfyUI';
+    return;
+  }
+  status.className = 'ready';
+  status.textContent = `Smart only · ${localPromptAiModelLabel(model)}`;
+}
+
+function syncSmartPlannerModelControls(catalog = null) {
+  const toggle = $('#smartPlannerModelOverride');
+  const fields = $('#smartPlannerModelFields');
+  const model = $('#setSmartPlannerClip');
+  const type = $('#setSmartPlannerClipType');
+  const enabled = toggle.getAttribute('aria-checked') === 'true';
+  const readonly = !state.profileIsOwner;
+  fields.hidden = !enabled;
+  model.disabled = readonly || !enabled;
+  type.disabled = readonly || !enabled || !model.value;
+  $('#smartPlannerClipTypeField').classList.toggle('is-inherited', !model.value);
+  renderSmartPlannerModelStatus(catalog);
+}
+
 function applyLocalPromptAiSettings(settings = {}) {
   localPromptAiSettings = {
     clip: settings.clip || '',
     clipType: settings.clipType || 'krea2',
     activeModel: settings.localPromptAiClip || settings.clip || '',
     activeType: settings.localPromptAiClip ? (settings.localPromptAiClipType || 'krea2') : (settings.clipType || 'krea2'),
+    smartPlannerOverride: settings.smartPlannerModelOverride === true,
+    smartPlannerModel: settings.smartPlannerClip || '',
+    smartPlannerType: settings.smartPlannerClipType || 'krea2',
   };
   const model = $('#setLocalPromptAiClip');
   const type = $('#setLocalPromptAiClipType');
@@ -30439,11 +32754,21 @@ function applyLocalPromptAiSettings(settings = {}) {
   ensureSelectChoice(type, configuredType, localPromptAiTypeLabel(configuredType));
   model.value = configuredModel;
   type.value = configuredType;
+  const smartToggle = $('#smartPlannerModelOverride');
+  const smartModel = $('#setSmartPlannerClip');
+  const smartType = $('#setSmartPlannerClipType');
+  smartToggle.setAttribute('aria-checked', String(localPromptAiSettings.smartPlannerOverride));
+  ensureSelectChoice(smartModel, localPromptAiSettings.smartPlannerModel, localPromptAiModelLabel(localPromptAiSettings.smartPlannerModel));
+  ensureSelectChoice(smartType, localPromptAiSettings.smartPlannerType, localPromptAiTypeLabel(localPromptAiSettings.smartPlannerType));
+  smartModel.value = localPromptAiSettings.smartPlannerModel;
+  smartType.value = localPromptAiSettings.smartPlannerType;
   const readonly = !state.profileIsOwner;
   $('#localPromptAiSettings').dataset.readonly = String(readonly);
-  [model, type, $('#refreshLocalPromptAiModels'), $('#testLocalPromptAiModel')]
+  [model, type, smartToggle, smartModel, smartType, $('#refreshLocalPromptAiModels'), $('#testLocalPromptAiModel')]
+    .filter(Boolean)
     .forEach((control) => { control.disabled = readonly; });
   syncLocalPromptAiTypeAvailability();
+  syncSmartPlannerModelControls();
   renderLocalPromptAiStatus();
 }
 
@@ -30452,6 +32777,10 @@ async function refreshLocalPromptAiModels(force = false) {
   const type = $('#setLocalPromptAiClipType');
   const selectedModel = model.value;
   const selectedType = type.value || 'krea2';
+  const smartModel = $('#setSmartPlannerClip');
+  const smartType = $('#setSmartPlannerClipType');
+  const selectedSmartModel = smartModel.value;
+  const selectedSmartType = smartType.value || 'krea2';
   const status = $('#localPromptAiStatus');
   status.className = '';
   status.textContent = 'Reading installed ComfyUI models…';
@@ -30465,7 +32794,16 @@ async function refreshLocalPromptAiModels(force = false) {
     ensureSelectChoice(type, selectedType, localPromptAiTypeLabel(selectedType));
     model.value = selectedModel;
     type.value = selectedType;
+    smartModel.replaceChildren(new Option('Choose an installed model…', ''));
+    catalog.models.forEach((name) => smartModel.add(new Option(localPromptAiModelLabel(name), name)));
+    ensureSelectChoice(smartModel, selectedSmartModel, `${localPromptAiModelLabel(selectedSmartModel)} · unavailable`);
+    smartType.replaceChildren();
+    catalog.types.forEach((value) => smartType.add(new Option(localPromptAiTypeLabel(value), value)));
+    ensureSelectChoice(smartType, selectedSmartType, localPromptAiTypeLabel(selectedSmartType));
+    smartModel.value = selectedSmartModel;
+    smartType.value = selectedSmartType;
     syncLocalPromptAiTypeAvailability();
+    syncSmartPlannerModelControls(catalog);
     renderLocalPromptAiStatus(Object.assign({}, catalog, {
       available: !model.value || catalog.models.includes(model.value),
       configuredModel: model.value,
@@ -30473,11 +32811,26 @@ async function refreshLocalPromptAiModels(force = false) {
   } catch (error) {
     status.className = 'bad';
     status.textContent = error.message || 'Could not read ComfyUI models';
+    const smartStatus = $('#smartPlannerModelStatus');
+    smartStatus.className = 'bad';
+    smartStatus.textContent = error.message || 'Could not read ComfyUI models';
   }
 }
 
 function renderExternalLlmPreferences() {
   const provider = $('#setExternalLlmProvider').value || 'openai';
+  const mode = ['local', 'ollama', 'lmstudio'].includes(provider) ? 'local' : 'external';
+  const modeSwitch = $('#promptAiModeSwitch');
+  modeSwitch.setAttribute('aria-checked', String(mode === 'external'));
+  $('#promptAiModeDescription').textContent = mode === 'local'
+    ? 'Local keeps prompt assistance on your generation machine.'
+    : 'External sends prompt assistance to the provider you connect.';
+  $$('[data-prompt-ai-mode-label]').forEach((label) => {
+    label.classList.toggle('active', label.dataset.promptAiModeLabel === mode);
+  });
+  $$('[data-prompt-ai-mode-panel]').forEach((section) => {
+    section.hidden = section.dataset.promptAiModePanel !== mode;
+  });
   $$('[data-external-llm-provider]').forEach((section) => {
     section.hidden = section.dataset.externalLlmProvider !== provider;
   });
@@ -30487,26 +32840,44 @@ function renderExternalLlmPreferences() {
   geminiKey.placeholder = externalLlmKeyConfigured.gemini ? 'Saved · paste a new key to replace it' : 'Paste an API key';
   $('#clearExternalLlmOpenAiApiKey').hidden = !externalLlmKeyStored.openai || !state.profileIsOwner;
   $('#clearExternalLlmGeminiApiKey').hidden = !externalLlmKeyStored.gemini || !state.profileIsOwner;
+  const openAiAccess = $('#promptAiOpenAiAccess');
+  const openAiActive = provider === 'openai';
+  $('#promptAiOpenAiAccessTitle').textContent = openAiActive ? 'OpenAI access' : 'Voice transcription';
+  $('#promptAiOpenAiAccessPurpose').textContent = openAiActive
+    ? 'Required for planning · also powers voice'
+    : 'Optional · uses OpenAI';
+  openAiAccess.open = openAiActive;
+  $('#testExternalLlm').textContent = mode === 'local' ? 'Test local AI' : 'Test external AI';
   const readonly = !state.profileIsOwner;
   $('#externalLlmSettings').dataset.readonly = String(readonly);
   [
-    'setExternalLlmProvider', 'setExternalLlmOpenAiApiKey', 'setExternalLlmOpenAiModel',
+    'promptAiModeSwitch', 'setExternalLlmLocalProvider', 'setExternalLlmExternalProvider',
+    'setExternalLlmOpenAiApiKey', 'setExternalLlmOpenAiModel',
     'setExternalLlmGeminiApiKey', 'setExternalLlmGeminiModel', 'setExternalLlmOllamaUrl',
-    'setExternalLlmOllamaModel', 'externalLlmImageRevise', 'externalLlmImageEnhance',
-    'externalLlmVideoRevise', 'externalLlmVideoEnhance', 'testExternalLlm',
+    'setExternalLlmOllamaModel', 'setExternalLlmLmStudioUrl', 'setExternalLlmLmStudioModel',
+    'testExternalLlm',
   ].forEach((id) => { $('#' + id).disabled = readonly; });
   renderPromptingSummaries();
 }
 
 function applyExternalLlmSettings(settings = {}) {
-  $('#setExternalLlmProvider').value = ['openai', 'gemini', 'ollama'].includes(settings.externalLlmProvider)
-    ? settings.externalLlmProvider : 'openai';
+  const provider = ['local', 'openai', 'gemini', 'ollama', 'lmstudio'].includes(settings.externalLlmProvider)
+    ? settings.externalLlmProvider : 'local';
+  $('#setExternalLlmProvider').value = provider;
+  $('#setExternalLlmLocalProvider').value = ['local', 'ollama', 'lmstudio'].includes(settings.externalLlmLocalProvider)
+    ? settings.externalLlmLocalProvider
+    : (['local', 'ollama', 'lmstudio'].includes(provider) ? provider : 'local');
+  $('#setExternalLlmExternalProvider').value = ['openai', 'gemini'].includes(settings.externalLlmExternalProvider)
+    ? settings.externalLlmExternalProvider
+    : (['openai', 'gemini'].includes(provider) ? provider : 'openai');
   $('#setExternalLlmOpenAiApiKey').value = '';
   $('#setExternalLlmOpenAiModel').value = settings.externalLlmOpenAiModel || 'gpt-5.6-luna';
   $('#setExternalLlmGeminiApiKey').value = '';
   $('#setExternalLlmGeminiModel').value = settings.externalLlmGeminiModel || 'gemini-3.6-flash';
   $('#setExternalLlmOllamaUrl').value = settings.externalLlmOllamaUrl || 'http://127.0.0.1:11434';
   $('#setExternalLlmOllamaModel').value = settings.externalLlmOllamaModel || 'gemma3';
+  $('#setExternalLlmLmStudioUrl').value = settings.externalLlmLmStudioUrl || 'http://127.0.0.1:1234/v1';
+  $('#setExternalLlmLmStudioModel').value = settings.externalLlmLmStudioModel || '';
   externalLlmKeyConfigured = {
     openai: settings.externalLlmOpenAiApiKeyConfigured === true,
     gemini: settings.externalLlmGeminiApiKeyConfigured === true,
@@ -30515,18 +32886,17 @@ function applyExternalLlmSettings(settings = {}) {
     openai: settings.externalLlmOpenAiApiKeyStored === true,
     gemini: settings.externalLlmGeminiApiKeyStored === true,
   };
-  setMediaPreferenceControl('externalLlmImageRevise', settings.externalLlmImageRevise === true);
-  setMediaPreferenceControl('externalLlmImageEnhance', settings.externalLlmImageEnhance === true);
-  setMediaPreferenceControl('externalLlmVideoRevise', settings.externalLlmVideoRevise === true);
-  setMediaPreferenceControl('externalLlmVideoEnhance', settings.externalLlmVideoEnhance === true);
   renderExternalLlmPreferences();
 }
 
 const SETTINGS_SERVER_CONTROL_IDS = new Set([
   'setComfy', 'setHfToken', 'setHfEndpoint', 'galleryPasswordInput', 'setVramProfile', 'setKrea2ModelVariant',
-  'setLocalPromptAiClip', 'setLocalPromptAiClipType',
-  'setExternalLlmProvider', 'setExternalLlmOpenAiApiKey', 'setExternalLlmOpenAiModel',
+  'setLocalPromptAiClip', 'setLocalPromptAiClipType', 'setSmartPlannerClip', 'setSmartPlannerClipType',
+  'setExternalLlmProvider', 'setExternalLlmLocalProvider', 'setExternalLlmExternalProvider',
+  'setExternalLlmOpenAiApiKey', 'setExternalLlmOpenAiModel',
   'setExternalLlmGeminiApiKey', 'setExternalLlmGeminiModel', 'setExternalLlmOllamaUrl', 'setExternalLlmOllamaModel',
+  'setExternalLlmLmStudioUrl', 'setExternalLlmLmStudioModel',
+  'setQwen21ModelVariant',
   'setUnet', 'setKrea2RawUnet', 'setKrea2TurboLora', 'setKrea2DepthLora',
   'setKrea2OutpaintLora', 'setDepthAnythingV3Model', 'setClip', 'setVae',
   'setKlein4Unet', 'setKlein4Clip', 'setKlein4ConsistencyLora', 'setKlein4ConsistencyTrigger',
@@ -30553,6 +32923,7 @@ const SETTINGS_PREFERENCE_CONTROL_IDS = new Set([
   'defaultEditSteps', 'defaultEditCfg', 'defaultEditBatch', 'defaultEditDenoise',
   'defaultKrea2EditSteps', 'defaultKrea2EditCfg',
   'defaultVideoDuration', 'defaultVideoMotion',
+  'assetPickerRecentLimit',
 ]);
 
 let settingsLoading = false;
@@ -30638,18 +33009,21 @@ function settingsPayload() {
     hfToken: $('#setHfToken').value,
     hfEndpoint: $('#setHfEndpoint').value,
     externalLlmProvider: $('#setExternalLlmProvider').value,
+    externalLlmLocalProvider: $('#setExternalLlmLocalProvider').value,
+    externalLlmExternalProvider: $('#setExternalLlmExternalProvider').value,
     externalLlmOpenAiApiKey: $('#setExternalLlmOpenAiApiKey').value,
     externalLlmOpenAiModel: $('#setExternalLlmOpenAiModel').value,
     externalLlmGeminiApiKey: $('#setExternalLlmGeminiApiKey').value,
     externalLlmGeminiModel: $('#setExternalLlmGeminiModel').value,
     externalLlmOllamaUrl: $('#setExternalLlmOllamaUrl').value,
     externalLlmOllamaModel: $('#setExternalLlmOllamaModel').value,
-    externalLlmImageRevise: mediaPreferenceControlValue('externalLlmImageRevise'),
-    externalLlmImageEnhance: mediaPreferenceControlValue('externalLlmImageEnhance'),
-    externalLlmVideoRevise: mediaPreferenceControlValue('externalLlmVideoRevise'),
-    externalLlmVideoEnhance: mediaPreferenceControlValue('externalLlmVideoEnhance'),
+    externalLlmLmStudioUrl: $('#setExternalLlmLmStudioUrl').value,
+    externalLlmLmStudioModel: $('#setExternalLlmLmStudioModel').value,
     localPromptAiClip: $('#setLocalPromptAiClip').value,
     localPromptAiClipType: $('#setLocalPromptAiClipType').value,
+    smartPlannerModelOverride: $('#smartPlannerModelOverride').getAttribute('aria-checked') === 'true',
+    smartPlannerClip: $('#setSmartPlannerClip').value,
+    smartPlannerClipType: $('#setSmartPlannerClipType').value,
     galleryPassword: $('#galleryPasswordInput').value.trim() || '1234',
     vramProfile: $('#setVramProfile').value,
     krea2ModelVariant: $('#setKrea2ModelVariant').value,
@@ -30672,6 +33046,7 @@ function settingsPayload() {
     klein9ConsistencyLora: $('#setKlein9ConsistencyLora').value,
     klein9ConsistencyTrigger: $('#setKlein9ConsistencyTrigger').value,
     kleinVae: $('#setKleinVae').value,
+    qwen21ModelVariant: $('#setQwen21ModelVariant').value,
     qwenEditUnet: $('#setQeUnet').value,
     qwenEditClip: $('#setQeClip').value,
     qwenEditLora: $('#setQeLora').value,
@@ -30810,6 +33185,7 @@ function flushSettingsAutosave() {
         previewFrameRate: $('#setVideoPreviewFrameRate').value,
         previewCache: mediaPreferenceControlValue('setPreviewCache'),
         experimentalFeatures: mediaPreferenceControlValue('experimentalFeaturesToggle'),
+        smartMode: mediaPreferenceControlValue('smartModeToggle'),
       });
     }
     if (savedSettings) {
@@ -31042,18 +33418,28 @@ async function emptyTrashFromSettings() {
   await refreshTrashStatus();
 }
 
-['experimentalFeaturesToggle', 'setVideoPreviews', 'setPreviewCache', 'setSmartFilenames'].forEach((id) => {
+['experimentalFeaturesToggle', 'smartModeToggle', 'setVideoPreviews', 'setPreviewCache', 'setSmartFilenames'].forEach((id) => {
   $('#' + id).addEventListener('click', () => {
     const button = $('#' + id);
     const enabled = !mediaPreferenceControlValue(id);
     button.setAttribute('aria-checked', String(enabled));
     if (id === 'experimentalFeaturesToggle') {
       state.mediaPreferences.experimentalFeatures = enabled;
+      if (!enabled) state.mediaPreferences.smartMode = false;
       if (!enabled && state.vidH3Mode === 'replace') state.vidH3Mode = 'frames';
       if (!enabled) state.vidH3LongContext = false;
+      if (!enabled && ['smart', 'splat'].includes(state.createMode)) state.createMode = 'region';
+      renderSmartFeatureAccess();
       updateVideoPanels();
       renderPromptComposer();
       saveForm();
+    }
+    if (id === 'smartModeToggle') {
+      if (!experimentalFeaturesEnabled()) return;
+      state.mediaPreferences.smartMode = enabled;
+      renderSmartFeatureAccess();
+      setCreateMode(enabled ? 'smart' : 'region');
+      updateVideoPanels();
     }
     if (id === 'setVideoPreviews') renderVideoPreviewQualityControls();
     scheduleSettingsAutosave(id === 'setSmartFilenames' ? 'server' : 'media', 0);
@@ -34474,6 +36860,10 @@ function settingsAutosaveKindForControl(control) {
 
 $('#settingsSheet').addEventListener('input', (event) => {
   if (event.target.matches('select')) return;
+  if (event.target.id === 'assetPickerRecentLimit') {
+    state.assetPickerPreferences = assetPickerPreferencesFromControls();
+    renderAssetPickerPreferenceControl();
+  }
   if (event.target.closest('#settingsPaneDefaults')) renderGenerationDefaultSummaries();
   const kind = settingsAutosaveKindForControl(event.target);
   if (kind) scheduleSettingsAutosave(kind);
@@ -34486,45 +36876,44 @@ $('#settingsSheet').addEventListener('change', (event) => {
   if (kind) scheduleSettingsAutosave(kind, 0);
 });
 
-$('#setExternalLlmProvider').addEventListener('change', () => {
+function setPromptAiProvider(provider) {
+  $('#setExternalLlmProvider').value = provider;
   $('#externalLlmStatus').textContent = '';
   $('#externalLlmStatus').className = '';
   renderExternalLlmPreferences();
+}
+
+$('#promptAiModeSwitch').addEventListener('click', () => {
+  if (!state.profileIsOwner) return;
+  const external = $('#promptAiModeSwitch').getAttribute('aria-checked') === 'true';
+  setPromptAiProvider(external
+    ? $('#setExternalLlmLocalProvider').value
+    : $('#setExternalLlmExternalProvider').value);
+  scheduleSettingsAutosave('server', 0);
+});
+
+$('#setExternalLlmLocalProvider').addEventListener('change', (event) => {
+  setPromptAiProvider(event.target.value);
+});
+
+$('#setExternalLlmExternalProvider').addEventListener('change', (event) => {
+  setPromptAiProvider(event.target.value);
 });
 
 $('#setLocalPromptAiClip').addEventListener('change', () => {
   syncLocalPromptAiTypeAvailability();
   renderLocalPromptAiStatus();
 });
-$('#refreshLocalPromptAiModels').addEventListener('click', () => refreshLocalPromptAiModels(true));
-$('#testLocalPromptAiModel').addEventListener('click', async () => {
+$('#smartPlannerModelOverride').addEventListener('click', () => {
   if (!state.profileIsOwner) return;
-  const button = $('#testLocalPromptAiModel');
-  const status = $('#localPromptAiStatus');
-  button.disabled = true;
-  status.className = '';
-  status.textContent = 'Saving and testing…';
-  try {
-    await flushSettingsAutosave();
-    const result = await api('/api/prompt/local-model/test', { method: 'POST' });
-    status.className = 'ready';
-    status.textContent = `Ready · ${localPromptAiModelLabel(result.model)}`;
-  } catch (error) {
-    status.className = 'bad';
-    status.textContent = error.message || 'Local model test failed';
-  } finally {
-    button.disabled = !state.profileIsOwner;
-  }
+  const toggle = $('#smartPlannerModelOverride');
+  const enabled = toggle.getAttribute('aria-checked') !== 'true';
+  toggle.setAttribute('aria-checked', String(enabled));
+  syncSmartPlannerModelControls();
+  scheduleSettingsAutosave('server', 0);
 });
-
-['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance'].forEach((id) => {
-  $('#' + id).addEventListener('click', () => {
-    if (!state.profileIsOwner) return;
-    setMediaPreferenceControl(id, !mediaPreferenceControlValue(id));
-    renderPromptingSummaries();
-    scheduleSettingsAutosave('server', 0);
-  });
-});
+$('#setSmartPlannerClip').addEventListener('change', () => syncSmartPlannerModelControls());
+$('#refreshLocalPromptAiModels').addEventListener('click', () => refreshLocalPromptAiModels(true));
 
 async function clearExternalLlmApiKey(provider) {
   if (!state.profileIsOwner) return;
@@ -34582,6 +36971,9 @@ $('#settingsBtn').addEventListener('click', async () => {
   await refreshLoraContext();
   try {
     const s = await api('/api/settings');
+    // Remember the detected GPU vendor for hardware-specific defaults (H3 attention
+    // backend fallback, SeedVR2 attention mode).
+    state.gpuVendor = String(s.gpuVendor || '').toLowerCase();
     $('#setComfy').value = s.comfyUrl;
     $('#setHfToken').value = '';
     $('#setHfToken').placeholder = s.hfTokenConfigured
@@ -34611,6 +37003,10 @@ $('#settingsBtn').addEventListener('click', async () => {
     $('#setKlein9ConsistencyLora').value = s.klein9ConsistencyLora || '';
     $('#setKlein9ConsistencyTrigger').value = s.klein9ConsistencyTrigger || '';
     $('#setKleinVae').value = s.kleinVae || '';
+    $('#setQwen21ModelVariant').value = s.qwen21ModelVariant || 'auto';
+    $('#setQwen21ModelVariant').modelSelectSync?.();
+    $('#setQwen21ModelVariant').disabled = !state.profileIsOwner;
+    $('#installQwen21Models').disabled = !state.profileIsOwner;
     $('#setQeUnet').value = s.qwenEditUnet || '';
     $('#setQeClip').value = s.qwenEditClip || '';
     $('#setQeLora').value = s.qwenEditLora || '';
@@ -34697,6 +37093,7 @@ $('#settingsBtn').addEventListener('click', async () => {
   $('#setVideoPreviewFrameRate').value = String(state.mediaPreferences.previewFrameRate);
   setMediaPreferenceControl('setPreviewCache', state.mediaPreferences.previewCache);
   setMediaPreferenceControl('experimentalFeaturesToggle', state.mediaPreferences.experimentalFeatures);
+  renderSmartFeatureAccess();
   renderVideoPreviewQualityControls();
   refreshPreviewCacheStatus();
   refreshTrashStatus().catch(() => {});
@@ -34894,7 +37291,8 @@ const setupConfirmedDifficultComponents = new Set();
 const SETUP_STEPS = ['connect', 'install', 'finish'];
 const KREA2_MODEL_COMPONENTS = new Set(['image', 'krea2raw', 'regional', 'krea2ref', 'krea2remix', 'krea2outpaint', 'krea2depth', 'krea2style']);
 const SETUP_COMPONENT_CATEGORIES = [
-  { id: 'image', label: 'Image', description: 'Generation, regional control, guides, and upscaling', components: ['image', 'krea2raw', 'regional', 'krea2depth', 'krea2style', 'upscale', 'ultimateupscale'] },
+  { id: 'prompting', label: 'Prompt AI', description: 'Local prompt enhancement used before generation', components: ['promptai'] },
+  { id: 'image', label: 'Image', description: 'Generation, regional control, guides, and upscaling', components: ['image', 'qwen21', 'krea2raw', 'regional', 'krea2depth', 'krea2style', 'upscale', 'ultimateupscale'] },
   { id: 'edit', label: 'Edit', description: 'Klein, Qwen, Krea editing, masks, and outpainting', components: ['klein4', 'klein9', 'qwen', 'krea2ref', 'krea2remix', 'krea2outpaint', 'editoutpaint', 'smartmask'] },
   { id: 'video', label: 'Video', description: 'MiniMax H3, LTX, Wan, SCAIL, Director, Face ID, and video tools', components: ['h3', 'h3turbo', 'h3turbor2v', 'h3context', 'h3sage', 'h3r2v', 'ltx25', 'ltx25quality', 'video', 'ltxdirector', 'ltxcamera', 'videoedit', 'faceid', 'eros', 'wan', 'wananimate2', 'scail', 'scailinfinity', 'video4k'] },
 ];
@@ -34978,13 +37376,36 @@ function setupNativeInt8Message() {
 
 function generationSetupComponents() {
   const components = new Set();
+  if (state.view === 'create' && state.createMode === 'smart' && smartPlan) {
+    const attachedReferences = smartReferencePayload();
+    if (smartPlan.output?.kind !== 'video') {
+      components.add(attachedReferences.length ? 'krea2ref' : 'image');
+      return [...components];
+    }
+    const scenes = Array.isArray(smartPlan.scenes) ? smartPlan.scenes : [];
+    const hasReferenceClips = scenes.some((scene) => smartSceneUsesReference(smartPlan, scene));
+    const hasFrameClips = scenes.some((scene) => !smartSceneUsesReference(smartPlan, scene));
+    if (hasReferenceClips) {
+      components.add(attachedReferences.length ? 'krea2ref' : 'image');
+      components.add('h3r2v');
+    }
+    if (hasFrameClips || !hasReferenceClips) components.add('h3');
+    if (smartPlan.output?.quality === 'fast') {
+      if (hasReferenceClips) components.add('h3turbor2v');
+      if (hasFrameClips || !hasReferenceClips) components.add('h3turbo');
+    }
+    if (selectedH3AttentionBackend() === 'sageattention') components.add('h3sage');
+    if (selectedH3AttentionBackend() === 'sla') components.add('h3sla');
+    return [...components];
+  }
   if (state.view === 'video') {
     const byEngine = { ltx: 'video', ltx25: 'ltx25', h3: 'h3', 'ltx-edit': 'videoedit', eros: 'eros', wan: 'wan', 'wan-animate2': 'wananimate2', scail: 'scail' };
     components.add(byEngine[state.vidEngine] || 'video');
     if (state.vidEngine === 'ltx25' && videoQualityActive()) components.add('ltx25quality');
     if (h3TurboActive()) components.add(h3ReferenceBackedMode() ? 'h3turbor2v' : 'h3turbo');
     if (h3LongContextActive()) components.add('h3context');
-    // h3sage component removed: SageAttention incompatible with Intel Arc XPU
+    if (state.vidEngine === 'h3' && selectedH3AttentionBackend() === 'sageattention') components.add('h3sage');
+    if (state.vidEngine === 'h3' && selectedH3AttentionBackend() === 'sla') components.add('h3sla');
     if (state.vidEngine === 'h3' && h3ReferenceBackedMode()) components.add('h3r2v');
     if (state.directorOpen) components.add('ltxdirector');
     if (state.vidEngine === 'ltx-edit') components.add('video');
@@ -34993,16 +37414,26 @@ function generationSetupComponents() {
     if (state.vidEngine === 'scail' && state.vidScailMode === 'infinity') components.add('scailinfinity');
     if (state.vidEngine !== 'wan-animate2'
       && (state.directorOpen ? state.directorProject?.output?.fourK : $('#vid4k').classList.contains('active'))) components.add('video4k');
+    if (state.enhance
+      && !['ltx-edit', 'wan-animate2'].includes(state.vidEngine)
+      && ($('#setExternalLlmProvider')?.value || 'local') === 'local') components.add('promptai');
     return [...components];
   }
   if (state.view === 'edit') {
-    components.add({ klein4: 'klein4', klein9: 'klein9', qwen: 'qwen', krea2: 'image', krea2ref: 'krea2ref', krea2remix: 'krea2remix' }[state.editEngine] || 'image');
+    components.add({ klein4: 'klein4', klein9: 'klein9', qwen21: 'qwen21', qwen: 'qwen', krea2: 'image', krea2ref: 'krea2ref', krea2remix: 'krea2remix' }[state.editEngine] || 'image');
     if (state.editOutpaint) components.add(state.editEngine === 'krea2'
       ? 'krea2outpaint'
       : (state.editEngine === 'krea2ref' ? 'krea2outpaint' : 'editoutpaint'));
     if (state.editEngine === 'krea2' && hasEditMask()
       && (state.kreaMaskKind === 'smart' || state.kreaMaskTool === 'smart')) components.add('smartmask');
     if (state.editUpscaleEnabled) components.add('upscale');
+    if (state.enhance && ($('#setExternalLlmProvider')?.value || 'local') === 'local') components.add('promptai');
+    return [...components];
+  }
+  if (usingQwen21()) {
+    components.add('qwen21');
+    if (state.createUpscaleEnabled) components.add('upscale');
+    if (state.enhance && ($('#setExternalLlmProvider')?.value || 'local') === 'local') components.add('promptai');
     return [...components];
   }
   components.add(state.createMode === 'region' ? 'regional' : 'image');
@@ -35010,6 +37441,7 @@ function generationSetupComponents() {
   if (state.createMode === 'image' && state.createGuideActive && state.createRef && state.createGuideMode === 'depth') components.add('krea2depth');
   if (state.createMode === 'image' && state.createGuideActive && state.createRef && state.createGuideMode === 'style') components.add('krea2style');
   if (state.createUpscaleEnabled) components.add('upscale');
+  if (state.enhance && ($('#setExternalLlmProvider')?.value || 'local') === 'local') components.add('promptai');
   return [...components];
 }
 
@@ -35035,6 +37467,7 @@ function setupActionForComponents(required) {
   const requiresH3 = components.some((id) => id === 'h3' || id === 'h3r2v' || id === 'h3turbo' || id === 'h3turbor2v' || id === 'h3context');
   const requiresLtx25 = components.some((id) => id === 'ltx25' || id === 'ltx25quality');
   const requiresWanAnimate2 = components.includes('wananimate2');
+  if (components.includes('qwen21') && lastMeta?.qwen21?.supported !== true) return 'update';
   if (requiresH3 && lastMeta?.minimaxH3?.supported !== true) return 'update';
   if (requiresLtx25 && lastMeta?.ltx25?.supported !== true) return 'update';
   if (requiresWanAnimate2 && lastMeta?.wanAnimate2?.supported !== true) return 'update';
@@ -35046,10 +37479,20 @@ function setupActionForComponents(required) {
 }
 
 function currentGenerationSetupAction() {
+  if (state.view === 'create' && state.createMode === 'splat') return null;
   return setupActionForComponents(generationSetupComponents());
 }
 
 async function ensureGenerationSetup() {
+  if (!lastMeta?.ok) {
+    const managed = await api('/api/comfy/lifecycle');
+    if (managed.active) {
+      toast('Starting ComfyUI…');
+      await api('/api/comfy/lifecycle/ensure', { method: 'POST' });
+      await loadMeta(true);
+    }
+  }
+
   const required = generationSetupComponents();
   if (!lastMeta?.ok) await loadMeta(true);
   const missing = missingSetupComponents(required);
@@ -35064,6 +37507,10 @@ async function ensureGenerationSetup() {
     && lastMeta?.ltx25?.supported !== true;
   const wanAnimate2CoreBlocked = required.includes('wananimate2')
     && lastMeta?.wanAnimate2?.supported !== true;
+  if (required.includes('qwen21') && lastMeta?.qwen21?.supported !== true) {
+    await openInitialSetup({ components: required, initialStep: 'connect', message: lastMeta?.qwen21?.reason || 'Update ComfyUI for Qwen Image 2.1, restart it, then check again.' });
+    return false;
+  }
   if (lastMeta?.ok && !missing.length && !nativeInt8Blocked && !krea2CoreBlocked && !h3CoreBlocked && !ltx25CoreBlocked && !wanAnimate2CoreBlocked) return true;
   const setupAction = setupActionForComponents(required);
   saveForm();
@@ -35293,6 +37740,36 @@ function conciseSetupError(value) {
   }
   if (/timed? out|timeout/i.test(message)) return 'The install took too long and stopped. Check the connection, then retry.';
   return 'The install did not finish. Open Details for the diagnostic, then retry.';
+}
+
+function setupReadinessDiagnostics(installState) {
+  if (!installState || installState.restartRequired) return [];
+  if (!['already-present', 'checked', 'reconnected'].includes(String(installState.phase || ''))) return [];
+  const missing = new Set(lastMeta?.dependencies?.missingComponents || []);
+  const checked = Array.isArray(installState.checkedMissingComponents) && installState.checkedMissingComponents.length
+    ? installState.checkedMissingComponents
+    : (Array.isArray(installState.components) ? installState.components : []);
+  const relevant = new Set(checked.filter((id) => missing.has(id)));
+  const diagnostics = Array.isArray(installState.readinessDiagnostics) && installState.readinessDiagnostics.length
+    ? installState.readinessDiagnostics
+    : (lastMeta?.dependencies?.diagnostics?.components || []);
+  return diagnostics.filter((entry) => relevant.has(entry.id));
+}
+
+function setupReadinessDiagnosticText(diagnostics) {
+  const lines = diagnostics.map((entry) => {
+    const details = [];
+    if (entry.missingNodes?.length) details.push(`Missing node classes: ${entry.missingNodes.join(', ')}`);
+    if (entry.missingModels?.length) details.push(`Missing models: ${entry.missingModels.join(', ')}`);
+    if (entry.reasons?.length) details.push(...entry.reasons);
+    if (entry.nodePacks?.length) details.push(`Checked node folders: ${entry.nodePacks.map((pack) => pack.path || pack.label).join(', ')}`);
+    return `${entry.label}: ${details.join('. ') || 'ComfyUI did not report this workflow as ready.'}`;
+  });
+  const paths = lastMeta?.dependencies?.diagnostics || {};
+  if (paths.comfyUrl) lines.push(`Connected ComfyUI: ${paths.comfyUrl}`);
+  if (paths.comfyPath) lines.push(`ComfyUI folder: ${paths.comfyPath}`);
+  if (paths.modelsPath) lines.push(`Models folder: ${paths.modelsPath}`);
+  return lines.join('\n');
 }
 
 function dependencyAccessUrl(installState) {
@@ -35525,6 +38002,16 @@ function setupLocalPath(base, child) {
 function renderInitialSetup() {
   if (!setupViewStatus) return;
   const comfy = setupViewStatus.comfy || {};
+  const managed = comfy.lifecycle || {};
+  $('#setupManagedComfy').hidden = !state.profileIsOwner || !(managed.available || managed.owned);
+  if (document.activeElement !== $('#setupManagedEnabled')) $('#setupManagedEnabled').value = String(!!managed.enabled);
+  $('#setupManagedEnabled').disabled = !managed.enabled && (!managed.available || !managed.supported);
+  if (document.activeElement !== $('#setupManagedIdle')) $('#setupManagedIdle').value = String(managed.idleMinutes || 0);
+  $('#setupManagedStatus').textContent = managed.error || managed.reason || (managed.owned
+    ? (managed.released ? 'Model-memory release requested. The backend stays ready for your next generation.' : `Managed backend: ${managed.phase}.`)
+    : (managed.phase === 'shared' ? 'Connected to a shared backend. Mix Studio will not unload or stop it.' : (managed.active ? 'Automatic startup is enabled.' : 'Automatic startup is off.')));
+  $('#setupManagedRelease').disabled = !managed.active || !managed.owned || managed.busy || managed.released;
+  $('#setupManagedStop').disabled = !managed.canStop;
   const install = comfy.install || {};
   const start = comfy.start || {};
   const dependency = setupDependencyState || lastMeta?.dependencies?.install || { state: 'idle' };
@@ -35549,7 +38036,7 @@ function renderInitialSetup() {
     ? (h3CoreBlocked
       ? `Update to ${comfy.minimaxH3?.minimumVersion || '0.30.0'}+ for MiniMax H3`
       : (ltx25CoreBlocked
-      ? 'Native LTX 2.5 support pending'
+      ? 'Update for native LTX 2.5 support'
       : (wanAnimate2CoreBlocked
       ? 'Update for native Wan Animate 2 support'
       : (krea2CoreBlocked
@@ -35567,6 +38054,9 @@ function renderInitialSetup() {
   const workflowCard = $('#setupWorkflowStatus');
   const workflowReady = setupGenerationReady();
   const restartRequired = !!dependency.restartRequired;
+  const readinessDiagnostics = setupReadinessDiagnostics(dependency);
+  const notLoadedComponents = new Set(readinessDiagnostics.map((entry) => entry.id));
+  const installedButNotLoaded = !workflowReady && readinessDiagnostics.length > 0;
   if (!setupContextComponents.length && workflowReady) {
     $('#setupTitle').textContent = 'Ready to generate';
     $('#setupIntro').textContent = 'Krea 2 Image is installed. Add other workflows only when you need them.';
@@ -35637,14 +38127,14 @@ function renderInitialSetup() {
   const startCard = $('#setupStartCard');
   startCard.hidden = !canOfferStart;
   startCard.dataset.state = start.state || (start.canStart ? 'idle' : 'error');
-  const desktopStart = start.kind === 'desktop';
+  const desktopStart = start.kind === 'desktop' && !managed.active;
   $('#setupStartTitle').textContent = startBusy ? 'Waiting for ComfyUI'
     : (start.state === 'error' ? 'ComfyUI has not connected yet'
       : (desktopStart ? 'Comfy Desktop is installed' : 'ComfyUI is ready to start'));
   const startMessage = start.state && start.state !== 'idle' ? start.message : '';
   $('#setupStartCopy').textContent = startMessage || (desktopStart
     ? `${start.installationName ? `Open Comfy Desktop and press Play on ${start.installationName}. ` : 'Open Comfy Desktop and press Play on the installed ComfyUI. '}Mix Studio will find the port automatically.`
-    : 'Start the detected portable installation. Mix Studio will find its local port automatically.');
+    : (managed.active ? 'Start the configured Python backend directly. Mix Studio will verify its port before connecting.' : 'Start the detected portable installation. Mix Studio will find its local port automatically.'));
   $('#setupStartComfy').textContent = desktopStart ? 'Open Comfy Desktop' : 'Start ComfyUI';
   $('#setupStartComfy').disabled = busy || !start.canStart || !state.profileIsOwner;
   $('#setupFindComfy').disabled = officialBusy || dependencyBusy || !state.profileIsOwner;
@@ -35731,12 +38221,13 @@ function renderInitialSetup() {
       const installed = readinessKnown && !missingSet.has(entry.id);
       const unavailable = entry.installable === false && !installed;
       const coreUpdate = entry.blockedBy === 'comfy-core' && !installed;
+      const notLoaded = notLoadedComponents.has(entry.id);
       const checked = installed || selected.has(entry.id);
-      const disabled = installed || unavailable || busy || !state.profileIsOwner;
-      const status = installed ? 'Installed' : (repairNeeded ? 'Update' : (coreUpdate ? 'Update ComfyUI' : (unavailable ? 'Manual' : (selected.has(entry.id) ? 'Selected' : (readinessKnown ? 'Not installed' : 'Not checked')))));
+      const disabled = installed || unavailable || notLoaded || busy || !state.profileIsOwner;
+      const status = installed ? 'Installed' : (notLoaded ? 'Not loaded' : (repairNeeded ? 'Update' : (coreUpdate ? 'Update ComfyUI' : (unavailable ? 'Manual' : (selected.has(entry.id) ? 'Selected' : (readinessKnown ? 'Not installed' : 'Not checked'))))));
       const detail = entry.installReason || fit?.detail || entry.label;
-      const readinessLabel = repairNeeded ? 'Reviewed custom-node update required' : (coreUpdate ? 'ComfyUI 0.26.0+ required' : (fit?.label || (unavailable ? 'Manual installation required' : 'Check requirements')));
-      return `<label class="setup-component-option${checked ? ' selected' : ''}${installed ? ' installed' : ''}${repairNeeded ? ' repair-needed' : ''}${unavailable ? ' unavailable' : ''}" data-fit="${escapeHtml(fit?.level || 'unknown')}" title="${escapeHtml(detail)}"><input type="checkbox" data-component="${escapeHtml(entry.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}><span class="setup-component-check" aria-hidden="true"></span><span class="setup-component-copy"><strong>${escapeHtml(entry.label)}</strong><small>${escapeHtml(readinessLabel)}</small></span><span class="setup-component-state">${status}</span></label>`;
+      const readinessLabel = notLoaded ? 'Files found · ComfyUI did not register a requirement' : (repairNeeded ? 'Reviewed custom-node update required' : (coreUpdate ? 'ComfyUI 0.26.0+ required' : (fit?.label || (unavailable ? 'Manual installation required' : 'Check requirements'))));
+      return `<label class="setup-component-option${checked ? ' selected' : ''}${installed ? ' installed' : ''}${notLoaded ? ' not-loaded' : ''}${repairNeeded ? ' repair-needed' : ''}${unavailable ? ' unavailable' : ''}" data-fit="${escapeHtml(fit?.level || 'unknown')}" title="${escapeHtml(detail)}"><input type="checkbox" data-component="${escapeHtml(entry.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}><span class="setup-component-check" aria-hidden="true"></span><span class="setup-component-copy"><strong>${escapeHtml(entry.label)}</strong><small>${escapeHtml(readinessLabel)}</small></span><span class="setup-component-state">${status}</span></label>`;
     }).join('');
     const count = readinessKnown ? `${installedCount} of ${entries.length} installed` : `${entries.length} workflows`;
     const action = selectableEntries.length
@@ -35745,8 +38236,11 @@ function renderInitialSetup() {
     return `<section class="setup-component-group" data-component-category="${category.id}"><header><span><strong>${category.label}</strong><small>${category.description}</small></span><span class="setup-component-group-actions"><em>${count}</em>${action}</span></header><div>${rows}</div></section>`;
   }).join('');
   $('#setupComponentEmpty').hidden = !!components.length;
-  $('#setupInstallSelected').disabled = busy || !selected.size || !comfy.canInstallDependencies;
-  $('#setupInstallSelected').textContent = `Install selected components${selected.size ? ` (${selected.size})` : ''}`;
+  const selectedOnlyNotLoaded = selected.size > 0 && [...selected].every((id) => notLoadedComponents.has(id));
+  $('#setupInstallSelected').disabled = busy || !selected.size || selectedOnlyNotLoaded || !comfy.canInstallDependencies;
+  $('#setupInstallSelected').textContent = selectedOnlyNotLoaded
+    ? 'Already installed — resolve loading issue below'
+    : `Install selected components${selected.size ? ` (${selected.size})` : ''}`;
 
   const quick = $('#setupQuickStart');
   const current = $('#setupCurrentWorkflow');
@@ -35769,10 +38263,10 @@ function renderInitialSetup() {
     : 'Install only what this generation needs.';
   current.querySelector('.setup-workflow-verb').textContent = setupInstallStarting ? 'Starting…' : (busy ? 'Installing…' : 'Install');
   current.setAttribute('aria-label', `Install ${currentTitle} for this generation`);
-  quick.hidden = (!quickMissing.length)
+  quick.hidden = installedButNotLoaded || (!quickMissing.length)
     || (!!setupContextComponents.length && quickPreset.id !== 'low-vram-klein4');
   quick.disabled = busy || !state.profileIsOwner;
-  current.hidden = !setupContextComponents.length || workflowReady;
+  current.hidden = installedButNotLoaded || !setupContextComponents.length || workflowReady;
   current.disabled = busy || !state.profileIsOwner;
   const starterIsOptional = setupFirstRun || setupContextComponents.length === 0;
   skipStarter.hidden = !starterIsOptional || !comfy.connected || workflowReady;
@@ -35794,20 +38288,39 @@ function renderInitialSetup() {
   const restartInfo = setupViewStatus.restart || lastMeta?.dependencies?.restart || {};
   const restartNeeded = !!dependency.restartRequired;
   operation.classList.toggle('restart-needed', restartNeeded);
-  setupOperationDiagnostic = operationState?.error ? String(operationState.error) : '';
+  operation.classList.toggle('not-loaded', installedButNotLoaded);
+  setupOperationDiagnostic = operationState?.error
+    ? String(operationState.error)
+    : (installedButNotLoaded ? setupReadinessDiagnosticText(readinessDiagnostics) : '');
   $('#setupShowDetails').hidden = !setupOperationDiagnostic;
+  const readinessPanel = $('#setupReadinessDiagnostic');
+  readinessPanel.hidden = !installedButNotLoaded;
+  $('#setupReadinessItems').innerHTML = installedButNotLoaded ? readinessDiagnostics.map((entry) => {
+    const details = [];
+    if (entry.missingNodes?.length) details.push(`Nodes: ${entry.missingNodes.join(', ')}`);
+    if (entry.missingModels?.length) details.push(`Models: ${entry.missingModels.join(', ')}`);
+    if (entry.reasons?.length) details.push(...entry.reasons);
+    return `<div><strong>${escapeHtml(entry.label)}</strong><code>${escapeHtml(details.join(' · ') || 'Not reported as ready')}</code></div>`;
+  }).join('') : '';
+  const diagnosticPaths = lastMeta?.dependencies?.diagnostics || {};
+  $('#setupReadinessPaths').textContent = installedButNotLoaded
+    ? [diagnosticPaths.comfyUrl && `Connected: ${diagnosticPaths.comfyUrl}`, diagnosticPaths.comfyPath && `ComfyUI: ${diagnosticPaths.comfyPath}`, diagnosticPaths.modelsPath && `Models: ${diagnosticPaths.modelsPath}`].filter(Boolean).join(' · ')
+    : '';
   const setupAccessUrl = renderDependencyAccess('#setupDependencyAccess', '#setupDependencyAccessLink', operationState);
   if (operationState) {
-    $('#setupOperationTitle').textContent = restartNeeded ? 'Restart ComfyUI to finish'
+    $('#setupOperationTitle').textContent = installedButNotLoaded ? 'Installed files are not loading'
+      : (restartNeeded ? 'Restart ComfyUI to finish'
       : (operationState.state === 'error' ? 'Setup needs attention'
-        : (operationState.state === 'cancelled' ? 'Setup stopped' : (operationState.state === 'complete' ? 'Install finished' : 'Setting up')));
-    $('#setupOperationCopy').textContent = restartNeeded
+        : (operationState.state === 'cancelled' ? 'Setup stopped' : (operationState.state === 'complete' ? 'Install finished' : 'Setting up'))));
+    $('#setupOperationCopy').textContent = installedButNotLoaded
+      ? 'The files are present, but the connected ComfyUI still does not report the requirement below. Reinstalling the same files will not help. Confirm these paths, then check the ComfyUI startup console for a custom-node import or model-folder error.'
+      : (restartNeeded
       ? (restartInfo.kind === 'desktop'
         ? 'Downloads are complete. In Comfy Desktop, stop and start this installation, then return here and press Check again.'
         : 'Downloads are complete. Restart ComfyUI so it can register the installed models and nodes.')
       : (operationState.error
       ? (setupAccessUrl ? 'This model needs Hugging Face access before installation can continue.' : conciseSetupError(operationState.error))
-      : (operationState.message || 'Working…'));
+      : (operationState.message || 'Working…')));
     const progress = dependencyProgressMetrics(operationState);
     const progressTrack = $('#setupOperationProgress');
     progressTrack.classList.toggle('indeterminate', !progress.determinate && operationState.state === 'running');
@@ -35831,7 +38344,7 @@ function renderInitialSetup() {
 
   $('#setupFinishNote').textContent = workflowReady
     ? (additionalMissing.length ? 'Ready to generate. Other workflows can be added whenever you need them.' : 'Ready to generate.')
-    : (restartRequired ? 'Restart ComfyUI, then check again.' : 'Complete the highlighted step first.');
+    : (restartRequired ? 'Restart ComfyUI, then check again.' : (installedButNotLoaded ? 'Resolve the loading problem shown above.' : 'Complete the highlighted step first.'));
 
   let recommendedStep = !comfy.connected ? 'connect' : (installReady ? 'finish' : 'install');
   if (krea2CoreBlocked) recommendedStep = 'connect';
@@ -35850,7 +38363,7 @@ function scheduleSetupPoll() {
   clearTimeout(setupPollTimer);
   if (!$('#initialSetupSheet').classList.contains('show')) return;
   const comfyBusy = ['running', 'cancelling'].includes(setupViewStatus?.comfy?.install?.state);
-  const comfyStartBusy = !!setupViewStatus?.comfy?.start?.running || setupViewStatus?.comfy?.start?.state === 'running';
+  const comfyStartBusy = ['starting', 'stopping'].includes(setupViewStatus?.comfy?.lifecycle?.phase) || !!setupViewStatus?.comfy?.start?.running || setupViewStatus?.comfy?.start?.state === 'running';
   const dependencyBusy = ['running', 'cancelling', 'restarting'].includes(setupDependencyState?.state);
   if (!comfyBusy && !comfyStartBusy && !dependencyBusy && !setupPendingComponents.length) return;
   setupPollTimer = setTimeout(() => refreshSetupStatus(), 1000);
@@ -36040,6 +38553,10 @@ async function runSetupDependencies(requested) {
       : (setupViewStatus.comfy?.dependencyReason || 'Connect an initialized ComfyUI folder first.'), true);
     return false;
   }
+  if (requested.includes('qwen21') && setupViewStatus?.comfy?.qwen21?.supported !== true) {
+    toast(setupViewStatus?.comfy?.qwen21?.reason || 'Update ComfyUI for Qwen Image 2.1, restart it, then check again.', true);
+    return false;
+  }
   if (setupKrea2CoreBlocked(requested)) {
     setSetupStep('connect', { user: true });
     toast(setupKrea2CoreMessage(), true);
@@ -36074,7 +38591,7 @@ async function runSetupDependencies(requested) {
   const result = await api('/api/dependencies/install', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
       components: filtered,
-      modelVariants: { krea2: setupSelectedKrea2Variant() },
+      modelVariants: { krea2: setupSelectedKrea2Variant(), qwen21: $('#setQwen21ModelVariant').value || 'auto' },
     }),
   });
   setupDependencyState = result.install;
@@ -36145,6 +38662,16 @@ async function saveSetupHfTokenAndContinue() {
 $('#setupGuideToggle').addEventListener('click', () => {
   setSetupGuideExpanded($('#setupGuideToggle').getAttribute('aria-expanded') !== 'true');
 });
+async function updateManagedComfy(action) {
+  try {
+    await api('/api/comfy/lifecycle', { method: 'POST', body: JSON.stringify({ action,
+      enabled: $('#setupManagedEnabled').value === 'true', idleMinutes: Number($('#setupManagedIdle').value) }) });
+    await refreshSetupStatus();
+  } catch (error) { toast(error.message, true); }
+}
+$('#setupManagedSave').addEventListener('click', () => updateManagedComfy('configure'));
+$('#setupManagedRelease').addEventListener('click', () => updateManagedComfy('release'));
+$('#setupManagedStop').addEventListener('click', () => updateManagedComfy('stop'));
 $('#setupStartComfy').addEventListener('click', async () => {
   try { await startComfyFromSetup(); }
   catch (error) { toast(error.message, true); }
@@ -36536,6 +39063,7 @@ function renderGenerationSetupEntry() {
   const repairCount = missing.filter((entry) => entry.repair).length;
   const imageReady = imageGenerationReady();
   const busy = ['running', 'cancelling', 'restarting'].includes(install.state);
+  const loadingDiagnostics = setupReadinessDiagnostics(install);
   let stateName = 'checking';
   let statusText = 'Checking';
   let copyText = 'Connection, models, and workflow requirements.';
@@ -36557,6 +39085,10 @@ function renderGenerationSetupEntry() {
     stateName = 'attention';
     statusText = 'Review';
     copyText = 'The last setup operation needs attention.';
+  } else if (loadingDiagnostics.length) {
+    stateName = 'attention';
+    statusText = 'Not loaded';
+    copyText = 'The selected files are installed, but the connected ComfyUI did not register them. Open Generation Setup for the exact requirement and paths.';
   } else if (repairCount) {
     stateName = 'attention';
     statusText = 'Update';
@@ -36601,13 +39133,20 @@ function renderDependencyManager() {
   const check = $('#dependencyCheckAll');
   const accessUrl = renderDependencyAccess('#dependencyAccess', '#dependencyAccessLink', installState);
   const selected = syncDependencySelection(missing);
+  const loadingDiagnostics = setupReadinessDiagnostics(installState);
+  const notLoadedComponents = new Set(loadingDiagnostics.map((entry) => entry.id));
+  notLoadedComponents.forEach((id) => selected.delete(id));
   const selectedCount = selected.size;
   const busy = ['running', 'cancelling', 'restarting'].includes(installState.state);
   const cancellable = installState.state === 'running' || installState.state === 'cancelling';
   const ready = imageReady && !busy && !repairCount;
   card.classList.toggle('ready', ready);
   card.classList.toggle('installing', busy);
-  list.innerHTML = missing.map((entry) => `<button class="dependency-option${selected.has(entry.id) ? ' selected' : ''}${entry.repair ? ' repair-needed' : ''}" type="button" data-component="${escapeHtml(entry.id)}" aria-pressed="${selected.has(entry.id) ? 'true' : 'false'}" title="${escapeHtml(entry.repair ? `${entry.repairLabel || entry.label} needs the reviewed version` : entry.label)}"${busy || !state.profileIsOwner ? ' disabled' : ''}>${escapeHtml(entry.label)}${entry.repair ? '<small>Update</small>' : ''}</button>`).join('');
+  list.innerHTML = missing.map((entry) => {
+    const notLoaded = notLoadedComponents.has(entry.id);
+    const detail = notLoaded ? 'Files are installed, but ComfyUI did not register a requirement' : (entry.repair ? `${entry.repairLabel || entry.label} needs the reviewed version` : entry.label);
+    return `<button class="dependency-option${selected.has(entry.id) ? ' selected' : ''}${notLoaded ? ' not-loaded' : ''}${entry.repair ? ' repair-needed' : ''}" type="button" data-component="${escapeHtml(entry.id)}" aria-pressed="${selected.has(entry.id) ? 'true' : 'false'}" title="${escapeHtml(detail)}"${busy || notLoaded || !state.profileIsOwner ? ' disabled' : ''}>${escapeHtml(entry.label)}${notLoaded ? '<small>Not loaded</small>' : (entry.repair ? '<small>Update</small>' : '')}</button>`;
+  }).join('');
   selectionHead.hidden = !missing.length || busy || !state.profileIsOwner;
   toggleAll.textContent = selectedCount === missing.length ? 'Clear' : 'Select all';
   install.disabled = busy;
@@ -36639,6 +39178,9 @@ function renderDependencyManager() {
   } else if (!lastMeta?.ok) {
     badge.textContent = 'Offline';
     status.textContent = 'Start ComfyUI to scan models and nodes. You can still install trusted missing packs once its folder is configured.';
+  } else if (loadingDiagnostics.length) {
+    badge.textContent = 'Not loaded';
+    status.textContent = 'The files are already installed, but ComfyUI did not register the required model or node. Open Generation Setup to review the exact requirement and configured paths.';
   } else if (repairCount) {
     badge.textContent = 'Update available';
     status.textContent = `${repairCount} installed workflow${repairCount === 1 ? '' : 's'} need${repairCount === 1 ? 's' : ''} a reviewed custom-node update. Select and repair, then restart ComfyUI.`;
@@ -36690,7 +39232,7 @@ function scheduleDependencyPoll() {
       if (lastMeta && lastMeta.dependencies) lastMeta.dependencies.install = status;
       renderDependencyManager();
       renderSam3Dependency();
-      if (status.state === 'complete' && status.phase === 'reconnected') await loadMeta(true);
+      if (status.state === 'complete' && ['reconnected', 'already-present', 'checked'].includes(status.phase)) await loadMeta(true);
     } catch { /* keep the last visible progress while the desktop reconnects */ }
     scheduleDependencyPoll();
   }, 1000);
@@ -36777,7 +39319,7 @@ async function loadMeta(refresh, afterRestart = false) {
     renderDependencyManager();
     renderH3LongContext();
     renderH3TurboMode();
-    renderH3SageAttention();
+    renderH3AttentionBackend();
     renderAspects();
     renderDims();
     $('#genLbl').textContent = genLabel();
@@ -36915,7 +39457,7 @@ function renderHealth() {
     return;
   }
   const rows = [`<span class="ok">● Connected</span> — ${state.metaLoras.length} LoRAs found`];
-  const labels = { core: 'Core nodes', enhance: 'Prompt enhance (TextGenerate)', klein: 'Edit (Flux 2 Klein) nodes', qwenedit: 'Edit (Qwen Image Edit) nodes', regional: 'Krea2 regional prompting nodes', krea2inpaint: 'Krea2 Fill nodes', krea2ref: 'Krea 2 Identity Edit nodes', krea2remix: 'Krea 2 Remix (Rebalance) nodes', krea2outpaint: 'Krea 2 Expand nodes', editoutpaint: 'Klein / Qwen Expand nodes', smartmask: 'Smart Mask (SAM3) nodes', upscale: 'SeedVR2 nodes', ultimateupscale: 'Ultimate SD Upscale nodes', video: 'LTX 2.3 video nodes', ltx25: 'LTX 2.5 native nodes', ltx25quality: 'LTX 2.5 Quality guidance nodes', h3: 'MiniMax H3 native nodes', h3turbo: 'MiniMax H3 Turbo creator nodes', h3turbor2v: 'MiniMax H3 Reference Turbo sampler', h3context: 'MiniMax H3 Motion Context nodes', h3r2v: 'MiniMax H3 reference-input nodes', h3sage: 'MiniMax H3 SageAttention patch', ltxdirector: 'LTX Director nodes', videoedit: 'LTX Edit guide-video nodes', video4k: '4K AI Upscale pass (optional)', rife: 'RIFE frame interpolation nodes', wan: 'Wan 2.2 nodes', wananimate2: 'Wan Animate 2 native nodes', eros: '10Eros DMD nodes', scail: 'SCAIL 2 motion transfer nodes', scailinfinity: 'SCAIL 2 Infinity node', faceid: 'LTX Face ID (BFS) nodes' };
+  const labels = { core: 'Core nodes', enhance: 'Prompt enhance (TextGenerate)', promptai: 'Local Prompt AI', klein: 'Edit (Flux 2 Klein) nodes', qwenedit: 'Edit (Qwen Image Edit) nodes', regional: 'Krea2 regional prompting nodes', krea2inpaint: 'Krea2 Fill nodes', krea2ref: 'Krea 2 Identity Edit nodes', krea2remix: 'Krea 2 Remix (Rebalance) nodes', krea2outpaint: 'Krea 2 Expand nodes', editoutpaint: 'Klein / Qwen Expand nodes', smartmask: 'Smart Mask (SAM3) nodes', upscale: 'SeedVR2 nodes', ultimateupscale: 'Ultimate SD Upscale nodes', video: 'LTX 2.3 video nodes', ltx25: 'LTX 2.5 native nodes', ltx25quality: 'LTX 2.5 Quality guidance nodes', h3: 'MiniMax H3 native nodes', h3turbo: 'MiniMax H3 Turbo creator nodes', h3turbor2v: 'MiniMax H3 Reference Turbo sampler', h3context: 'MiniMax H3 Motion Context nodes', h3r2v: 'MiniMax H3 reference-input nodes', h3sage: 'MiniMax H3 SageAttention patch', h3sla: 'MiniMax H3 SLA Sparse Attention nodes', ltxdirector: 'LTX Director nodes', videoedit: 'LTX Edit guide-video nodes', video4k: 'RTX 4K pass (optional)', rife: 'RIFE frame interpolation nodes', wan: 'Wan 2.2 nodes', wananimate2: 'Wan Animate 2 native nodes', eros: '10Eros DMD nodes', scail: 'SCAIL 2 motion transfer nodes', scailinfinity: 'SCAIL 2 Infinity node', faceid: 'LTX Face ID (BFS) nodes' };
   for (const [group, missing] of Object.entries(lastMeta.missing || {})) {
     if (group === 'smartmask') continue; // The actionable installer card above owns this status.
     const label = labels[group] || group.replace(/([a-z])([A-Z])/g, '$1 $2');

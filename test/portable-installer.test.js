@@ -42,7 +42,7 @@ test('macOS installer clones the official checkout and launches through the rest
   const installer = fs.readFileSync(path.join(root, 'install_MixStudio.command'), 'utf8');
   const start = fs.readFileSync(path.join(root, 'start.command'), 'utf8');
   assert.match(installer, /https:\/\/github\.com\/BlackMixture\/Mix-Studio\.git/);
-  assert.match(installer, /clone --depth 1 --branch main --single-branch/);
+  assert.match(installer, /clone --depth 1 --branch "\$RELEASE_TAG" --single-branch/);
   assert.match(installer, /Node\.js 22 or newer/);
   assert.match(installer, /installer\/bootstrap\.js/);
   assert.match(installer, /exec \/bin\/zsh "\$MIX_STUDIO_HOME\/start\.command"/);
@@ -68,7 +68,7 @@ test('standalone installer downloads the official Git checkout before opening th
   const launcher = fs.readFileSync(path.join(root, 'install_MixStudio.bat'), 'utf8');
   assert.match(launcher, /https:\/\/github\.com\/BlackMixture\/Mix-Studio\.git/);
   assert.match(launcher, /winget install --id Git\.Git/);
-  assert.match(launcher, /clone --depth 1 --branch main --single-branch/);
+  assert.match(launcher, /clone --depth 1 --branch "%MIX_STUDIO_RELEASE_TAG%" --single-branch/);
   assert.match(launcher, /set "MIX_STUDIO_HOME=%~dp0Mix Studio"/i);
   assert.match(launcher, /set "MIX_STUDIO_STAGE=%~dp0Mix Studio\.download"/i);
   assert.doesNotMatch(launcher, /%USERPROFILE%\\Mix Studio/);
@@ -86,7 +86,9 @@ test('standalone installer downloads the official Git checkout before opening th
   assert.doesNotMatch(launcher, /for \/f[^\r\n]*process\.versions\.node/i);
   assert.match(launcher, /quarantine_incomplete_checkout/i);
   assert.match(launcher, /if not exist "%MIX_STUDIO_HOME%\\data\\" call :refresh_unconfigured_checkout/i);
-  assert.match(launcher, /pull --ff-only origin main/i);
+  assert.doesNotMatch(launcher, /pull --ff-only origin main/i);
+  assert.match(launcher, /releases\/latest/);
+  assert.match(launcher, /switch -c main/);
   assert.match(launcher, /unfinished first-time setup could not be refreshed/i);
   assert.match(launcher, /verify_writable_destination/i);
   assert.match(launcher, /del \/f \/q "%MIX_STUDIO_WRITE_PROBE%\\write\.test"[\s\S]{0,160}rmdir "%MIX_STUDIO_WRITE_PROBE%"/i);
@@ -104,7 +106,7 @@ test('README presents the product positioning and credits while contribution det
   const contributing = fs.readFileSync(path.join(root, 'CONTRIBUTING.md'), 'utf8');
   assert.match(readme, /Mix Studio is a local web interface that builds and submits ComfyUI API graphs/);
   assert.match(readme, /image generation, regional prompting, image editing, video generation, motion transfer, and upscaling/);
-  assert.match(readme, /Krea 2, Flux 2 Klein, Qwen Image Edit, MiniMax H3, LTX 2\.3, LTX 2\.5, Wan 2\.2, 10Eros, and SCAIL 2/);
+  assert.match(readme, /Krea 2, Flux 2 Klein, Qwen Image 2\.1, Qwen Image Edit, MiniMax H3, LTX 2\.3, LTX 2\.5, Wan 2\.2, 10Eros, and SCAIL 2/);
   assert.match(readme, /## Acknowledgments & Attribution/);
   assert.match(readme, /\[Contributing\]\(CONTRIBUTING\.md\)/);
   assert.match(contributing, /## Contribute a workflow/);
@@ -179,7 +181,7 @@ test('GitHub Pages publishes the canonical installer from a branded download pag
   assert.match(page, /does not enforce a VRAM cutoff/);
   assert.match(page, /A clean, responsive AI workspace built on ComfyUI\./);
   assert.match(page, /Run highly tuned image and video workflows flawlessly from your desktop or your phone\./);
-  assert.match(page, /Features curated setups for Krea 2, Flux Klein, Qwen Edit, MiniMax H3, LTX 2\.3, Wan 2\.2, and SCAIL 2\./);
+  assert.match(page, /Features curated setups for Krea 2, Flux Klein, Qwen Image 2\.1 and Qwen Edit, MiniMax H3, LTX 2\.3 \/ 2\.5, Wan 2\.2, and SCAIL 2\./);
   assert.match(page, /Most local tools chain you to a desk\./);
   assert.match(page, /full creative control from anywhere\./);
   assert.match(page, /RTX PRO 6000 Blackwell · 96 GB VRAM · Jul 2026/);
@@ -554,7 +556,7 @@ test('generation setup lives in the web app and gates only a generation attempt'
   assert.match(app, /renderDependencyAccess\('#setupDependencyAccess', '#setupDependencyAccessLink', operationState\)/);
   assert.match(app, /This model needs Hugging Face access before installation can continue\./);
   assert.match(app, /showErrorDetail\(setupOperationDiagnostic, 'Setup diagnostic'\)/);
-  assert.match(app, /quick\.hidden = \(!quickMissing\.length\)[\s\S]{0,120}quickPreset\.id !== 'low-vram-klein4'/);
+  assert.match(app, /quick\.hidden = installedButNotLoaded \|\| \(!quickMissing\.length\)[\s\S]{0,120}quickPreset\.id !== 'low-vram-klein4'/);
   assert.match(app, /connectionChoicesHidden = !!comfy\.connected \|\| nodeSetupActive/);
   assert.match(app, /e\.target === sheet && sheet\.id !== 'initialSetupSheet'/);
   assert.match(app, /Generation setup is still needed\. Press Generate or open Preferences to continue\./);

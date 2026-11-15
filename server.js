@@ -7,6 +7,7 @@
 'use strict';
 
 const http = require('http');
+const { createSplatService, orbitOptions, buildSplatOrbitGraph, ORBIT_PROMPT, ORBIT_SECONDS } = require('./lib/gaussian-splats');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -15,6 +16,7 @@ const crypto = require('crypto');
 const { execFile, spawn } = require('child_process');
 const { pipeline } = require('stream/promises');
 const { gitCommand, readAppRelease, updateFromGit } = require('./lib/app-update');
+const { updateFromRelease } = require('./lib/release-update');
 const {
   inspectCriticalPublicAssets,
   isCriticalPublicAsset,
@@ -26,6 +28,8 @@ const { resolveRuntimeConfig, publicAnalyticsConfig } = require('./lib/runtime-c
 const { sam3InstallStatus } = require('./lib/sam3-installer');
 const { probeSageAttention } = require('./lib/sage-attention');
 const { strandedJobVerdict } = require('./lib/stranded-jobs');
+const { probeH3SlaAttention } = require('./lib/h3-sla-attention');
+const { h3AttentionOptions, normalizeH3AttentionBackend, kitchenAttentionCapability } = require('./lib/h3-attention');
 const { h3PerformanceReport } = require('./lib/h3-performance');
 const {
   krea2ClipCompatibility,
@@ -78,7 +82,12 @@ const {
 const { discoverModels } = require('./installer/model-discovery');
 const { restartComfy, restartStatus, startComfy, startStatus } = require('./lib/comfy-restart');
 const { discoverComfyEndpoints, probeComfyUrl } = require('./lib/comfy-discovery');
-const { normalizeGenerationDefaults, normalizeContextOverrides, mergeContextOverrides } = require('./lib/user-preferences');
+const {
+  normalizeGenerationDefaults,
+  normalizeAssetPickerPreferences,
+  normalizeContextOverrides,
+  mergeContextOverrides,
+} = require('./lib/user-preferences');
 const {
   EDIT_FEATURES,
   VIDEO_FEATURES,
@@ -93,6 +102,7 @@ const {
   canMoveToFolder,
   parseCookies,
 } = require('./lib/private-gallery');
+const { createComfyLifecycle, managedLaunchPlan, normalizeLifecycleConfig } = require('./lib/comfy-lifecycle');
 const { comfyResetRequests } = require('./lib/comfy-reset');
 const {
   assessQueueHealth,
@@ -143,13 +153,34 @@ const {
   externalLlmEnabled,
   externalLlmProviderConfig,
   externalLlmRequest,
+  externalLlmStructuredRequest,
   normalizeExternalLlmSettings,
+  normalizeLmStudioUrl,
   normalizeOllamaUrl,
+  parseStructuredText,
 } = require('./lib/external-llm');
+const {
+  SMART_LOCAL_PLAN_SCHEMA,
+  SMART_PLAN_SCHEMA,
+  compileSmartSteps,
+  normalizeSmartPlan,
+  normalizeSmartReferences,
+  reconcileSmartPlanReferences,
+  smartPlanAudit,
+  smartPlanHash,
+  smartPlanningPrompt,
+  smartReferenceRerollPrompt,
+} = require('./lib/smart-mode');
+const {
+  interruptedSmartJobIds,
+  markSmartRunsInterruptedForRecovery,
+  prepareSmartRunResume,
+} = require('./lib/smart-run-recovery');
 const {
   localPromptAiCatalog,
   localPromptAiConfig,
   normalizeLocalPromptAiSettings,
+  smartPlannerPromptAiConfig,
 } = require('./lib/local-prompt-ai');
 const { combineNegativePrompts, normalizeNegativePrompt } = require('./lib/negative-prompt');
 const {
@@ -188,6 +219,7 @@ const {
   publicUploadedAsset,
 } = require('./lib/uploaded-assets');
 const { normalizeEditSequence, supportsSequentialEdit } = require('./lib/edit-sequence');
+const { buildQwen21Graph, QWEN21_CLASSES, qwen21Compatibility, recommendedQwen21Variant } = require('./lib/qwen21-workflows');
 const { normalizeQwenEditQuality, qwenEditPreset } = require('./lib/qwen-edit');
 const T2I_ENGINES = ['qwen'];
 const { normalizeEditAngle, supportsEditAngles, editAnglePrompt } = require('./lib/edit-angle');
@@ -411,10 +443,16 @@ const PUBLIC = path.join(ROOT, 'public');
 const CRITICAL_PUBLIC_STARTUP_CACHE = loadCriticalPublicAssetCache(ROOT);
 const CRITICAL_PUBLIC_GIT_CACHE = new Map();
 const officialReleaseChecker = createGithubReleaseChecker();
+const previewReleaseChecker = createGithubReleaseChecker({ channel: 'preview' });
 const SETUP_FEATURE_MANIFEST = loadJson(path.join(ROOT, 'installer', 'feature-manifest.json'), { features: [] });
 let RUNTIME = resolveRuntimeConfig(ROOT);
 let videoExtensionFfmpeg = '';
 const DATA = RUNTIME.dataDir;
+const UPDATE_CHANNEL_FILE = path.join(DATA, 'update-channel.json');
+const savedUpdateChannel = loadJson(UPDATE_CHANNEL_FILE, {}).channel;
+let appReleaseChannel = process.env.MIXBOX_RELEASE_CHANNEL || savedUpdateChannel || RUNTIME.update.releaseChannel || 'stable';
+if (!['stable', 'preview', 'development'].includes(appReleaseChannel)) appReleaseChannel = 'stable';
+function selectedReleaseChecker(channel = appReleaseChannel) { return channel === 'preview' ? previewReleaseChecker : officialReleaseChecker; }
 const IMAGES = path.join(DATA, 'images');
 const VIDEOS = path.join(DATA, 'videos');
 const VIDEO_PREVIEWS = path.join(DATA, 'video-previews');
@@ -517,6 +555,10 @@ const DEFAULT_SETTINGS = {
   klein9ConsistencyLora: 'f2k_9B_lcs_consist_20260415.safetensors',
   klein9ConsistencyTrigger: 'restore image details',
   kleinVae: 'flux2-vae.safetensors',
+  qwen21ModelVariant: 'auto',
+  qwen21Unet: 'qwen_image_2.1_int8_convrot.safetensors',
+  qwen21Clip: 'qwen3vl_8b_w4a8.safetensors',
+  qwen21Vae: 'qwen_image_2.1_vae_bf16.safetensors',
   // Qwen edit runs on the GGUF quant, not the bf16 file. Measured resident
   // footprint on this box (transformer + qwen2.5-vl encoder + vae + Lightning
   // LoRA): bf16 = 51.35GB vs 33.46GB of VRAM on the Arc B70 -> allocator
@@ -597,18 +639,25 @@ const DEFAULT_SETTINGS = {
   wanAnimate2Vae: 'Wan2_1_VAE_bf16.safetensors',
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   externalLlmProvider: EXTERNAL_LLM_DEFAULTS.externalLlmProvider,
+  externalLlmLocalProvider: EXTERNAL_LLM_DEFAULTS.externalLlmLocalProvider,
+  externalLlmExternalProvider: EXTERNAL_LLM_DEFAULTS.externalLlmExternalProvider,
   externalLlmOpenAiApiKey: '',
   externalLlmOpenAiModel: EXTERNAL_LLM_DEFAULTS.externalLlmOpenAiModel,
   externalLlmGeminiApiKey: '',
   externalLlmGeminiModel: EXTERNAL_LLM_DEFAULTS.externalLlmGeminiModel,
   externalLlmOllamaUrl: EXTERNAL_LLM_DEFAULTS.externalLlmOllamaUrl,
   externalLlmOllamaModel: EXTERNAL_LLM_DEFAULTS.externalLlmOllamaModel,
-  externalLlmImageRevise: false,
-  externalLlmImageEnhance: false,
-  externalLlmVideoRevise: false,
-  externalLlmVideoEnhance: false,
+  externalLlmLmStudioUrl: EXTERNAL_LLM_DEFAULTS.externalLlmLmStudioUrl,
+  externalLlmLmStudioModel: EXTERNAL_LLM_DEFAULTS.externalLlmLmStudioModel,
+  externalLlmImageRevise: true,
+  externalLlmImageEnhance: true,
+  externalLlmVideoRevise: true,
+  externalLlmVideoEnhance: true,
   localPromptAiClip: '',
   localPromptAiClipType: 'krea2',
+  smartPlannerModelOverride: false,
+  smartPlannerClip: '',
+  smartPlannerClipType: 'krea2',
   galleryPassword: DEFAULT_PRIVATE_PASSWORD,
   exportDir: '',
   offloadDir: 'E:\\tmp\\pytorch',
@@ -878,6 +927,8 @@ if (!Array.isArray(db.loraPresets)) db.loraPresets = [];
 if (!Array.isArray(db.userPreferences)) db.userPreferences = [];
 if (!Array.isArray(db.faces)) db.faces = [];
 if (!Array.isArray(db.uploadedAssets)) db.uploadedAssets = [];
+if (!Array.isArray(db.smartRuns)) db.smartRuns = [];
+const interruptedSmartRunIds = markSmartRunsInterruptedForRecovery(db.smartRuns);
 
 /* ---------------------- Profiles (accounts) ------------------------ */
 // Signing secret persists so logins survive server restarts
@@ -1041,6 +1092,8 @@ const CLIENT_ID = 'kreastudio-' + crypto.randomBytes(6).toString('hex');
 const SERVER_INSTANCE_ID = crypto.randomBytes(12).toString('hex');
 const jobs = new Map(); // promptId -> job
 
+const externalPromptPreflights = new Map(); // synthetic id -> external prompt enhancement
+
 let _idleFreeTimer = null;
 async function triggerComfyModelUnload() {
   console.log('[queue]', 'Queue is idle. Triggering ComfyUI model unload to free VRAM.');
@@ -1071,7 +1124,6 @@ jobs.delete = function (pid) {
   notifyQueueIdle();
   return res;
 };
-
 const queueHealthState = { lowGpuSince: null };
 let dependencyInstallRunning = false;
 let dependencyInstallController = null;
@@ -1108,6 +1160,11 @@ let dependencyInstallState = {
   completed: 0,
   total: 0,
   restartRequired: false,
+  changed: 0,
+  changedItems: [],
+  checkedComponents: [],
+  checkedMissingComponents: [],
+  readinessDiagnostics: [],
   error: null,
   errorCode: null,
   accessUrl: null,
@@ -1205,6 +1262,27 @@ async function getSetupHardwareInfo(force = false) {
   return setupHardwareSnapshot;
 }
 
+const COMFY_LIFECYCLE_FILE = path.join(DATA, 'comfy-lifecycle.json');
+let comfyLifecycleConfig = normalizeLifecycleConfig();
+try { comfyLifecycleConfig = normalizeLifecycleConfig(JSON.parse(fs.readFileSync(COMFY_LIFECYCLE_FILE, 'utf8'))); } catch { /* opt-in defaults */ }
+const comfyLifecycle = createComfyLifecycle({
+  config: () => comfyLifecycleConfig,
+  available: () => ['preview', 'development'].includes(appReleaseChannel),
+  plan: () => managedLaunchPlan({ ...RUNTIME, comfy: { ...RUNTIME.comfy, url: settings.comfyUrl } }),
+  launchBusy: () => !!(jobs.size || dependencyInstallRunning || comfyRestartRunning || comfyStartRunning || comfySetupProcess || appUpdateRunning),
+  busy: () => !!(jobs.size || externalPromptPreflights.size || dependencyInstallRunning
+    || comfyRestartRunning || comfyStartRunning || comfySetupProcess || appUpdateRunning
+    || [...smartPlanRequests.values()].some((request) => !['complete', 'failed'].includes(request.status))),
+});
+setInterval(() => { comfyLifecycle.tick(); }, 30000).unref();
+const MANAGED_GENERATION_ROUTES = new Set([
+  '/api/upload', '/api/edit-mask/sam3', '/api/generate', '/api/upscale',
+  '/api/director/assets', '/api/director/generate', '/api/animate',
+  '/api/video/upscale', '/api/video/interpolate', '/api/composite',
+  '/api/depth-preview', '/api/image-composite', '/api/motionprompt', '/api/imageprompt',
+  '/api/prompt/local-model/test',
+]);
+
 async function activeVramProfile() {
   try {
     const hardware = setupHardwareProfile(await getSetupHardwareInfo());
@@ -1215,6 +1293,7 @@ async function activeVramProfile() {
 }
 
 function applySetupConnection(values) {
+  if (comfyLifecycle.status().owned) throw new Error('Stop the managed ComfyUI instance before changing its connection.');
   const previousUrl = settings.comfyUrl;
   const config = portableSetupConfig(ROOT, RUNTIME, values);
   // Installation completion can intentionally leave endpoint selection
@@ -1372,7 +1451,9 @@ async function assertDesktopIsIdle() {
     error.code = 'desktop_busy';
     return error;
   };
-  if (jobs.size) throw busy('Wait for the Mix Studio queue to finish before changing desktop dependencies.');
+  if (jobs.size || externalPromptPreflights.size) {
+    throw busy('Wait for the Mix Studio queue to finish before changing desktop dependencies.');
+  }
   try {
     const queue = await (await comfyFetch('/queue')).json();
     if ((queue.queue_running || []).length || (queue.queue_pending || []).length) {
@@ -1448,7 +1529,7 @@ function trackJob(pid, job) {
   // that created it, even though completion happens in the WS/poll path.
   const ctxReqId = log.currentRequestId();
   const resolvedRequestId = job.requestId || ctxReqId || null;
-  jobs.set(pid, Object.assign({ enqueuedAt: now, startedAt: null, requestId: resolvedRequestId }, job));
+  jobs.set(pid, Object.assign({ enqueuedAt: now, startedAt: null, lastActivityAt: now, requestId: resolvedRequestId }, job));
 }
 
 function jobBaseTime(job) {
@@ -1457,6 +1538,12 @@ function jobBaseTime(job) {
 
 function jobDurationMs(job, now = Date.now()) {
   return Math.max(0, now - jobBaseTime(job));
+}
+
+function recoverableGenerationJob(job) {
+  if (!job || job.smartRunId) return false;
+  if (job.kind === 'gen' || job.kind === 'loraHunt') return true;
+  return job.kind === 'video' && !job.videoInfo?.processed;
 }
 
 function queueEntryCreatedAt(entry) {
@@ -1749,7 +1836,12 @@ function configuredModelsStatus(info) {
     ? comboList(info, 'LoraLoaderModelOnly', 'lora_name')
     : comboList(info, 'LoraLoader', 'lora_name');
   const krea2Core = krea2ClipCompatibility(info);
+  const promptAi = localPromptAiConfig(settings);
   return {
+    promptAi: {
+      label: 'Local Prompt AI',
+      textEncoder: modelStatus(info, 'CLIPLoader', 'clip_name', promptAi.model),
+    },
     krea2: {
       label: 'Krea 2',
       turbo: diffusionModelStatus(info, settings.unet),
@@ -1781,6 +1873,12 @@ function configuredModelsStatus(info) {
       clip: modelStatus(info, 'CLIPLoader', 'clip_name', settings.klein9Clip),
       vae: modelStatus(info, 'VAELoader', 'vae_name', settings.kleinVae),
       consistencyLora: modelStatus(info, 'LoraLoaderModelOnly', 'lora_name', settings.klein9ConsistencyLora, loraList),
+    },
+    qwen21: {
+      label: 'Qwen Image 2.1',
+      unet: diffusionModelStatus(info, settings.qwen21Unet),
+      clip: modelStatus(info, 'CLIPLoader', 'clip_name', settings.qwen21Clip),
+      vae: modelStatus(info, 'VAELoader', 'vae_name', settings.qwen21Vae),
     },
     qwen: {
       label: 'Qwen Edit',
@@ -1894,9 +1992,8 @@ function configuredModelsStatus(info) {
   };
 }
 
-function missingDependencyComponentIds(missing, models, capabilities = {}) {
-  const ids = new Set();
-  const nodeToComponent = {
+const DEPENDENCY_NODE_GROUP_COMPONENTS = Object.freeze({
+    enhance: ['promptai'],
     regional: ['regional'],
     krea2ref: ['krea2ref'],
     krea2remix: ['krea2remix'],
@@ -1914,6 +2011,7 @@ function missingDependencyComponentIds(missing, models, capabilities = {}) {
     h3turbor2v: ['h3turbor2v'],
     h3context: ['h3context'],
     h3sage: ['h3sage'],
+    h3sla: ['h3sla'],
     ltxcamera: ['ltxcamera'],
     ltxdirector: ['ltxdirector'],
     videoedit: ['videoedit'],
@@ -1926,27 +2024,125 @@ function missingDependencyComponentIds(missing, models, capabilities = {}) {
     scailinfinity: ['scailinfinity'],
     faceid: ['faceid'],
     klein: ['klein4', 'klein9'],
+    qwen21: ['qwen21'],
     qwenedit: ['qwen'],
     krea2inpaint: ['image'],
     krea2depth: ['krea2depth'],
     krea2style: ['krea2style'],
-  };
+});
+
+const DEPENDENCY_MODEL_GROUP_COMPONENTS = Object.freeze({
+  promptAi: ['promptai'],
+  krea2Depth: ['krea2depth'],
+  krea2IdentityEdit: ['krea2ref', 'krea2outpaint'],
+  klein4: ['klein4'],
+  klein9: ['klein9'],
+  qwen21: ['qwen21'],
+  qwen: ['qwen'],
+  upscale: ['upscale'],
+  ltx: ['video'],
+  ltx25: ['ltx25'],
+  ltx25Quality: ['ltx25quality'],
+  h3: ['h3'],
+  h3Ref: ['h3r2v'],
+  h3Turbo: ['h3turbo'],
+  h3RefTurbo: ['h3turbor2v'],
+  ltxDirector: ['ltxdirector'],
+  ltxCamera: ['ltxcamera'],
+  ltxEdit: ['videoedit'],
+  faceid: ['faceid'],
+  wan: ['wan'],
+  wanAnimate2: ['wananimate2'],
+  eros: ['eros'],
+  scail: ['scail'],
+  scailInfinity: ['scailinfinity'],
+});
+
+function missingDependencyComponentIds(missing, models, capabilities = {}) {
+  const ids = new Set();
   for (const [group, classes] of Object.entries(missing || {})) {
-    if (Array.isArray(classes) && classes.length) for (const component of nodeToComponent[group] || []) ids.add(component);
+    if (Array.isArray(classes) && classes.length) for (const component of DEPENDENCY_NODE_GROUP_COMPONENTS[group] || []) ids.add(component);
   }
   const krea2 = models?.krea2 || {};
   const krea2CoreChecks = ['turbo', 'clip', 'vae'].map((key) => krea2[key]).filter(Boolean);
   if (krea2CoreChecks.some((check) => !check.ok)) ids.add('image');
   if (krea2.raw && !krea2.raw.ok) ids.add('krea2raw');
-  const modelToComponent = { krea2Depth: 'krea2depth', krea2IdentityEdit: 'krea2ref', klein4: 'klein4', klein9: 'klein9', qwen: 'qwen', upscale: 'upscale', ltx: 'video', ltx25: 'ltx25', ltx25Quality: 'ltx25quality', h3: 'h3', h3Ref: 'h3r2v', h3Turbo: 'h3turbo', h3RefTurbo: 'h3turbor2v', ltxDirector: 'ltxdirector', ltxCamera: 'ltxcamera', ltxEdit: 'videoedit', faceid: 'faceid', wan: 'wan', wanAnimate2: 'wananimate2', eros: 'eros', scail: 'scail', scailInfinity: 'scailinfinity' };
   for (const [model, value] of Object.entries(models || {})) {
     const checks = Object.values(value || {}).filter((check) => check && typeof check === 'object' && Object.prototype.hasOwnProperty.call(check, 'ok'));
-    if (checks.some((check) => !check.ok) && modelToComponent[model]) ids.add(modelToComponent[model]);
+    if (checks.some((check) => !check.ok)) {
+      for (const component of DEPENDENCY_MODEL_GROUP_COMPONENTS[model] || []) ids.add(component);
+    }
   }
   if (Object.prototype.hasOwnProperty.call(capabilities, 'sageAttention')
     && capabilities.sageAttention?.ready !== true) ids.add('h3sage');
+  if (Object.prototype.hasOwnProperty.call(capabilities, 'slaAttention')
+    && capabilities.slaAttention?.ready !== true) ids.add('h3sla');
   for (const component of capabilities.repairComponents || []) ids.add(component);
   return [...ids];
+}
+
+function dependencyReadinessDiagnostics(componentIds, missing, models, capabilities = {}, installStatus = {}) {
+  const requested = new Set((componentIds || []).filter(Boolean));
+  const diagnostics = new Map([...requested].map((id) => [id, {
+    id,
+    label: DEPENDENCY_COMPONENTS[id]?.label || id,
+    missingNodes: [],
+    missingModels: [],
+    nodePacks: [],
+    reasons: [],
+  }]));
+  for (const [group, classes] of Object.entries(missing || {})) {
+    if (!Array.isArray(classes) || !classes.length) continue;
+    for (const componentId of DEPENDENCY_NODE_GROUP_COMPONENTS[group] || []) {
+      const diagnostic = diagnostics.get(componentId);
+      if (diagnostic) diagnostic.missingNodes.push(...classes);
+    }
+  }
+  for (const [modelGroup, value] of Object.entries(models || {})) {
+    const missingNames = Object.values(value || {})
+      .filter((check) => check && typeof check === 'object' && check.ok === false && check.name)
+      .map((check) => String(check.name));
+    if (!missingNames.length) continue;
+    for (const componentId of DEPENDENCY_MODEL_GROUP_COMPONENTS[modelGroup] || []) {
+      const diagnostic = diagnostics.get(componentId);
+      if (diagnostic) diagnostic.missingModels.push(...missingNames);
+    }
+  }
+  const krea2 = models?.krea2 || {};
+  const krea2CoreNames = ['turbo', 'clip', 'vae']
+    .map((key) => krea2[key])
+    .filter((check) => check?.ok === false && check.name)
+    .map((check) => String(check.name));
+  if (diagnostics.has('image')) diagnostics.get('image').missingModels.push(...krea2CoreNames);
+  if (diagnostics.has('krea2raw') && krea2.raw?.ok === false && krea2.raw.name) {
+    diagnostics.get('krea2raw').missingModels.push(String(krea2.raw.name));
+  }
+  for (const componentId of capabilities.repairComponents || []) {
+    const diagnostic = diagnostics.get(componentId);
+    if (diagnostic) diagnostic.reasons.push('A reviewed custom-node update is required.');
+  }
+  if (diagnostics.has('h3sage') && capabilities.sageAttention?.ready !== true) {
+    diagnostics.get('h3sage').reasons.push(capabilities.sageAttention?.reason || 'SageAttention is not ready in the connected ComfyUI runtime.');
+  }
+  if (diagnostics.has('h3sla') && capabilities.slaAttention?.ready !== true) {
+    diagnostics.get('h3sla').reasons.push(capabilities.slaAttention?.reason || 'H3 SLA is not ready in the connected ComfyUI runtime.');
+  }
+  for (const [componentId, diagnostic] of diagnostics) {
+    const nodeIds = DEPENDENCY_COMPONENTS[componentId]?.nodes || [];
+    diagnostic.nodePacks = nodeIds.map((nodeId) => {
+      const pack = DEPENDENCY_NODE_PACKS[nodeId];
+      return {
+        label: pack?.label || nodeId,
+        path: installStatus.customNodesPath && pack?.folder
+          ? path.join(installStatus.customNodesPath, pack.folder)
+          : '',
+      };
+    });
+    diagnostic.missingNodes = [...new Set(diagnostic.missingNodes)];
+    diagnostic.missingModels = [...new Set(diagnostic.missingModels)];
+    diagnostic.reasons = [...new Set(diagnostic.reasons)];
+  }
+  return [...diagnostics.values()];
 }
 
 const LORA_INFO_TTL = 5 * 60 * 1000;
@@ -2484,6 +2680,7 @@ function handleWsMessage(msg) {
   const pid = d.prompt_id;
   if (msg.type === 'progress' && pid && jobs.has(pid)) {
     const job = jobs.get(pid);
+    job.lastActivityAt = Date.now();
     const phase = progressDetailsForJob(job, d.node ?? null, d.value, d.max);
     broadcast('progress', {
       jobId: pid,
@@ -2496,7 +2693,10 @@ function handleWsMessage(msg) {
     });
   } else if (msg.type === 'executing' && pid && jobs.has(pid)) {
     const job = jobs.get(pid);
+    job.lastActivityAt = Date.now();
     activeWsPromptId = d.node === null ? '' : pid;
+    if (job.splatStage && d.node === 'rife') job.splatStage('Smoothing orbit video · RIFE 2×');
+    else if (job.splatStage && d.node === 'save') job.splatStage('Saving smooth orbit video');
     if (job && d.node !== null && !job.startedAt) job.startedAt = Date.now();
     if (d.node === null) completeJob(pid).catch((e) => failJob(pid, e.message));
     else broadcast('status', {
@@ -2603,6 +2803,7 @@ function cancelJob(pid, message = 'Cancelled') {
   // the ComfyUI slot occupied and don't leave orphaned outputs.
   stopComfyPrompt(pid).catch(() => {});
   const durationMs = jobDurationMs(job);
+  failSmartJob(job, message, true);
   jobs.delete(pid);
   clearPendingJobState(job);
   broadcast('jobCancelled', {
@@ -2641,6 +2842,8 @@ function failJob(pid, message) {
       }
     }
   }
+  job?.splatReject?.(new Error(message));
+  failSmartJob(job, message, false);
   jobs.delete(pid);
   if (job && (job.kind === 'enhance' || job.kind === 'motionPrompt' || job.kind === 'smartMask')) {
     job.reject(new Error(message));
@@ -2793,7 +2996,8 @@ async function completeStrengthHuntJob(pid, job, outputFiles, durationMs, textOu
       file: fname,
       name: settings.smartFilenames ? smartGenerationName(job.params.prompt, `Strength Hunt ${index + 1}`) : undefined,
       mode: job.params.mode,
-      krea2Turbo: job.params.mode === 't2i' ? job.params.krea2Turbo !== false : undefined,
+      imageEngine: job.params.mode === 't2i' ? (job.params.imageEngine || 'krea2') : undefined,
+      krea2Turbo: job.params.mode === 't2i' && job.params.imageEngine !== 'qwen21' ? job.params.krea2Turbo !== false : undefined,
       imageGuideMode: job.params.mode === 't2i' && job.params.imageName ? job.params.imageGuideMode : undefined,
       depthStrength: job.params.mode === 't2i' && job.params.imageGuideMode === 'depth' ? job.params.depthStrength : undefined,
       styleStrength: job.params.mode === 't2i' && job.params.imageGuideMode === 'style' ? job.params.styleStrength : undefined,
@@ -2844,8 +3048,8 @@ async function completeStrengthHuntJob(pid, job, outputFiles, durationMs, textOu
     });
   }
   const model = job.params.mode === 'edit'
-    ? ({ qwen: 'Qwen Edit', klein9: 'Flux Klein 9B', krea2: 'Krea 2', krea2ref: 'Krea 2 Edit', krea2remix: 'Krea 2 Remix' }[job.params.editEngine] || 'Flux Klein 4B')
-    : (job.params.krea2Turbo === false ? 'Krea 2 Raw' : 'Krea 2 Turbo');
+    ? ({ qwen21: 'Qwen Image 2.1', qwen: 'Qwen Edit', klein9: 'Flux Klein 9B', krea2: 'Krea 2', krea2ref: 'Krea 2 Edit', krea2remix: 'Krea 2 Remix' }[job.params.editEngine] || 'Flux Klein 4B')
+    : (job.params.imageEngine === 'qwen21' ? 'Qwen Image 2.1' : (job.params.krea2Turbo === false ? 'Krea 2 Raw' : 'Krea 2 Turbo'));
   const documentationInfo = {
     columns: plan.columns,
     rows: plan.rows,
@@ -3083,6 +3287,7 @@ async function completeJob(pid) {
             );
           }
           const nextJobId = await queueNextVideoChunk(job);
+          updateSmartChunkJob(job, nextJobId, videoChunkSequence.index + 1, videoChunkSequence.segments.length);
           jobs.delete(pid);
           broadcast('videoChunkStep', {
             jobId: pid,
@@ -3233,6 +3438,7 @@ async function completeJob(pid) {
       info: completedVideoInfo,
     };
     item.videos = (Array.isArray(item.videos) ? item.videos : []).concat([entry]);
+    completeSmartJob(job, [item]);
     saveDb();
     const videoActionLabel = job.videoInfo.processed === 'upscale'
       ? `Video upscale (${{ seedvr2: 'SeedVR2', rtx: 'RTX' }[job.videoInfo.upscaleEngine] || 'RTX'})`
@@ -3245,6 +3451,7 @@ async function completeJob(pid) {
     });
     jobs.delete(pid);
     broadcast('videoDone', { jobId: pid, item, requestId: job.requestId });
+    job.splatResolve?.({ path: storedVideoPath, videoUrl: '/videos/' + fname, itemId: item.id, videoId: entry.id });
     return;
   }
 
@@ -3395,7 +3602,8 @@ async function completeJob(pid) {
         ? smartGenerationName(job.params.prompt, job.params.mode === 'edit' ? 'Untitled edit' : 'Untitled image')
         : undefined,
       mode: job.params.mode,
-      krea2Turbo: job.params.mode === 't2i' ? job.params.krea2Turbo !== false : undefined,
+      imageEngine: job.params.mode === 't2i' ? (job.params.imageEngine || 'krea2') : undefined,
+      krea2Turbo: job.params.mode === 't2i' && job.params.imageEngine !== 'qwen21' ? job.params.krea2Turbo !== false : undefined,
       krea2RawTurboLora: job.params.mode === 't2i' ? job.params.krea2RawTurboLora : undefined,
       imageGuideMode: job.params.mode === 't2i' && job.params.imageName ? job.params.imageGuideMode : undefined,
       depthStrength: job.params.mode === 't2i' && job.params.imageGuideMode === 'depth' ? job.params.depthStrength : undefined,
@@ -3494,6 +3702,7 @@ async function completeJob(pid) {
   for (const it of created) {
     pushHistory({ kind: it.mode === 'edit' ? 'edit' : 'gen', profileId: job.profileId, itemId: it.id, durationMs, label: `${it.mode === 'edit' ? 'Edit' : 'Create'}: ${(it.prompt || '').slice(0, 60)}` });
   }
+  completeSmartJob(job, created);
   if (editSequence && !sequenceFinal) {
     try {
       const next = await queueNextSequentialEdit(job, created[0]);
@@ -3697,9 +3906,375 @@ function configuredExternalLlm() {
   }));
 }
 
+function configuredSmartPlannerLlm() {
+  const provider = configuredExternalLlm();
+  if (provider.provider !== 'local') return provider;
+  const planner = smartPlannerPromptAiConfig(settings);
+  return Object.assign({}, provider, {
+    model: planner.model,
+    type: planner.type,
+    label: planner.override ? 'Local ComfyUI · Smart model' : provider.label,
+  });
+}
+
+const SMART_RUN_LIMIT = 50;
+const SMART_AUDIO_LIMIT = 25 * 1024 * 1024;
+
+function smartRunForProfile(id, profileId) {
+  return db.smartRuns.find((run) => run.id === id && run.profileId === profileId) || null;
+}
+
+function smartStepResultItems(step, profileId) {
+  const ids = new Set(Array.isArray(step?.resultItemIds) ? step.resultItemIds : []);
+  return db.items.filter((item) => ids.has(item.id) && item.profileId === profileId);
+}
+
+function publicSmartRun(run) {
+  if (!run) return null;
+  return {
+    id: run.id,
+    profileId: run.profileId,
+    title: run.plan?.title || 'Smart production',
+    brief: String(run.brief || run.plan?.summary || '').slice(0, 8000),
+    status: run.status,
+    error: run.error || '',
+    plan: run.plan,
+    planHash: run.planHash,
+    references: normalizeSmartReferences(run.references),
+    attentionBackend: normalizeH3AttentionBackend(run.attentionBackend, false),
+    reviewReference: run.reviewReference === true,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    steps: (run.steps || []).map((step) => {
+      const items = smartStepResultItems(step, run.profileId);
+      return {
+        id: step.id,
+        kind: step.kind,
+        sceneIndex: Number.isInteger(step.sceneIndex) ? step.sceneIndex : null,
+        clip: step.clip || null,
+        referenceState: step.referenceState || null,
+        label: step.label,
+        status: step.status,
+        dependsOn: step.dependsOn || [],
+        jobId: step.jobId || null,
+        resultItemIds: step.resultItemIds || [],
+        progress: step.progress || null,
+        error: step.error || '',
+        referenceFeedback: step.referenceFeedback || '',
+        rerollCount: Math.max(0, Number(step.rerollCount) || 0),
+        result: items[0] ? {
+          itemId: items[0].id,
+          thumbnail: `/images/${encodeURIComponent(items[0].file)}`,
+          width: items[0].width,
+          height: items[0].height,
+          videoId: items[0].videos?.at(-1)?.id || null,
+        } : null,
+      };
+    }),
+  };
+}
+
+function broadcastSmartRun(run) {
+  run.updatedAt = Date.now();
+  saveDb();
+  broadcast('smartRunUpdated', { profileId: run.profileId, run: publicSmartRun(run) });
+}
+
+function retainSmartRuns(profileId) {
+  const own = db.smartRuns
+    .filter((run) => run.profileId === profileId)
+    .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0));
+  if (own.length <= SMART_RUN_LIMIT) return;
+  const keep = new Set(own.slice(0, SMART_RUN_LIMIT).map((run) => run.id));
+  db.smartRuns = db.smartRuns.filter((run) => run.profileId !== profileId || keep.has(run.id));
+}
+
+function smartRunFinished(run) {
+  return ['complete', 'failed', 'cancelled'].includes(run?.status);
+}
+
+async function smartReferencesForStep(run, step) {
+  const dependencies = (step.dependsOn || []).map((id) => (run.steps || [])
+    .find((candidate) => candidate.id === id && candidate.kind === 'reference')).filter(Boolean);
+  if (!dependencies.length) throw new Error('The required Smart reference images are unavailable');
+  return Promise.all(dependencies.map(async (dependency, index) => {
+    const item = smartStepResultItems(dependency, run.profileId)[0];
+    if (!item?.file) throw new Error(`${dependency.referenceState?.label || 'A required'} reference image is unavailable`);
+    const buffer = await fsp.readFile(path.join(IMAGES, item.file));
+    const comfyName = await uploadToComfy(buffer, `ks_smart_reference_${run.id}_${item.id}_${index + 1}.png`);
+    return {
+      name: comfyName,
+      label: dependency.referenceState?.referenceTarget || dependency.referenceState?.label || `Reference ${index + 1}`,
+      w: item.width || 1024,
+      h: item.height || 1024,
+    };
+  }));
+}
+
+function currentSmartStepRequest(run, step) {
+  const compiled = compileSmartSteps(run.plan, {
+    attentionBackend: normalizeH3AttentionBackend(run.attentionBackend, false),
+  }, run.references);
+  let current = null;
+  if (step.kind === 'video') {
+    current = compiled.find((candidate) => candidate.kind === 'video'
+      && candidate.sceneIndex === step.sceneIndex);
+  } else if (step.kind === 'reference') {
+    const stateId = step.referenceState?.id;
+    current = compiled.find((candidate) => candidate.kind === 'reference'
+      && (!stateId || candidate.referenceState?.id === stateId));
+  } else {
+    current = compiled.find((candidate) => candidate.kind === step.kind);
+  }
+  return current?.request || step.request;
+}
+
+async function advanceSmartRun(run) {
+  if (!run || smartRunFinished(run) || run.status === 'review') return;
+  if ((run.steps || []).some((step) => ['running', 'queueing'].includes(step.status))) return;
+  const step = (run.steps || []).find((candidate) => candidate.status === 'pending'
+    && (candidate.dependsOn || []).every((id) => run.steps.some((dependency) => dependency.id === id && dependency.status === 'complete')));
+  if (!step) {
+    if ((run.steps || []).every((candidate) => candidate.status === 'complete')) {
+      run.status = 'complete';
+      run.error = '';
+      broadcastSmartRun(run);
+    }
+    return;
+  }
+  const profile = db.profiles.find((candidate) => candidate.id === run.profileId);
+  if (!profile) {
+    run.status = 'failed';
+    run.error = 'The profile for this Smart production no longer exists.';
+    broadcastSmartRun(run);
+    return;
+  }
+  run.status = 'queueing';
+  run.error = '';
+  step.status = 'queueing';
+  step.error = '';
+  broadcastSmartRun(run);
+  try {
+    step.request = currentSmartStepRequest(run, step);
+    const body = JSON.parse(JSON.stringify(step.request.body));
+    if (step.kind === 'reference' && Number(step.rerollCount) > 0) {
+      body.prompt = smartReferenceRerollPrompt(body.prompt, step.referenceFeedback);
+    }
+    if (step.kind === 'video' && step.dependsOn?.length) {
+      const references = await smartReferencesForStep(run, step);
+      body.h3References = { images: references, videos: [], audios: [] };
+    }
+    const queued = await mcpOwnerApi(profile, step.request.route, body);
+    const jobId = String(queued.jobId || '');
+    if (!jobId) throw new Error('Mix Studio did not return a queued job');
+    step.jobId = jobId;
+    step.status = 'running';
+    run.status = 'running';
+    const tracked = jobs.get(jobId);
+    if (tracked) {
+      tracked.smartRunId = run.id;
+      tracked.smartStepId = step.id;
+    }
+    broadcastSmartRun(run);
+  } catch (error) {
+    step.status = 'failed';
+    step.error = String(error.message || error).slice(0, 1000);
+    run.status = 'failed';
+    run.error = step.error;
+    broadcastSmartRun(run);
+  }
+}
+
+const pendingSmartRecoveryIds = new Set(interruptedSmartRunIds);
+let smartRunRecoveryActive = false;
+let smartRunRecoveryTimer = null;
+
+function scheduleSmartRunRecovery(delayMs = 4000) {
+  if (!pendingSmartRecoveryIds.size || smartRunRecoveryTimer) return;
+  smartRunRecoveryTimer = setTimeout(() => {
+    smartRunRecoveryTimer = null;
+    recoverInterruptedSmartRuns().catch((error) => {
+      console.error('[smart] automatic recovery failed:', error.message);
+      scheduleSmartRunRecovery();
+    });
+  }, delayMs);
+  smartRunRecoveryTimer.unref();
+}
+
+async function recoverInterruptedSmartRuns() {
+  if (smartRunRecoveryActive || !pendingSmartRecoveryIds.size) return;
+  smartRunRecoveryActive = true;
+  try {
+    for (const runId of [...pendingSmartRecoveryIds]) {
+      const run = db.smartRuns.find((candidate) => candidate.id === runId);
+      if (!run || run.status !== 'attention') {
+        pendingSmartRecoveryIds.delete(runId);
+        continue;
+      }
+      try {
+        // Confirm ComfyUI is reachable before changing the durable run. Any old
+        // prompt is removed or interrupted first so resubmission cannot create
+        // two visible copies of the same Smart step.
+        await comfyFetch('/queue');
+        for (const jobId of interruptedSmartJobIds(run)) await stopComfyPrompt(jobId);
+        await comfyFetch('/queue');
+        if (!prepareSmartRunResume(run)) {
+          pendingSmartRecoveryIds.delete(runId);
+          continue;
+        }
+        pendingSmartRecoveryIds.delete(runId);
+        broadcastSmartRun(run);
+        await advanceSmartRun(run);
+      } catch (error) {
+        const message = `Waiting for ComfyUI to reconnect so this Smart production can resume automatically: ${String(error.message || error).slice(0, 600)}`;
+        if (run.error !== message) {
+          run.error = message;
+          broadcastSmartRun(run);
+        }
+      }
+    }
+  } finally {
+    smartRunRecoveryActive = false;
+    if (pendingSmartRecoveryIds.size) scheduleSmartRunRecovery();
+  }
+}
+
+function kickStrandedSmartRuns(profileId) {
+  const runs = db.smartRuns.filter((run) => run.profileId === profileId
+    && ['ready', 'running', 'queueing'].includes(run.status));
+  for (const run of runs) {
+    setImmediate(() => advanceSmartRun(run).catch((error) => {
+      run.status = 'failed';
+      run.error = String(error.message || error).slice(0, 1000);
+      broadcastSmartRun(run);
+    }));
+  }
+}
+
+function completeSmartJob(job, items) {
+  if (!job?.smartRunId || !job.smartStepId) return;
+  const run = smartRunForProfile(job.smartRunId, job.profileId);
+  if (!run || run.status === 'cancelled') return;
+  const step = run.steps.find((candidate) => candidate.id === job.smartStepId);
+  if (!step) return;
+  const resultItems = (items || []).filter(Boolean);
+  for (const item of resultItems) {
+    item.smartRunId = run.id;
+    item.smartStepId = step.id;
+  }
+  step.status = 'complete';
+  step.jobId = null;
+  step.progress = null;
+  step.error = '';
+  step.resultItemIds = resultItems.map((item) => item.id);
+  const moreReferencesPending = (run.steps || []).some((candidate) => candidate.kind === 'reference'
+    && ['pending', 'queueing', 'running'].includes(candidate.status));
+  if (step.kind === 'reference' && run.reviewReference && !moreReferencesPending) {
+    run.status = 'review';
+    broadcastSmartRun(run);
+    return;
+  }
+  run.status = 'running';
+  broadcastSmartRun(run);
+  setImmediate(() => advanceSmartRun(run).catch((error) => {
+    run.status = 'failed';
+    run.error = String(error.message || error);
+    broadcastSmartRun(run);
+  }));
+}
+
+function updateSmartChunkJob(job, nextJobId, completedChunk, total) {
+  if (!job?.smartRunId || !job.smartStepId) return;
+  const next = jobs.get(nextJobId);
+  if (next) {
+    next.smartRunId = job.smartRunId;
+    next.smartStepId = job.smartStepId;
+  }
+  const run = smartRunForProfile(job.smartRunId, job.profileId);
+  const step = run?.steps.find((candidate) => candidate.id === job.smartStepId);
+  if (!run || !step || run.status === 'cancelled') return;
+  step.jobId = nextJobId;
+  step.progress = { completed: completedChunk, total };
+  broadcastSmartRun(run);
+}
+
+function failSmartJob(job, message, cancelled = false) {
+  if (!job?.smartRunId || !job.smartStepId) return;
+  const run = smartRunForProfile(job.smartRunId, job.profileId);
+  if (!run || run.status === 'cancelled') return;
+  const step = run.steps.find((candidate) => candidate.id === job.smartStepId);
+  if (!step) return;
+  step.jobId = null;
+  step.status = cancelled ? 'cancelled' : 'failed';
+  step.error = String(message || (cancelled ? 'Cancelled' : 'Generation failed')).slice(0, 1000);
+  run.status = cancelled ? 'cancelled' : 'failed';
+  run.error = step.error;
+  broadcastSmartRun(run);
+}
+
+async function transcribeSmartAudio(buffer, contentType) {
+  const apiKey = String(settings.externalLlmOpenAiApiKey || process.env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) {
+    const error = new Error('Voice transcription needs an OpenAI API key in Preferences. Text planning still works with any configured provider.');
+    error.code = 'smart_transcription_unavailable';
+    throw error;
+  }
+  const mime = /^audio\/[a-z0-9.+-]+$/i.test(contentType) ? contentType.toLowerCase() : 'audio/webm';
+  const extension = ({
+    'audio/mp4': 'm4a', 'audio/m4a': 'm4a', 'audio/x-m4a': 'm4a',
+    'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
+    'audio/vnd.wave': 'wav', 'audio/flac': 'flac', 'audio/webm': 'webm', 'audio/aac': 'aac',
+  })[mime] || 'webm';
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: mime }), `smart-brief.${extension}`);
+  form.append('model', 'gpt-transcribe');
+  form.append('response_format', 'json');
+  let response;
+  try {
+    response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form,
+      signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(180_000) : undefined,
+    });
+  } catch (error) {
+    throw new Error(`Voice transcription failed: ${error.message || error}`);
+  }
+  const raw = await response.text().catch(() => '');
+  let payload;
+  try { payload = JSON.parse(raw || '{}'); } catch { payload = {}; }
+  if (!response.ok) {
+    const detail = String(payload?.error?.message || payload?.error || raw || `HTTP ${response.status}`).slice(0, 600);
+    throw new Error(`Voice transcription failed: ${detail}`);
+  }
+  const text = String(payload.text || '').trim();
+  if (!text) throw new Error('Voice transcription returned no text');
+  return text.slice(0, 8000);
+}
+
 function externalPromptStatus(action, provider) {
   const verb = action === 'revise' ? 'Revising' : 'Enhancing';
   return `${verb} prompt with ${provider.label}...`;
+}
+
+function startExternalPromptPreflight(provider, options = {}) {
+  if (options.action !== 'enhance') return null;
+  const jobId = `prompt-preflight-${crypto.randomUUID()}`;
+  const imageName = orderedPromptImageNames(options)[0] || '';
+  const entry = {
+    jobId,
+    kind: 'enhance',
+    profileId: options.profileId,
+    label: String(options.statusText || externalPromptStatus(options.action, provider)).replace(/\.{3}$/, ''),
+    thumbnail: imageName ? '/api/input?name=' + encodeURIComponent(imageName) : null,
+    queuedAt: Date.now(),
+  };
+  externalPromptPreflights.set(jobId, entry);
+  broadcast('queueChanged', { profileId: options.profileId });
+  return entry;
+}
+
+function finishExternalPromptPreflight(entry) {
+  if (!entry || !externalPromptPreflights.delete(entry.jobId)) return;
+  broadcast('queueChanged', { profileId: entry.profileId });
 }
 
 async function externalPromptImage(imageName, profileId) {
@@ -3781,31 +4356,47 @@ function h3PromptPartsWithVisionOrder(parts, options = {}, layout = 'attachments
   return Object.assign({}, parts, { instruction: `${parts.instruction}\n\n${note}` });
 }
 
-async function runConfiguredExternalPrompt(parts, maxTokens, options = {}) {
+async function runConfiguredPromptAi(parts, maxTokens, options = {}) {
   const provider = configuredExternalLlm();
   const imageNames = orderedPromptImageNames(options);
   parts = h3PromptPartsWithVisionOrder(parts, options, 'attachments');
-  const images = await Promise.all(imageNames.map((name) => externalPromptImage(name, options.profileId)));
+  if (provider.provider === 'local') {
+    return queueTextEnhancement(
+      parts,
+      Math.floor(Math.random() * 2 ** 31),
+      options.statusText === false ? '' : (options.statusText || externalPromptStatus(options.action, provider)),
+      maxTokens,
+      Object.assign({}, options, { imageNames, profileId: options.profileId }),
+    );
+  }
+  const preflight = startExternalPromptPreflight(provider, options);
+  const statusText = options.statusText || externalPromptStatus(options.action, provider);
   if (options.statusText !== false) {
     broadcast('status', {
-      jobId: 'external-prompt',
+      jobId: preflight ? 'pre' : 'external-prompt',
       profileId: options.profileId,
-      text: options.statusText || externalPromptStatus(options.action, provider),
+      scope: preflight ? 'generation-preflight' : undefined,
+      text: statusText,
     });
   }
-  return externalLlmRequest({
-    provider: provider.provider,
-    model: provider.model,
-    apiKey: provider.apiKey,
-    baseUrl: provider.baseUrl,
-    instruction: parts.instruction,
-    userInput: parts.userInput,
-    images,
-    maxTokens,
-  });
+  try {
+    const images = await Promise.all(imageNames.map((name) => externalPromptImage(name, options.profileId)));
+    return await externalLlmRequest({
+      provider: provider.provider,
+      model: provider.model,
+      apiKey: provider.apiKey,
+      baseUrl: provider.baseUrl,
+      instruction: parts.instruction,
+      userInput: parts.userInput,
+      images,
+      maxTokens,
+    });
+  } finally {
+    finishExternalPromptPreflight(preflight);
+  }
 }
 
-function shouldUseExternalPrompt(domain, action) {
+function shouldUseConfiguredPromptAi(domain, action) {
   return externalLlmEnabled(settings, domain, action);
 }
 
@@ -3825,12 +4416,12 @@ function textGenInputs(seed, maxLength) {
   };
 }
 
-function localPromptAiLoaderInputs() {
-  const promptAi = localPromptAiConfig(settings);
+function localPromptAiLoaderInputs(override = null) {
+  const promptAi = override?.model ? override : localPromptAiConfig(settings);
   return { clip_name: promptAi.model, type: promptAi.type, device: 'xpu:0' };
 }
 
-function armPromptJobDeadline(pid, reject, label) {
+function armPromptJobDeadline(pid, reject, label, options = {}) {
   let stopped = false;
   let timer = null;
   const check = () => {
@@ -3840,9 +4431,20 @@ function armPromptJobDeadline(pid, reject, label) {
     // Prompt tools share ComfyUI with long video generations. Waiting in the
     // queue is not a failed prompt; only apply the short deadline once the
     // text graph actually starts executing.
-    const base = job.startedAt || job.enqueuedAt || Date.now();
-    const limit = job.startedAt ? 5 * 60_000 : 20 * 60_000;
-    const remaining = limit - (Date.now() - base);
+    const now = Date.now();
+    const running = Number(job.startedAt) > 0;
+    const queueTimeoutMs = Math.max(60_000, Number(options.queueTimeoutMs) || 20 * 60_000);
+    const runningTimeoutMs = Math.max(60_000, Number(options.runningTimeoutMs) || 5 * 60_000);
+    const maxRunningMs = Math.max(runningTimeoutMs, Number(options.maxRunningMs) || runningTimeoutMs);
+    const activityAt = Math.max(
+      Number(job.startedAt) || 0,
+      Number(job.lastActivityAt) || 0,
+      Number(job.enqueuedAt) || now,
+    );
+    const inactivityRemaining = (running ? runningTimeoutMs : queueTimeoutMs)
+      - (now - (running ? activityAt : (job.enqueuedAt || now)));
+    const hardRemaining = running ? maxRunningMs - (now - job.startedAt) : inactivityRemaining;
+    const remaining = Math.min(inactivityRemaining, hardRemaining);
     if (remaining <= 0) {
       stopped = true;
       const timedOutJob = jobs.get(pid);
@@ -3851,7 +4453,9 @@ function armPromptJobDeadline(pid, reject, label) {
         timedOutJob.cancelMessage = `${label} timed out`;
       }
       jobs.delete(pid);
-      const error = new Error(`${label} timed out`);
+      const error = new Error(running && inactivityRemaining <= 0
+        ? `${label} stopped reporting progress and timed out`
+        : `${label} timed out`);
       error.code = 'prompt_timeout';
       reject(error);
       stopComfyPrompt(pid).catch(() => { /* best-effort orphan cleanup */ });
@@ -3954,12 +4558,12 @@ async function appendPromptVisionImages(graph, options = {}) {
 /** Vision pass: Qwen3-VL looks at the image and suggests a motion prompt. */
 function suggestMotionPrompt(comfyImageName, seed, profileId, userPrompt = '', options = {}) {
   const imageNames = orderedPromptImageNames(Object.assign({ imageName: comfyImageName }, options));
-  if (shouldUseExternalPrompt('video', 'enhance')) {
+  if (shouldUseConfiguredPromptAi('video', 'enhance')) {
     const parts = appendH3ValidationFeedback(
       motionPromptEnhanceParts(userPrompt, options),
       String(options.engine || '').toLowerCase() === 'h3' ? options.validationFeedback : '',
     );
-    return runConfiguredExternalPrompt(parts, String(options.engine || '').toLowerCase() === 'h3' ? h3PromptMaxTokens(options.mode) : 384, Object.assign({}, options, {
+    return runConfiguredPromptAi(parts, String(options.engine || '').toLowerCase() === 'h3' ? h3PromptMaxTokens(options.mode) : 384, Object.assign({}, options, {
       action: 'enhance',
       imageName: comfyImageName,
       imageNames,
@@ -4079,11 +4683,13 @@ function suggestImagePrompt(comfyImageName, seed, profileId) {
 }
 
 function queueTextEnhancement(parts, seed, statusText, maxTokens = 512, options = {}) {
+  const releaseManaged = comfyLifecycle.reserve();
   return new Promise((resolve, reject) => {
     (async () => {
+      await comfyLifecycle.ensure();
       const graph = {};
       parts = h3PromptPartsWithVisionOrder(parts, options, 'stitched');
-      graph.clip = { class_type: 'CLIPLoader', inputs: localPromptAiLoaderInputs() };
+      graph.clip = { class_type: 'CLIPLoader', inputs: localPromptAiLoaderInputs(options.clipConfig) };
       const promptImage = await appendPromptVisionImages(graph, options);
       graph.concat = {
         class_type: 'StringConcatenate',
@@ -4097,6 +4703,11 @@ function queueTextEnhancement(parts, seed, statusText, maxTokens = 512, options 
       };
       graph.show = { class_type: 'PreviewAny', inputs: { source: ['refine', 0] } };
       await filterInputs(graph);
+      if (promptImage && options.requireVision === true && !graph.refine.inputs.image) {
+        const error = new Error('The selected local Prompt AI workflow cannot inspect images. Choose a vision-capable Qwen3-VL model or switch Prompt AI to External.');
+        error.code = 'local_prompt_ai_vision_required';
+        throw error;
+      }
       const pid = await queuePrompt(graph, { profileId: options.profileId, front: true });
       let clearDeadline = () => {};
       trackJob(pid, {
@@ -4114,7 +4725,7 @@ function queueTextEnhancement(parts, seed, statusText, maxTokens = 512, options 
           reject(e);
         },
       });
-      clearDeadline = armPromptJobDeadline(pid, reject, 'Prompt enhance');
+      clearDeadline = armPromptJobDeadline(pid, reject, 'Prompt enhance', options.promptDeadline);
       if (typeof options.onPromptJobQueued === 'function') options.onPromptJobQueued(pid);
       ensureWs();
       if (statusText && options.broadcastStatus !== false) {
@@ -4126,13 +4737,183 @@ function queueTextEnhancement(parts, seed, statusText, maxTokens = 512, options 
         });
       }
     })().catch(reject);
+  }).finally(releaseManaged);
+}
+
+async function requestSmartPlan(provider, prompt, references, profileId, onProgress = () => {}) {
+  if (provider.provider === 'local') {
+    const schemaInstruction = [
+      prompt.localInstruction || prompt.instruction,
+      'Produce the entire production plan in one response. Cover the exact requested runtime with scene-driven 5–10 second clips rather than uniform ten-second blocks, and give every scene its own renderable action, shot, camera, spatial composition, continuity, audio, cut strategy, and complete reference-state list. Develop the narrative or purposeful action progression before spending words on reference continuity.',
+      'Return only one valid JSON object with the exact property names and value types in this schema. Do not use Markdown, XML, commentary, ellipses, placeholders, or a code fence.',
+      JSON.stringify(SMART_LOCAL_PLAN_SCHEMA),
+    ].join('\n\n');
+    const queueLocalPlan = (userInput, pass) => {
+      onProgress(pass, pass === 'repair'
+        ? 'Completing missing shots in the local draft…'
+        : 'The local model is writing the production plan…');
+      return queueTextEnhancement({
+        instruction: schemaInstruction,
+        userInput,
+      }, Math.floor(Math.random() * 2 ** 31), 'Building Smart plan with the local model...', 8192, {
+        profileId,
+        clipConfig: { model: provider.model, type: provider.type },
+        imageNames: references.map((reference) => reference.name),
+        requireVision: references.length > 0,
+        promptDeadline: {
+          queueTimeoutMs: 45 * 60_000,
+          runningTimeoutMs: 30 * 60_000,
+          maxRunningMs: 90 * 60_000,
+        },
+        broadcastStatus: false,
+        onPromptJobQueued: (promptId) => onProgress(pass, pass === 'repair'
+          ? 'The completion pass is queued in ComfyUI…'
+          : 'The production plan is queued in ComfyUI…', promptId),
+        onPromptJobSettled: () => onProgress(pass, pass === 'repair'
+          ? 'Checking the completed production plan…'
+          : 'Checking the first production draft…', ''),
+      });
+    };
+    const raw = await queueLocalPlan(prompt.userInput, 'draft');
+    onProgress('audit', 'Checking shot coverage, timing, and continuity…');
+    let plan = null;
+    let audit;
+    try {
+      plan = parseStructuredText(raw, provider.label);
+      audit = smartPlanAudit(plan);
+    } catch (error) {
+      audit = {
+        complete: false,
+        issues: [`The first response was not valid complete JSON: ${String(error.message || error).slice(0, 240)}`],
+      };
+    }
+    if (audit.complete) return plan;
+    console.info('[smart-plan]', JSON.stringify({
+      provider: 'local', pass: 'repair', issueCount: audit.issues.length,
+      issues: audit.issues.slice(0, 8),
+    }));
+    const issueLines = audit.issues.slice(0, 16).map((issue) => `- ${issue}`).join('\n');
+    const repairedRaw = await queueLocalPlan([
+      prompt.userInput,
+      '<incomplete_draft>',
+      String(raw || '').slice(0, 30000),
+      '</incomplete_draft>',
+      '<required_corrections>',
+      issueLines,
+      '</required_corrections>',
+      'Rewrite the incomplete draft as one complete production plan. Preserve the creator brief as the binding instruction, replace repeated or missing beats with distinct causal or purposeful actions, cover the exact full runtime, and return the entire JSON object rather than a patch or explanation. Keep subject.description, referenceStates, and imagePrompt compact; spend the output budget on the story spine and scene progression.',
+    ].join('\n'), 'repair');
+    const repairedPlan = parseStructuredText(repairedRaw, provider.label);
+    const repairedAudit = smartPlanAudit(repairedPlan);
+    if (!repairedAudit.complete) {
+      console.warn('[smart-plan]', JSON.stringify({
+        provider: 'local', pass: 'repair-incomplete', issueCount: repairedAudit.issues.length,
+        issues: repairedAudit.issues.slice(0, 8),
+      }));
+    }
+    return repairedPlan;
+  }
+  onProgress('draft', `Waiting for ${provider.label} to return the production plan…`);
+  const images = await Promise.all(references.map((reference) => externalPromptImage(reference.name, profileId)));
+  return externalLlmStructuredRequest({
+    provider: provider.provider,
+    model: provider.model,
+    apiKey: provider.apiKey,
+    baseUrl: provider.baseUrl,
+    instruction: prompt.instruction,
+    userInput: prompt.userInput,
+    images,
+    schema: SMART_PLAN_SCHEMA,
+    schemaName: 'mix_studio_smart_plan',
+    maxTokens: 8192,
+    timeoutMs: ['ollama', 'lmstudio'].includes(provider.provider) ? 45 * 60_000 : 10 * 60_000,
   });
+}
+
+const smartPlanRequests = new Map();
+const SMART_PLAN_REQUEST_TTL_MS = 30 * 60_000;
+const SMART_PLAN_ACTIVE_TTL_MS = 2 * 60 * 60_000;
+
+function smartPlanRequestId(value) {
+  const id = String(value || '').trim();
+  return /^[A-Za-z0-9_-]{8,96}$/.test(id) ? id : '';
+}
+
+function pruneSmartPlanRequests(now = Date.now()) {
+  for (const [id, request] of smartPlanRequests) {
+    const settled = request.status === 'complete' || request.status === 'failed';
+    const age = now - Number(request.updatedAt || request.createdAt || now);
+    if (!settled && request.promptId && jobs.has(request.promptId)) continue;
+    if ((settled && age > SMART_PLAN_REQUEST_TTL_MS) || (!settled && age > SMART_PLAN_ACTIVE_TTL_MS)) {
+      smartPlanRequests.delete(id);
+    }
+  }
+}
+
+function smartPlanRequestStatus(request) {
+  let message = request.message;
+  if (request.promptId) {
+    const promptJob = jobs.get(request.promptId);
+    if (promptJob && !promptJob.startedAt) {
+      message = request.phase === 'repair'
+        ? 'The completion pass is waiting for ComfyUI…'
+        : 'The production plan is waiting for ComfyUI…';
+    }
+  }
+  return {
+    requestId: request.id,
+    status: request.status,
+    phase: request.phase,
+    message,
+    createdAt: request.createdAt,
+    updatedAt: request.updatedAt,
+    provider: request.provider,
+    result: request.status === 'complete' ? request.result : undefined,
+    error: request.status === 'failed' ? request.error : undefined,
+    code: request.status === 'failed' ? request.code : undefined,
+  };
+}
+
+async function executeSmartPlanRequest(request, provider, prompt, references) {
+  const progress = (phase, message, promptId = request.promptId) => {
+    request.status = 'planning';
+    request.phase = phase;
+    request.message = message;
+    request.promptId = promptId;
+    request.updatedAt = Date.now();
+  };
+  try {
+    progress('starting', 'Preparing the production planner…', '');
+    const rawPlan = await requestSmartPlan(provider, prompt, references, request.profileId, progress);
+    progress('finalizing', 'Finalizing reference routing and clip timing…', '');
+    const plan = reconcileSmartPlanReferences(normalizeSmartPlan(rawPlan, request.brief), references);
+    request.result = {
+      plan,
+      references,
+      planHash: smartPlanHash(plan, references),
+      provider: request.provider,
+    };
+    request.status = 'complete';
+    request.phase = 'complete';
+    request.message = 'Production plan ready.';
+    request.promptId = '';
+    request.updatedAt = Date.now();
+  } catch (error) {
+    const needsConfig = /API key|Choose an external prompt provider/i.test(String(error.message || ''));
+    request.status = 'failed';
+    request.phase = 'failed';
+    request.message = '';
+    request.promptId = '';
+    request.error = String(error.message || error);
+    request.code = needsConfig ? 'smart_provider_unavailable' : (error.code || 'smart_plan_failed');
+    request.updatedAt = Date.now();
+  }
 }
 
 function enhancePrompt(p, profileId) {
   const parts = promptEnhanceParts(settings.systemPrompt, p.prompt);
-  if (shouldUseExternalPrompt('image', 'enhance')) {
-    return runConfiguredExternalPrompt(parts, 512, { action: 'enhance', profileId });
+  if (shouldUseConfiguredPromptAi('image', 'enhance')) {
+    return runConfiguredPromptAi(parts, 512, { action: 'enhance', profileId });
   }
   return queueTextEnhancement(
     parts,
@@ -4146,8 +4927,8 @@ function enhancePrompt(p, profileId) {
 function reviseImagePrompt(currentPrompt, changeRequest, seed, options = {}) {
   const parts = imagePromptRevisionParts(currentPrompt, changeRequest, { hasImage: !!options.imageName });
   parts.userInput += ENHANCE_TAIL;
-  if (shouldUseExternalPrompt('image', 'revise')) {
-    return runConfiguredExternalPrompt(parts, 384, Object.assign({ action: 'revise' }, options));
+  if (shouldUseConfiguredPromptAi('image', 'revise')) {
+    return runConfiguredPromptAi(parts, 384, Object.assign({ action: 'revise' }, options));
   }
   return queueTextEnhancement(
     parts,
@@ -4171,8 +4952,8 @@ function reviseVideoPrompt(currentPrompt, changeRequest, seed, options = {}) {
   }), options.engine === 'h3' ? options.validationFeedback : '');
   if (options.engine === 'h3') parts = h3PromptPartsWithAllowedReferences(parts, options);
   parts.userInput += ENHANCE_TAIL;
-  if (shouldUseExternalPrompt('video', 'revise')) {
-    return runConfiguredExternalPrompt(parts, options.engine === 'h3' ? h3PromptMaxTokens(options.mode) : 384, Object.assign({ action: 'revise' }, options));
+  if (shouldUseConfiguredPromptAi('video', 'revise')) {
+    return runConfiguredPromptAi(parts, options.engine === 'h3' ? h3PromptMaxTokens(options.mode) : 384, Object.assign({ action: 'revise' }, options));
   }
   return queueTextEnhancement(
     parts,
@@ -4195,8 +4976,8 @@ function enhanceH3Prompt(userPrompt, seed, options = {}) {
     hasEndImage: h3Options.hasLastFrame === true,
   }), h3Options.validationFeedback);
   parts = h3PromptPartsWithAllowedReferences(parts, h3Options);
-  if (shouldUseExternalPrompt('video', 'enhance')) {
-    return runConfiguredExternalPrompt(parts, h3PromptMaxTokens(h3Options.mode), Object.assign({ action: 'enhance' }, h3Options));
+  if (shouldUseConfiguredPromptAi('video', 'enhance')) {
+    return runConfiguredPromptAi(parts, h3PromptMaxTokens(h3Options.mode), Object.assign({ action: 'enhance' }, h3Options));
   }
   return queueTextEnhancement(
     parts,
@@ -4245,8 +5026,8 @@ function enhanceRegionPrompt(description, globalPrompt, seed, options = {}) {
   const parts = regionPromptEnhanceParts(settings.systemPrompt, globalPrompt, description, {
     hasReference: !!options.imageName,
   });
-  if (shouldUseExternalPrompt('image', 'enhance')) {
-    return runConfiguredExternalPrompt(parts, 384, Object.assign({ action: 'enhance' }, options));
+  if (shouldUseConfiguredPromptAi('image', 'enhance')) {
+    return runConfiguredPromptAi(parts, 384, Object.assign({ action: 'enhance' }, options));
   }
   return queueTextEnhancement(
     parts,
@@ -4261,8 +5042,8 @@ function enhanceRegionPrompt(description, globalPrompt, seed, options = {}) {
 function wanEnhance(comfyImageName, userPrompt, seed, profileId) {
   const instruction = "Look at the provided image. Rewrite the user's motion idea into one vivid video-generation prompt paragraph (under 90 words) for an image-to-video model: describe subject actions, secondary motion, camera behavior and atmosphere, staying faithful to what is actually in the image and to the user's intent. Use present-progressive verbs.";
   const promptInput = `User's motion idea: ${userPrompt}`;
-  if (shouldUseExternalPrompt('video', 'enhance')) {
-    return runConfiguredExternalPrompt({ instruction, userInput: promptInput + ENHANCE_TAIL }, 384, {
+  if (shouldUseConfiguredPromptAi('video', 'enhance')) {
+    return runConfiguredPromptAi({ instruction, userInput: promptInput + ENHANCE_TAIL }, 384, {
       action: 'enhance', imageName: comfyImageName, profileId,
     });
   }
@@ -4990,6 +5771,7 @@ async function buildEdit(p, refNames) {
 }
 
 async function buildGenerationGraph(p, refNames) {
+  if ((p.mode === 'edit' ? p.editEngine : p.imageEngine) === 'qwen21') return filterInputs(buildQwen21Graph(p, settings, refNames));
   if (p.mode === 'edit') {
     if (p.editOutpaint && p.editEngine === 'qwen') return buildEditQwenOutpaint(p, refNames);
     if (p.editOutpaint && (p.editEngine === 'klein4' || p.editEngine === 'klein9')) return buildEditKleinOutpaint(p, refNames);
@@ -6797,6 +7579,7 @@ const REQUIRED_CLASSES = {
     'ReferenceLatent', 'GetImageSize', 'EmptyFlux2LatentImage', 'Flux2Scheduler', 'CFGGuider',
     'RandomNoise', 'KSamplerSelect', 'SamplerCustomAdvanced', 'VAEDecode', 'SaveImage',
     'ImageToMask', 'GrowMask', 'SetLatentNoiseMask', 'ImageCompositeMasked'],
+  qwen21: QWEN21_CLASSES,
   qwenedit: ['UNETLoader', 'CLIPLoader', 'VAELoader', 'LoraLoaderModelOnly', 'ModelSamplingAuraFlow',
     'CFGNorm', 'FluxKontextImageScale', 'TextEncodeQwenImageEditPlus', 'FluxKontextMultiReferenceLatentMethod',
     'VAEEncode', 'KSampler', 'VAEDecode', 'SaveImage', 'ImageToMask', 'GrowMask',
@@ -6838,7 +7621,8 @@ const REQUIRED_CLASSES = {
   h3turbor2v: ['LoraLoaderModelOnly', 'MiniMaxH3SigmaShift', 'MiniMaxH3TurboSampler'],
   h3context: ['MiniMaxH3MotionContext', 'MiniMaxH3MotionContextTrim',
     'MiniMaxH3MotionContextSaveLatent', 'MiniMaxH3MotionContextLoadLatent'],
-  h3sage: [], // SageAttention removed: incompatible with Intel Arc XPU
+  h3sage: ['PathchSageAttentionKJ'],
+  h3sla: ['H3SLAAttention'],
   ltxdirector: ['LTXDirector', 'LTXDirectorGuide', 'LTXDirectorCropGuides'],
   ltxcamera: ['LTXICLoRALoaderModelOnly', 'LTXAddVideoICLoRAGuide', 'LTXVImgToVideoConditionOnly',
     'VHS_LoadVideo', 'ImageBatch'],
@@ -6867,7 +7651,7 @@ const REQUIRED_CLASSES = {
 const KREA2_DEPENDENCY_COMPONENTS = new Set([
   'image', 'krea2raw', 'regional', 'krea2ref', 'krea2remix', 'krea2outpaint', 'krea2depth', 'krea2style',
 ]);
-const H3_DEPENDENCY_COMPONENTS = new Set(['h3', 'h3r2v', 'h3turbo', 'h3turbor2v', 'h3context', 'h3sage', 'h3dyntime']);
+const H3_DEPENDENCY_COMPONENTS = new Set(['h3', 'h3r2v', 'h3turbo', 'h3turbor2v', 'h3context', 'h3sage', 'h3sla', 'h3dyntime']);
 
 function dependencyComponentInfo(id, fit = null) {
   const component = DEPENDENCY_COMPONENTS[id] || {};
@@ -6886,7 +7670,7 @@ function dependencyComponentInfo(id, fit = null) {
   };
 }
 
-function setupDependencyComponentInfo(id, fit, krea2Core, h3Core, ltx25Core = null, wanAnimate2Core = null, sageAttention = null) {
+function setupDependencyComponentInfo(id, fit, krea2Core, h3Core, ltx25Core = null, wanAnimate2Core = null, sageAttention = null, slaAttention = null, qwen21Core = null) {
   const component = dependencyComponentInfo(id, fit);
   if (fit?.blocked) {
     component.installable = false;
@@ -6908,6 +7692,9 @@ function setupDependencyComponentInfo(id, fit, krea2Core, h3Core, ltx25Core = nu
     component.blockedBy = 'comfy-core';
     component.installReason = ltx25CompatibilityError(ltx25Core);
   }
+  if (id === 'qwen21' && qwen21Core && qwen21Core.supported !== true) {
+    component.installable = false; component.blockedBy = 'comfy-core'; component.installReason = qwen21Core.reason;
+  }
   if (id === 'wananimate2' && wanAnimate2Core && wanAnimate2Core.supported !== true) {
     component.installable = false;
     component.blockedBy = 'comfy-core';
@@ -6917,6 +7704,11 @@ function setupDependencyComponentInfo(id, fit, krea2Core, h3Core, ltx25Core = nu
     component.installable = false;
     component.blockedBy = 'sage-runtime';
     component.installReason = sageAttention.reason || 'SageAttention cannot be installed automatically in this ComfyUI Python environment.';
+  }
+  if (id === 'h3sla' && slaAttention && slaAttention.ready !== true && slaAttention.installable !== true) {
+    component.installable = false;
+    component.blockedBy = 'sla-runtime';
+    component.installReason = slaAttention.reason || 'H3 SLA cannot be installed automatically in this ComfyUI Python environment.';
   }
   return component;
 }
@@ -7038,6 +7830,18 @@ async function setupStatusPayload(forceCompatibility = false) {
   if (sageRuntime.ready === true && !sageAttention.nodeReady) {
     sageAttention.reason = 'ComfyUI-KJNodes is needed for the H3 SageAttention graph patch.';
   }
+  const slaRuntime = await probeH3SlaAttention(RUNTIME, {
+    status: detected,
+    force: forceCompatibility,
+  });
+  const slaAttention = Object.assign({}, slaRuntime, {
+    runtimeReady: slaRuntime.ready === true,
+    nodeReady: !!info?.H3SLAAttention,
+    ready: slaRuntime.ready === true && !!info?.H3SLAAttention,
+  });
+  if (slaRuntime.ready === true && !slaAttention.nodeReady) {
+    slaAttention.reason = 'The pinned H3 SLA custom node is not loaded in ComfyUI.';
+  }
   const detectedModelsPath = await connectedModelsPath(detected.basePath || RUNTIME.comfy.path);
   return {
     appReady: true,
@@ -7047,8 +7851,8 @@ async function setupStatusPayload(forceCompatibility = false) {
     quickFit: combinedHardwareFit(quickSetup.components, guidance),
     hardware: hardwareProfile,
     capabilities: { video: configuredVideoEngineCapabilities(hardwareProfile, settings) },
-    modelRecommendations: { krea2: krea2Recommendation },
-    modelVariants: { krea2: settings.krea2ModelVariant },
+    modelRecommendations: { krea2: krea2Recommendation, qwen21: recommendedQwen21Variant(hardwareProfile) },
+    modelVariants: { krea2: settings.krea2ModelVariant, qwen21: settings.qwen21ModelVariant },
     vramProfile: {
       configured: settings.vramProfile,
       recommended: vramRecommendation,
@@ -7067,16 +7871,21 @@ async function setupStatusPayload(forceCompatibility = false) {
       ltx25Core,
       wanAnimate2Core,
       sageAttention,
+      slaAttention,
+      qwen21Compatibility(info),
     )),
     comfy: {
       connected,
       connectionError,
+      lifecycle: comfyLifecycle.status(),
       version: compatibility.version,
+      qwen21: qwen21Compatibility(info),
       krea2: krea2Core,
       minimaxH3: h3Core,
       ltx25: ltx25Core,
       wanAnimate2: wanAnimate2Core,
       sageAttention,
+      slaAttention,
       nativeInt8: compatibility,
       url: settings.comfyUrl,
       configuredPath: RUNTIME.comfy.path || '',
@@ -7093,7 +7902,68 @@ async function setupStatusPayload(forceCompatibility = false) {
   };
 }
 
+async function generateSplatOrbit({ image, profileId, quality, signal, onSubmitted, onStage }) {
+  signal.throwIfAborted();
+  await comfyLifecycle.ensure();
+  const buffer = await fsp.readFile(image);
+  const dimensions = pngDims(buffer);
+  if (!dimensions) throw new Error('Could not read the source photo.');
+  const input = await uploadToComfy(buffer, `ks_splat_${uid()}.png`);
+  const seed = crypto.randomInt(0, 2147483647);
+  const frames = h3FramesForSeconds(ORBIT_SECONDS);
+  const opts = orbitOptions({ imageName: input, width: dimensions.w, height: dimensions.h, quality, seed, frames });
+  const { W, H } = opts;
+  const graph = await buildSplatOrbitGraph(opts, settings, { buildMiniMaxH3Graph, nodeFromOrdered, filterInputs, rtxVideoSuperResolutionNode, rifeSmooth });
+  signal.throwIfAborted();
+  const pid = await queuePrompt(graph, { profileId });
+  return new Promise((resolve, reject) => {
+    const abort = async () => {
+      try {
+        const queue = await (await comfyFetch('/queue')).json();
+        if ((queue.queue_running || []).some((row) => row[1] === pid)) await comfyFetch('/interrupt', { method: 'POST' });
+        else await comfyFetch('/queue', { method: 'POST', body: JSON.stringify({ delete: [pid] }), headers: { 'Content-Type': 'application/json' } });
+      } catch { /* A disconnected backend will be reconciled by normal job tracking. */ }
+      failJob(pid, 'Splat generation cancelled.');
+    };
+    const finish = (callback, value) => { signal.removeEventListener('abort', abort); callback(value); };
+    trackJob(pid, { kind: 'video', profileId, createItem: true, graph,
+      videoInfo: { engine: 'h3', motionPrompt: ORBIT_PROMPT, width: W, height: H, frames: (frames - 1) * opts.smooth + 1, sourceFrames: frames, fps: H3_FPS * opts.smooth, smooth: opts.smooth, exactFrameCount: true, seconds: ((frames - 1) * opts.smooth + 1) / (H3_FPS * opts.smooth), seed, steps: 20, h3Mode: 'frames', imageName: input, endImageName: input, endFrame: true, t2v: false, splatOrbit: true },
+      splatStage: onStage,
+      splatResolve: (value) => finish(resolve, { ...value, frames: (frames - 1) * opts.smooth + 1, fps: H3_FPS * opts.smooth, interpolation: 'RIFE 2×' }), splatReject: (error) => finish(reject, error),
+    });
+    ensureWs();
+    signal.addEventListener('abort', abort, { once: true });
+    onSubmitted(pid);
+    if (signal.aborted) void abort();
+  });
+}
+
+const splatService = createSplatService({
+  dataDir: DATA,
+  generateOrbit: generateSplatOrbit,
+  releaseGpu: async () => {
+    await assertDesktopIsIdle();
+    try { await comfyFetch('/free', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unload_models: true, free_memory: true }) }); } catch { /* ComfyUI may already be stopped. */ }
+  },
+  resolveFfmpeg: () => resolveFfmpegExecutable(RUNTIME),
+  assertIdle: assertDesktopIsIdle,
+  visibleSourceIds: (req) => new Set(galleryView(db, isPrivateUnlocked(req)).items.filter((item) => item.profileId === req.profile.id).map((item) => item.id)),
+  getSource: (req, body) => {
+    const item = galleryView(db, isPrivateUnlocked(req)).items.find((entry) => entry.id === body.itemId && entry.profileId === req.profile.id);
+    const video = item?.videos?.find((entry) => entry.id === body.videoId);
+    const media = video && safeMediaPath(VIDEOS, video.file);
+    return media ? { path: media.file, itemId: item.id, videoId: video.id, videoUrl: '/videos/' + video.file, title: String(item.prompt || 'Orbit splat').slice(0, 100) } : null;
+  },
+  isOwner: (req) => req.profile?.id === db.profiles[0]?.id,
+  readBody, readJsonBody, json, serveFile,
+});
+
 async function handleApi(req, res, url) {
+  try { return await handleApiRequest(req, res, url); }
+  finally { req.releaseComfyLifecycle?.(); }
+}
+
+async function handleApiRequest(req, res, url) {
   const route = url.pathname;
 
   // P0-1: request ID propagation. Accept a caller-supplied Correlation-Id so
@@ -7196,6 +8066,7 @@ async function handleApi(req, res, url) {
   // Profile management: you can manage yourself; the first profile (owner)
   // can manage everyone.
   const isAdmin = () => profile && db.profiles[0] && profile.id === db.profiles[0].id;
+
   const canManage = (target) => profile && target && (profile.id === target.id || isAdmin());
   const profAvatar = route.match(/^\/api\/profiles\/([\w]+)\/avatar$/);
   if (profAvatar && req.method === 'POST') {
@@ -7270,6 +8141,7 @@ async function handleApi(req, res, url) {
     db.history = db.history.filter((h) => h.profileId !== target.id);
     db.loraPresets = db.loraPresets.filter((p) => p.profileId !== target.id);
     db.userPreferences = db.userPreferences.filter((p) => p.profileId !== target.id);
+    db.smartRuns = db.smartRuns.filter((run) => run.profileId !== target.id);
     for (const asset of db.uploadedAssets.filter((entry) => entry.profileId === target.id && !entry.deletedAt)) {
       const durable = inputAssetPath(INPUTS, asset.name);
       await fsp.rename(durable, path.join(TRASH, path.basename(durable))).catch(() => { /* noop */ });
@@ -7288,6 +8160,282 @@ async function handleApi(req, res, url) {
   // previews, and completed gallery records and are always profile-scoped.
   if (!profile && route !== '/api/meta') {
     return json(res, 401, { error: 'Sign in to continue', code: 'auth' });
+  }
+
+  if (route.startsWith('/api/splats')) return await splatService.handle(req, res, url);
+  if (req.method === 'POST' && splatService.busy() && (MANAGED_GENERATION_ROUTES.has(route) || ['/api/update', '/api/app/restart'].includes(route) || route.startsWith('/api/dependencies/') || route.startsWith('/api/smart/') || route.startsWith('/api/setup/') || route.startsWith('/api/comfy/'))) {
+    return json(res, 409, { error: 'Wait for the splat operation to finish, or cancel it in Gaussian Splats.' });
+  }
+
+  if (route === '/api/comfy/lifecycle' && req.method === 'GET') return json(res, 200, comfyLifecycle.status());
+  if (route === '/api/comfy/lifecycle/ensure' && req.method === 'POST') {
+    try { return json(res, 200, await comfyLifecycle.ensure()); }
+    catch (error) { return json(res, 409, { error: error.message }); }
+  }
+  if (route === '/api/comfy/lifecycle' && req.method === 'POST') {
+    if (!isAdmin()) return json(res, 403, { error: 'Only the owner can manage ComfyUI.' });
+    const body = await readJsonBody(req);
+    try {
+      if (body.action === 'stop') {
+        const stopped = await comfyLifecycle.stop();
+        objectInfoCache = null;
+        objectInfoAt = 0;
+        return json(res, 200, stopped);
+      }
+      if (body.action === 'release') {
+        const released = await comfyLifecycle.releaseModels(true);
+        if (!released) return json(res, 409, { error: 'Memory can only be released from an idle, verified managed backend with management enabled.' });
+        return json(res, 200, comfyLifecycle.status());
+      }
+      if (body.action !== 'configure' || typeof body.enabled !== 'boolean'
+        || ![0, 5, 10, 30, 60].includes(body.idleMinutes)) return json(res, 400, { error: 'Choose valid managed backend settings.' });
+      const status = comfyLifecycle.status();
+      if (body.enabled && (!status.available || !status.supported)) return json(res, 409, { error: status.reason || 'Managed ComfyUI is available in Preview and Development only.' });
+      await comfyLifecycle.synchronize(() => {
+        const next = normalizeLifecycleConfig(body);
+        saveJsonSync(COMFY_LIFECYCLE_FILE, next);
+        comfyLifecycleConfig = next;
+      });
+      return json(res, 200, comfyLifecycle.status());
+    } catch (error) { return json(res, 409, { error: error.message }); }
+  }
+  // Hold cleanup while a request is preparing/submitting work, even before it
+  // enters the tracked queue. Reads (including gallery browsing) never start it.
+  if (req.method === 'POST') {
+    const done = comfyLifecycle.reserve();
+    req.releaseComfyLifecycle = done;
+    try {
+      if (MANAGED_GENERATION_ROUTES.has(route)) await comfyLifecycle.ensure();
+      else await comfyLifecycle.synchronize(() => {});
+    }
+    catch (error) { done(); return json(res, 409, { error: error.message }); }
+  }
+
+  if (route === '/api/smart/plan/status' && req.method === 'GET') {
+    pruneSmartPlanRequests();
+    const requestId = smartPlanRequestId(url.searchParams.get('id'));
+    const request = requestId ? smartPlanRequests.get(requestId) : null;
+    if (!request || request.profileId !== req.profile.id) {
+      return json(res, 404, { error: 'Smart planning request not found', code: 'smart_plan_request_missing' });
+    }
+    res.setHeader('Retry-After', '2');
+    return json(res, 200, smartPlanRequestStatus(request));
+  }
+
+  if (route === '/api/smart/plan' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    const brief = String(body.brief || '').trim().slice(0, 8000);
+    if (!brief) return json(res, 400, { error: 'Describe what you want Smart mode to create' });
+    const references = normalizeSmartReferences(body.references);
+    const requestId = smartPlanRequestId(body.requestId) || crypto.randomUUID();
+    const provider = configuredSmartPlannerLlm();
+    const prompt = smartPlanningPrompt(brief, { references });
+    const publicProvider = { provider: provider.provider, label: provider.label, model: provider.model };
+    const signature = crypto.createHash('sha256').update(JSON.stringify([
+      req.profile.id, brief, references, publicProvider,
+    ])).digest('hex');
+    pruneSmartPlanRequests();
+    const existing = smartPlanRequests.get(requestId);
+    if (existing) {
+      if (existing.profileId !== req.profile.id || existing.signature !== signature) {
+        return json(res, 409, {
+          error: 'That Smart planning request belongs to different inputs',
+          code: 'smart_plan_request_conflict',
+        });
+      }
+      return json(res, 202, smartPlanRequestStatus(existing));
+    }
+    const request = {
+      id: requestId,
+      profileId: req.profile.id,
+      signature,
+      brief,
+      provider: publicProvider,
+      status: 'queued',
+      phase: 'queued',
+      message: 'Smart planning request accepted…',
+      promptId: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      result: null,
+      error: '',
+      code: '',
+    };
+    smartPlanRequests.set(requestId, request);
+    executeSmartPlanRequest(request, provider, prompt, references);
+    res.setHeader('Retry-After', '2');
+    return json(res, 202, smartPlanRequestStatus(request));
+  }
+
+  if (route === '/api/smart/plan/review' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    const references = normalizeSmartReferences(body.references);
+    const plan = reconcileSmartPlanReferences(
+      normalizeSmartPlan(body.plan, body.plan?.summary || ''), references,
+    );
+    return json(res, 200, {
+      plan,
+      references,
+      planHash: smartPlanHash(plan, references),
+    });
+  }
+
+  if (route === '/api/smart/transcribe' && req.method === 'POST') {
+    const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (!contentType.startsWith('audio/')) {
+      req.resume();
+      return json(res, 415, { error: 'Smart voice input accepts an audio recording' });
+    }
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > SMART_AUDIO_LIMIT) {
+      req.resume();
+      return json(res, 413, { error: 'Voice recording is larger than 25 MB' });
+    }
+    try {
+      const audio = await readBody(req, SMART_AUDIO_LIMIT);
+      if (!audio.length) return json(res, 400, { error: 'No voice recording received' });
+      return json(res, 200, { text: await transcribeSmartAudio(audio, contentType) });
+    } catch (error) {
+      return json(res, error.code === 'smart_transcription_unavailable' ? 409 : 502, {
+        error: String(error.message || error), code: error.code || 'smart_transcription_failed',
+      });
+    }
+  }
+
+  if (route === '/api/smart/runs' && req.method === 'GET') {
+    const runs = db.smartRuns
+      .filter((run) => run.profileId === req.profile.id)
+      .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))
+      .slice(0, SMART_RUN_LIMIT)
+      .map(publicSmartRun);
+    kickStrandedSmartRuns(req.profile.id);
+    return json(res, 200, { runs });
+  }
+
+  if (route === '/api/smart/runs' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    if (body.approved !== true) {
+      return json(res, 409, {
+        error: 'Review and approve this Smart plan before queueing it.',
+        code: 'smart_plan_not_approved',
+      });
+    }
+    const references = normalizeSmartReferences(body.references);
+    const plan = reconcileSmartPlanReferences(
+      normalizeSmartPlan(body.plan, body.plan?.summary || ''), references,
+    );
+    const planHash = String(body.planHash || '');
+    if (!/^[a-f0-9]{64}$/.test(planHash) || smartPlanHash(plan, references) !== planHash) {
+      return json(res, 409, { error: 'This Smart plan changed after review. Build the plan again before queueing.', code: 'smart_plan_changed' });
+    }
+    try {
+      await Promise.all(references.map((reference) => externalPromptImage(reference.name, req.profile.id)));
+    } catch (error) {
+      return json(res, 409, { error: String(error.message || error), code: 'smart_reference_unavailable' });
+    }
+    const clientToken = String(body.clientToken || '').replace(/[^a-z0-9_-]/gi, '').slice(0, 96);
+    if (clientToken) {
+      const existing = db.smartRuns.find((run) => run.profileId === req.profile.id && run.clientToken === clientToken);
+      if (existing) return json(res, 200, { run: publicSmartRun(existing), existing: true });
+    }
+    const now = Date.now();
+    const attentionBackend = normalizeH3AttentionBackend(body.attentionBackend, body.sageAttention);
+    const steps = compileSmartSteps(plan, { attentionBackend }, references);
+    const run = {
+      id: uid(), profileId: req.profile.id, clientToken: clientToken || uid(),
+      brief: String(body.brief || plan.summary || '').trim().slice(0, 8000),
+      planHash, plan, references, attentionBackend,
+      reviewReference: steps.some((step) => step.kind === 'reference') && body.reviewReference === true,
+      steps, status: 'ready', error: '', createdAt: now, updatedAt: now,
+    };
+    db.smartRuns.push(run);
+    retainSmartRuns(req.profile.id);
+    broadcastSmartRun(run);
+    await advanceSmartRun(run);
+    return json(res, 201, { run: publicSmartRun(run) });
+  }
+
+  const smartRunAction = route.match(/^\/api\/smart\/runs\/([a-f0-9]+)\/(resume|retry|cancel)$/);
+
+  const smartReferenceReroll = route.match(/^\/api\/smart\/runs\/([a-f0-9]+)\/references\/([a-f0-9-]+)\/reroll$/);
+  if (smartReferenceReroll && req.method === 'POST') {
+    const run = smartRunForProfile(smartReferenceReroll[1], req.profile.id);
+    if (!run) return json(res, 404, { error: 'Smart production not found' });
+    if (run.status !== 'review') {
+      return json(res, 409, { error: 'References can only be regenerated while this production is waiting for reference review' });
+    }
+    const step = run.steps.find((candidate) => candidate.id === smartReferenceReroll[2]);
+    if (!step || step.kind !== 'reference' || step.status !== 'complete') {
+      return json(res, 409, { error: 'That completed reference is not available to regenerate' });
+    }
+    if (run.steps.some((candidate) => candidate.kind === 'video' && candidate.status !== 'pending')) {
+      return json(res, 409, { error: 'Reference regeneration is unavailable after video generation has started' });
+    }
+    const body = await readJsonBody(req);
+    step.referenceFeedback = String(body.feedback || '').trim().slice(0, 1000);
+    step.rerollCount = Math.max(0, Number(step.rerollCount) || 0) + 1;
+    step.status = 'pending';
+    step.jobId = null;
+    step.progress = null;
+    step.error = '';
+    run.status = 'running';
+    run.error = '';
+    broadcastSmartRun(run);
+    await advanceSmartRun(run);
+    return json(res, 202, { run: publicSmartRun(run) });
+  }
+
+  if (smartRunAction && req.method === 'POST') {
+    const run = smartRunForProfile(smartRunAction[1], req.profile.id);
+    if (!run) return json(res, 404, { error: 'Smart production not found' });
+    const action = smartRunAction[2];
+    if (action === 'cancel') {
+      if (smartRunFinished(run)) return json(res, 200, { run: publicSmartRun(run) });
+      const active = run.steps.find((step) => ['running', 'queueing'].includes(step.status));
+      const activeJob = active?.jobId ? jobs.get(active.jobId) : null;
+      run.status = 'cancelled';
+      run.error = 'Cancelled';
+      if (active) {
+        active.status = 'cancelled';
+        active.error = 'Cancelled';
+      }
+      pushHistory({
+        kind: 'cancelled',
+        profileId: run.profileId,
+        itemId: activeJob?.itemId || null,
+        durationMs: activeJob ? jobDurationMs(activeJob) : Math.max(0, Date.now() - Number(run.createdAt || Date.now())),
+        label: `Smart: ${run.plan?.title || 'production'}`,
+        smartRunId: run.id,
+      });
+      broadcastSmartRun(run);
+      if (active?.jobId) {
+        await stopComfyPrompt(active.jobId);
+        cancelJob(active.jobId, 'Smart production cancelled');
+      }
+      return json(res, 200, { run: publicSmartRun(run) });
+    }
+    if (action === 'resume') {
+      if (run.status !== 'review') return json(res, 409, { error: 'This Smart production is not waiting for review' });
+      run.status = 'running';
+      run.error = '';
+      broadcastSmartRun(run);
+      await advanceSmartRun(run);
+      return json(res, 200, { run: publicSmartRun(run) });
+    }
+    if (!['failed', 'attention'].includes(run.status)) {
+      return json(res, 409, { error: 'This Smart production does not have a failed step to retry' });
+    }
+    const step = run.steps.find((candidate) => ['failed', 'attention'].includes(candidate.status));
+    if (!step) return json(res, 409, { error: 'No interrupted Smart step was found' });
+    step.status = 'pending';
+    step.jobId = null;
+    step.progress = null;
+    step.error = '';
+    run.status = 'running';
+    run.error = '';
+    broadcastSmartRun(run);
+    await advanceSmartRun(run);
+    return json(res, 200, { run: publicSmartRun(run) });
   }
 
   if (route === '/api/spark-access' && req.method === 'GET') {
@@ -7484,7 +8632,9 @@ async function handleApi(req, res, url) {
   if (route === '/api/releases/latest' && req.method === 'GET') {
     try {
       const app = readAppRelease(ROOT);
-      return json(res, 200, await officialReleaseChecker.check(app.version));
+      const channel = appReleaseChannel;
+      if (channel === 'development') return json(res, 200, { channel, installedVersion: app.version, latest: null, updateAvailable: false });
+      return json(res, 200, { ...await selectedReleaseChecker(channel).check(app.version), channel });
     } catch (error) {
       return json(res, 503, {
         error: String(error.message || 'Could not check official Mix Studio releases'),
@@ -7515,6 +8665,28 @@ async function handleApi(req, res, url) {
     });
   }
 
+  if (route === '/api/update/channel' && req.method === 'POST') {
+    if (!isAdmin()) return json(res, 403, { error: 'Only the owner can change the update channel' });
+    if (appUpdateRunning) return json(res, 409, { error: 'An update is running' });
+    if (process.env.MIXBOX_RELEASE_CHANNEL) return json(res, 409, { error: 'The update channel is managed by MIXBOX_RELEASE_CHANNEL' });
+    const body = await readJsonBody(req);
+    if (appUpdateRunning) return json(res, 409, { error: 'An update is running' });
+    if (!['stable', 'preview', 'development'].includes(body.channel)) return json(res, 400, { error: 'Choose Stable, Preview, or Development' });
+    saveJsonSync(UPDATE_CHANNEL_FILE, { channel: body.channel });
+    appReleaseChannel = body.channel;
+    return json(res, 200, { channel: appReleaseChannel });
+  }
+
+  if (route === '/api/update/diagnostics' && req.method === 'GET') {
+    if (!isAdmin()) return json(res, 403, { error: 'Only the owner can inspect update diagnostics' });
+    const runGit = (args) => gitCommand(ROOT, args, { gitExecutable: RUNTIME.update.gitExecutable });
+    const revision = await runGit(['rev-parse', 'HEAD']).then((s) => s.trim()).catch(() => null);
+    const branch = await runGit(['rev-parse', '--abbrev-ref', 'HEAD']).then((s) => s.trim()).catch(() => null);
+    return json(res, 200, { app: readAppRelease(ROOT), revision, branch, channel: appReleaseChannel,
+      configuredBranch: RUNTIME.update.channel, installMode: RUNTIME.installMode, platform: process.platform,
+      node: process.version, updater: RUNTIME.update.provider });
+  }
+
   if (route === '/api/update' && req.method === 'POST') {
     if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can update Mix Studio' });
     if (appUpdateRunning) return json(res, 409, { error: 'A Mix Studio update is already running', code: 'app_updating' });
@@ -7524,11 +8696,26 @@ async function handleApi(req, res, url) {
       // Enter maintenance before the first queue check so another browser
       // cannot submit work while the network-bound fast-forward is running.
       await assertDesktopIsIdle();
-      const update = await updateFromGit(ROOT, {
+      const body = await readJsonBody(req);
+      if (body.channel !== appReleaseChannel) return json(res, 409, { error: 'The update channel changed. Refresh and retry.', code: 'update_release_changed' });
+      const updateOptions = {
         channel: RUNTIME.update.channel,
         gitExecutable: RUNTIME.update.gitExecutable,
         inspectAssets: () => inspectCriticalPublicAssets(ROOT),
-      });
+      };
+      let update;
+      if (appReleaseChannel === 'development') {
+        update = await updateFromGit(ROOT, updateOptions);
+      } else {
+        const offered = await selectedReleaseChecker().check(readAppRelease(ROOT).version);
+        if (offered.stale || !offered.latest || body.tagName !== offered.latest.tagName || body.channel !== appReleaseChannel) {
+          return json(res, 409, { error: 'Refresh the Updates inbox and select an available release before installing.', code: 'update_release_changed' });
+        }
+        update = await updateFromRelease(ROOT, { ...updateOptions, target: offered.latest,
+          releaseChannel: appReleaseChannel, dataDir: DATA, updatesDir: RUNTIME.updatesDir, configFile: RUNTIME.configFile,
+          beforeApply: () => assertDesktopIsIdle(),
+        });
+      }
       // ComfyUI can receive work outside Mix Studio. Check it again directly
       // before scheduling a process restart. If that race occurs after Git has
       // already updated the checkout, keep maintenance active and restart as
@@ -7563,7 +8750,7 @@ async function handleApi(req, res, url) {
       }
       return;
     } catch (e) {
-      const status = ['desktop_busy', 'update_dirty', 'update_branch', 'update_channel', 'update_origin'].includes(e.code) ? 409 : 500;
+      const status = ['desktop_busy', 'update_dirty', 'update_branch', 'update_channel', 'update_origin', 'update_ahead', 'update_changed', 'update_release_invalid'].includes(e.code) ? 409 : 500;
       const payload = { error: String(e.message || e), code: e.code || 'update_failed' };
       if (e.code === 'update_dirty' && Array.isArray(e.dirtyFiles)) {
         payload.dirtyFiles = e.dirtyFiles;
@@ -7833,16 +9020,23 @@ async function handleApi(req, res, url) {
       try { body.externalLlmOllamaUrl = normalizeOllamaUrl(body.externalLlmOllamaUrl); }
       catch (error) { return json(res, 400, { error: String(error.message || error) }); }
     }
+    if (typeof body.externalLlmLmStudioUrl === 'string' && body.externalLlmLmStudioUrl.trim()) {
+      try { body.externalLlmLmStudioUrl = normalizeLmStudioUrl(body.externalLlmLmStudioUrl); }
+      catch (error) { return json(res, 400, { error: String(error.message || error) }); }
+    }
     const changesExternalLlm = body.clearExternalLlmOpenAiApiKey === true
       || body.clearExternalLlmGeminiApiKey === true
       || ['externalLlmOpenAiApiKey', 'externalLlmGeminiApiKey'].some((key) => typeof body[key] === 'string' && body[key].trim())
-      || ['externalLlmProvider', 'externalLlmOpenAiModel', 'externalLlmGeminiModel', 'externalLlmOllamaUrl', 'externalLlmOllamaModel']
+      || ['externalLlmProvider', 'externalLlmLocalProvider', 'externalLlmExternalProvider', 'externalLlmOpenAiModel', 'externalLlmGeminiModel', 'externalLlmOllamaUrl', 'externalLlmOllamaModel', 'externalLlmLmStudioUrl', 'externalLlmLmStudioModel']
         .some((key) => typeof body[key] === 'string' && body[key].trim() && body[key].trim() !== String(settings[key] || ''))
       || ['externalLlmImageRevise', 'externalLlmImageEnhance', 'externalLlmVideoRevise', 'externalLlmVideoEnhance']
         .some((key) => typeof body[key] === 'boolean' && body[key] !== settings[key]);
-    const changesLocalPromptAi = ['localPromptAiClip', 'localPromptAiClipType']
-      .some((key) => typeof body[key] === 'string' && body[key].trim() !== String(settings[key] || ''));
+    const changesLocalPromptAi = ['localPromptAiClip', 'localPromptAiClipType', 'smartPlannerClip', 'smartPlannerClipType']
+      .some((key) => typeof body[key] === 'string' && body[key].trim() !== String(settings[key] || ''))
+      || (typeof body.smartPlannerModelOverride === 'boolean'
+        && body.smartPlannerModelOverride !== settings.smartPlannerModelOverride);
     const changesH3ModelVariant = [
+      'qwen21ModelVariant', 'qwen21Unet', 'qwen21Clip', 'qwen21Vae',
       'h3ClipVariant', 'h3FrameModelVariant', 'h3ReferenceModelVariant', 'h3Unet', 'h3RefUnet',
       'h3Bf16Unet', 'h3Bf16RefUnet', 'h3DynTimeRefUnet', 'h3DynTimeRefHqUnet',
       'h3TurboLora', 'h3RefTurboLora', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
@@ -7868,6 +9062,13 @@ async function handleApi(req, res, url) {
     if (typeof body.localPromptAiClipType === 'string' && body.localPromptAiClipType.trim()) {
       settings.localPromptAiClipType = body.localPromptAiClipType.trim();
     }
+    if (typeof body.smartPlannerModelOverride === 'boolean') {
+      settings.smartPlannerModelOverride = body.smartPlannerModelOverride;
+    }
+    if (typeof body.smartPlannerClip === 'string') settings.smartPlannerClip = body.smartPlannerClip.trim();
+    if (typeof body.smartPlannerClipType === 'string' && body.smartPlannerClipType.trim()) {
+      settings.smartPlannerClipType = body.smartPlannerClipType.trim();
+    }
     if (typeof body.smartFilenames === 'boolean') settings.smartFilenames = body.smartFilenames;
     if (body.clearHfToken === true) settings.hfToken = '';
     if (body.clearExternalLlmOpenAiApiKey === true) settings.externalLlmOpenAiApiKey = '';
@@ -7887,6 +9088,8 @@ async function handleApi(req, res, url) {
 
   if (route === '/api/meta') {
     const app = Object.assign(readAppRelease(ROOT), { instanceId: SERVER_INSTANCE_ID });
+    app.revision = await gitCommand(ROOT, ['rev-parse', '--short=12', 'HEAD'], { gitExecutable: RUNTIME.update.gitExecutable }).then((value) => value.trim()).catch(() => '');
+    app.channel = appReleaseChannel;
     try {
       const info = await getObjectInfo(url.searchParams.has('refresh'));
       const loras = (info.LoraLoader?.input?.required?.lora_name?.[0]) || [];
@@ -7929,9 +9132,22 @@ async function handleApi(req, res, url) {
       if (sageRuntime.ready === true && !sageAttention.nodeReady) {
         sageAttention.reason = 'ComfyUI-KJNodes is needed for the H3 SageAttention graph patch.';
       }
+      const slaRuntime = await probeH3SlaAttention(RUNTIME, {
+        status: installStatus,
+        force: url.searchParams.has('refresh'),
+      });
+      const slaAttention = Object.assign({}, slaRuntime, {
+        runtimeReady: slaRuntime.ready === true,
+        nodeReady: !missing.h3sla.length,
+        ready: slaRuntime.ready === true && !missing.h3sla.length,
+      });
+      if (slaRuntime.ready === true && !slaAttention.nodeReady) {
+        slaAttention.reason = 'The pinned H3 SLA custom node is not loaded in ComfyUI.';
+      }
       const nodeRevisions = await pinnedNodeRevisionStatus(installStatus, url.searchParams.has('refresh'));
       const missingComponents = missingDependencyComponentIds(missing, models, {
         sageAttention,
+        slaAttention,
         repairComponents: nodeRevisions.components,
       });
       const hardwareBlockedComponents = new Set(
@@ -7940,6 +9156,11 @@ async function handleApi(req, res, url) {
           .map(([id]) => id)
       );
       const availableMissingComponents = missingComponents.filter((id) => !hardwareBlockedComponents.has(id));
+      const readinessDiagnostics = dependencyReadinessDiagnostics(missingComponents, missing, models, {
+        sageAttention,
+        slaAttention,
+        repairComponents: nodeRevisions.components,
+      }, installStatus);
       if (url.searchParams.has('afterRestart') && dependencyInstallState.restartRequired) {
         const checkedComponents = Array.isArray(dependencyInstallState.components)
           ? dependencyInstallState.components.filter(Boolean)
@@ -7950,6 +9171,7 @@ async function handleApi(req, res, url) {
         const checkedMissingLabels = checkedMissingComponents.map((component) => (
           DEPENDENCY_COMPONENTS[component]?.label || component
         ));
+        const checkedDiagnostics = readinessDiagnostics.filter((entry) => checkedMissingComponents.includes(entry.id));
         updateDependencyInstallState({
           state: 'complete',
           phase: 'checked',
@@ -7958,6 +9180,7 @@ async function handleApi(req, res, url) {
             : 'ComfyUI was checked after restart. Installed dependencies are ready.',
           checkedComponents,
           checkedMissingComponents,
+          readinessDiagnostics: checkedDiagnostics,
           restartRequired: false,
           error: null,
           ...EMPTY_DEPENDENCY_FAILURE,
@@ -7982,13 +9205,24 @@ async function handleApi(req, res, url) {
             ltx25Core,
             wanAnimate2Core,
             sageAttention,
+            slaAttention,
+            qwen21Compatibility(info),
           )),
           missingComponents: availableMissingComponents,
+          diagnostics: {
+            components: readinessDiagnostics,
+            comfyPath: isAdmin() ? (RUNTIME.comfy.path || installStatus.basePath || '') : '',
+            customNodesPath: isAdmin() ? (installStatus.customNodesPath || '') : '',
+            modelsPath: isAdmin() ? (RUNTIME.comfy.modelsPath || '') : '',
+            comfyUrl: isAdmin() ? (settings.comfyUrl || '') : '',
+          },
           repairComponents: nodeRevisions.components,
           outdatedNodes: nodeRevisions.nodes,
           install: dependencyInstallState,
           sam3: { canInstall: installStatus.canInstall, downloaded: installStatus.downloaded, reason: installStatus.reason },
           sageAttention,
+          slaAttention,
+          kitchenAttention: kitchenAttentionCapability(info),
         },
         models,
         krea2: {
@@ -8012,14 +9246,25 @@ async function handleApi(req, res, url) {
             reference: h3TurboCompatibility(settings, 'reference'),
           },
         }),
+        qwen21: qwen21Compatibility(info),
         ltx25: ltx25Core,
         wanAnimate2: wanAnimate2Core,
         features: settings.features,
         capabilities: { video: configuredVideoEngineCapabilities(hardwareProfile, settings) },
-        queue: jobs.size,
+        queue: jobs.size + externalPromptPreflights.size,
       });
     } catch (e) {
-      return json(res, 200, { ok: false, app, error: String(e.message || e), loras: [], lorasInfo: {}, missing: null, models: null, features: settings.features, queue: jobs.size });
+      return json(res, 200, {
+        ok: false,
+        app,
+        error: String(e.message || e),
+        loras: [],
+        lorasInfo: {},
+        missing: null,
+        models: null,
+        features: settings.features,
+        queue: jobs.size + externalPromptPreflights.size,
+      });
     }
   }
 
@@ -8141,6 +9386,10 @@ async function handleApi(req, res, url) {
 
   if (route === '/api/comfy/start' && req.method === 'POST') {
     if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can start ComfyUI' });
+    if (comfyLifecycle.status().active) {
+      try { await comfyLifecycle.ensure(); return json(res, 200, { ok: true, status: await setupStatusPayload() }); }
+      catch (error) { return json(res, 409, { error: error.message }); }
+    }
     if (dependencyInstallRunning || comfyRestartRunning || comfyStartRunning || comfySetupProcess) {
       return json(res, 409, { error: 'Wait for the current desktop operation to finish.' });
     }
@@ -8182,7 +9431,7 @@ async function handleApi(req, res, url) {
       if (launch.kind === 'desktop') {
         updateComfyStartState({
           state: 'running', phase: 'desktop',
-          message: `Comfy Desktop is open.${launch.installationName ? ` Choose ${launch.installationName} and press Play.` : ' Press Play on the ComfyUI installation.'} Mix Studio will connect automatically.`,
+          message: `Launch requested for Comfy Desktop.${launch.installationName ? ` Choose ${launch.installationName} and press Play.` : ' Press Play on the ComfyUI installation.'} Mix Studio will connect automatically.`,
         });
       }
       (async () => {
@@ -8272,7 +9521,11 @@ async function handleApi(req, res, url) {
       ? body.modelVariants.h3
       : '';
     const h3Variant = normalizeH3ClipVariant(requestedH3Variant || settings.h3ClipVariant);
-    const modelVariants = { krea2: krea2Variant, h3: h3Variant };
+    const modelVariants = {
+      krea2: krea2Variant,
+      h3: h3Variant,
+      qwen21: body.modelVariants?.qwen21 || settings.qwen21ModelVariant,
+    };
     const components = [...new Set(requested.filter((id) => Object.prototype.hasOwnProperty.call(DEPENDENCY_COMPONENTS, id)))];
     if (!components.length) return json(res, 400, { error: 'Choose at least one missing model or node group to install.' });
     const hardwareProfile = setupHardwareProfile(await getSetupHardwareInfo());
@@ -8286,6 +9539,10 @@ async function handleApi(req, res, url) {
         code: 'generation_device_unsupported',
         component: hardwareBlocked.id,
       });
+    }
+    if (components.includes('qwen21')) {
+      const compatibility = qwen21Compatibility(await getObjectInfo(true));
+      if (!compatibility.supported) return json(res, 409, { error: compatibility.reason, code: 'comfy_qwen21_update_required', compatibility });
     }
     const installsKrea2 = components.some((id) => KREA2_DEPENDENCY_COMPONENTS.has(id));
     const installsH3 = components.some((id) => H3_DEPENDENCY_COMPONENTS.has(id));
@@ -8368,7 +9625,8 @@ async function handleApi(req, res, url) {
     dependencyInstallRunning = true;
     updateDependencyInstallState({
       state: 'running', phase: 'queued', message: 'Starting dependency installation…',
-      components, repair, completed: 0, total: 0, restartRequired: false, error: null,
+      components, repair, completed: 0, total: 0, restartRequired: false,
+      changed: 0, changedItems: [], checkedComponents: [], checkedMissingComponents: [], readinessDiagnostics: [], error: null,
       ...EMPTY_DEPENDENCY_FAILURE,
     });
     (async () => {
@@ -8383,6 +9641,7 @@ async function handleApi(req, res, url) {
             availableModelNames,
             availableModelRoots,
             modelVariants,
+            vramGb: hardwareProfile.vramGb,
             gpuVendor: hardwareProfile.gpuVendor,
             platform: process.platform,
             hfToken: settings.hfToken,
@@ -8407,6 +9666,8 @@ async function handleApi(req, res, url) {
             phase: 'partial-complete',
             message: `Installed compatible dependencies; ${result.failures.length} node pack${result.failures.length === 1 ? '' : 's'} need attention.`,
             restartRequired: result.restartRequired,
+            changed: result.changed,
+            changedItems: result.changedItems,
             environmentSnapshot: result.environmentSnapshot || null,
             error: result.failures.map((failure) => failure.message).join('\n'),
             errorCode: firstFailure.code,
@@ -8417,7 +9678,19 @@ async function handleApi(req, res, url) {
             nodeFailures: result.failures,
           });
         } else {
-          updateDependencyInstallState({ state: 'complete', phase: 'complete', message: repair ? 'Repair finished. Restart ComfyUI, then Check again.' : 'Dependencies installed. Restart ComfyUI to load new nodes, then Check again.', restartRequired: result.restartRequired, environmentSnapshot: result.environmentSnapshot || null, error: null, ...EMPTY_DEPENDENCY_FAILURE });
+          updateDependencyInstallState({
+            state: 'complete',
+            phase: result.restartRequired ? 'complete' : 'already-present',
+            message: result.restartRequired
+              ? (repair ? 'Repair finished. Restart ComfyUI, then Check again.' : 'Dependencies installed. Restart ComfyUI to load new nodes, then Check again.')
+              : 'Selected files are already installed. Mix Studio is checking what the connected ComfyUI has loaded.',
+            restartRequired: result.restartRequired,
+            changed: result.changed,
+            changedItems: result.changedItems,
+            environmentSnapshot: result.environmentSnapshot || null,
+            error: null,
+            ...EMPTY_DEPENDENCY_FAILURE,
+          });
         }
       } catch (error) {
         if (installController.signal.aborted || error?.code === 'dependency_cancelled' || error?.name === 'AbortError') {
@@ -8537,6 +9810,7 @@ async function handleApi(req, res, url) {
 
   if (route === '/api/generate' && req.method === 'POST') {
     const p = await readJsonBody(req);
+    p.imageEngine = p.imageEngine === 'qwen21' ? 'qwen21' : 'krea2';
     p.prompt = String(p.prompt || '').trim();
     p.negativePrompt = normalizeNegativePrompt(p.negativePrompt);
     p.promptTemplate = (p.mode === 'edit' || p.mode === 't2i')
@@ -8605,8 +9879,8 @@ async function handleApi(req, res, url) {
     // here so the builder receives a real boolean and a clamped strength.
     p.qwenLightning = p.qwenLightning !== false;
     p.qwenLightningStrength = clampNum(p.qwenLightningStrength, 0, 2, 1);
-    p.steps = clampInt(p.steps, 1, 100, p.mode === 't2i' && p.krea2Turbo ? 8 : 12);
-    p.cfg = clampNum(p.cfg, 0, 30, 1);
+    p.steps = clampInt(p.steps, 1, 100, (p.mode === 'edit' ? p.editEngine : p.imageEngine) === 'qwen21' ? 40 : (p.mode === 't2i' && p.krea2Turbo ? 8 : 12));
+    p.cfg = clampNum(p.cfg, 0, 30, (p.mode === 'edit' ? p.editEngine : p.imageEngine) === 'qwen21' ? 2.5 : 1);
     p.krea2RawTurboLora = p.krea2Turbo || !p.krea2RawTurboLora || typeof p.krea2RawTurboLora !== 'object'
       ? undefined
       : {
@@ -8645,13 +9919,22 @@ async function handleApi(req, res, url) {
     p.maskInfluence = maskInfluence(p.maskInfluence);
     p.maskExpand = maskExpand(p.maskExpand);
     if (p.mode === 'edit') {
-      const editEngines = ['qwen', 'klein9', 'krea2', 'krea2ref', 'krea2remix'];
+      const editEngines = ['qwen21', 'qwen', 'klein9', 'krea2', 'krea2ref', 'krea2remix'];
       p.editEngine = editEngines.includes(p.editEngine) ? p.editEngine : 'klein4';
     }
     if (p.mode !== 'edit') {
       p.engine = T2I_ENGINES.includes(p.engine) ? p.engine : undefined;
     }
-    const usesKrea2Model = p.mode !== 'edit' || ['krea2', 'krea2ref', 'krea2remix'].includes(p.editEngine);
+    const usesQwen21 = (p.mode === 'edit' ? p.editEngine : p.imageEngine) === 'qwen21';
+    if (usesQwen21) {
+      const compatibility = qwen21Compatibility(await getObjectInfo());
+      if (!compatibility.supported) return json(res, 409, { error: compatibility.reason, code: 'comfy_qwen21_update_required', compatibility });
+      if (p.maskImageName || p.editOutpaint || p.qwenAngle || hasActiveRegions(p.regions) || (p.imageName && p.imageGuideMode !== 'image')) return json(res, 400, { error: 'Qwen Image 2.1 supports whole-image generation and editing. Select Krea 2 for regional or guide tools.' });
+      p.steps = clampInt(p.steps, 1, 100, 25);
+      p.width = Math.round(p.width / 32) * 32; p.height = Math.round(p.height / 32) * 32;
+      p.krea2Turbo = undefined; p.krea2RawTurboLora = undefined; p.composite = false;
+    }
+    const usesKrea2Model = (p.mode !== 'edit' && !usesQwen21) || ['krea2', 'krea2ref', 'krea2remix'].includes(p.editEngine);
     if (usesKrea2Model) {
       const info = await getObjectInfo();
       const coreCompatibility = await getComfyCompatibility();
@@ -8739,7 +10022,7 @@ async function handleApi(req, res, url) {
 
     const refNames = p.mode === 'edit'
       ? (Array.isArray(p.refImages)
-        ? p.refImages.filter(Boolean).slice(0, p.editEngine === 'krea2ref' ? 2 : 3)
+        ? p.refImages.filter(Boolean).slice(0, p.editEngine === 'qwen21' ? 10 : (p.editEngine === 'krea2ref' ? 2 : 3))
         : [])
       : (p.imageName ? [p.imageName] : []);
     if (p.mode !== 'edit') p.editSequence = undefined;
@@ -8790,8 +10073,8 @@ async function handleApi(req, res, url) {
       if (p.qwenAngle && !refNames.length) {
         return json(res, 400, { error: 'Camera variations need a source image in reference slot 1' });
       }
-      if (['qwen', 'krea2ref', 'krea2remix'].includes(p.editEngine) && !refNames.length) {
-        const label = p.editEngine === 'qwen' ? 'Qwen Edit' : (p.editEngine === 'krea2remix' ? 'Krea 2 Remix' : 'Krea 2 Edit');
+      if (['qwen21', 'qwen', 'krea2ref', 'krea2remix'].includes(p.editEngine) && !refNames.length) {
+        const label = p.editEngine === 'qwen21' ? 'Qwen Image 2.1' : p.editEngine === 'qwen' ? 'Qwen Edit' : (p.editEngine === 'krea2remix' ? 'Krea 2 Remix' : 'Krea 2 Edit');
         return json(res, 400, { error: `${label} needs at least one reference image` });
       }
       if (p.editOutpaint && !refNames.length) {
@@ -8820,6 +10103,8 @@ async function handleApi(req, res, url) {
         p.steps = clampInt(p.steps, 8, 12, 10); p.cfg = clampNum(p.cfg, 1, 5, 1); p.denoise = null;
       } else if (p.editEngine === 'krea2remix') {
         p.steps = clampInt(p.steps, 4, 20, 8); p.cfg = 1; p.denoise = null;
+      } else if (p.editEngine === 'qwen21') {
+        p.steps = clampInt(p.steps, 1, 100, 25); p.denoise = null;
       } else if (p.editEngine === 'qwen') {
         p.qwenQuality = normalizeQwenEditQuality(p.qwenQuality);
         const preset = qwenEditPreset(p.qwenQuality);
@@ -8827,7 +10112,7 @@ async function handleApi(req, res, url) {
       } else {
         p.steps = 4; p.cfg = 1; p.denoise = null;
       }
-      if (p.editEngine !== 'qwen' || p.qwenQuality !== 'quality') p.negativePrompt = '';
+      if (p.editEngine !== 'qwen21' && (p.editEngine !== 'qwen' || p.qwenQuality !== 'quality')) p.negativePrompt = '';
       // Pixel compositing needs identical source/output dimensions. A custom
       // output ratio intentionally changes the canvas, so retain the edit
       // itself but skip the incompatible preservation pass.
@@ -9211,7 +10496,11 @@ async function handleApi(req, res, url) {
       const h3TurboCanvas = h3Turbo ? h3TurboFixedCanvas(settings, h3GraphMode) : null;
       const ltx25Quality = engine === 'ltx25' && body.fast === false;
       const h3LongContext = engine === 'h3' && body.h3LongContext === true;
-      const h3SageAttention = false; // SageAttention disabled: incompatible with Intel Arc XPU
+      const h3Attention = engine === 'h3'
+        ? h3AttentionOptions(body.attentionBackend, body.sageAttention)
+        : h3AttentionOptions('standard', false);
+      const h3SageAttention = engine === 'h3' && h3Attention.sageAttention;
+      const h3SlaAttention = engine === 'h3' && h3Attention.slaAttention;
       let unetWeightDtypeChoices;
       const h3References = normalizeH3References(body.h3References, body.audioName);
     let requestedVideoLoras = Array.isArray(body.loras)
@@ -9289,10 +10578,8 @@ async function handleApi(req, res, url) {
           compatibility: h3Compatibility,
         });
       }
-      unetWeightDtypeChoices = objectInfoComboChoices(info, 'UNETLoader', 'weight_dtype');
-      const unetWeightDtype = h3EffectiveWeightDtype(settings, h3GraphMode, unetWeightDtypeChoices);
-      if (unetWeightDtype === 'int8' && (!Array.isArray(unetWeightDtypeChoices) || !unetWeightDtypeChoices.includes('int8'))) {
-        console.warn('[h3]', 'INT8 weight_dtype not supported by ComfyUI UNETLoader; falling back to default dtype for', h3EffectiveModelName(settings, h3GraphMode));
+      if (h3Attention.attentionBackend === 'kitchen' && !kitchenAttentionCapability(info).ready) {
+        return json(res, 409, { error: kitchenAttentionCapability(info).reason, code: 'h3_kitchen_unavailable' });
       }
       const selectedVariant = h3SelectedModelVariant;
       if (requestedVideoLoras.length) {
@@ -9464,6 +10751,24 @@ async function handleApi(req, res, url) {
               packageReady: sageRuntime.ready === true,
               nodeReady,
               ready: sageRuntime.ready === true && nodeReady,
+            }),
+          });
+        }
+      }
+      if (h3SlaAttention) {
+        const slaRuntime = await probeH3SlaAttention(RUNTIME, { status: sam3InstallStatus(RUNTIME) });
+        const nodeReady = !!info.H3SLAAttention;
+        if (!slaRuntime.ready || !nodeReady) {
+          return json(res, 409, {
+            error: !nodeReady
+              ? 'MiniMax H3 SLA needs the pinned sparse-attention node. Install the H3 SLA workflow, restart ComfyUI, and try again.'
+              : (slaRuntime.reason || 'H3 SLA is not ready in the ComfyUI Python environment.'),
+            code: 'h3_sla_attention_unavailable',
+            component: 'h3sla',
+            slaAttention: Object.assign({}, slaRuntime, {
+              runtimeReady: slaRuntime.ready === true,
+              nodeReady,
+              ready: slaRuntime.ready === true && nodeReady,
             }),
           });
         }
@@ -9844,7 +11149,7 @@ async function handleApi(req, res, url) {
     let prompt = motionPrompt;
     let refinedMotionPrompt = null;
     const frameAwareEnhance = !bypass && !faceImageName && !isLtxEdit && engine !== 'h3';
-    if (engine !== 'h3' && shouldUseExternalPrompt('video', 'enhance') && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
+    if (engine !== 'h3' && shouldUseConfiguredPromptAi('video', 'enhance') && enhance && suppliedMotionPrompt && !autoGeneratedMotion) {
       const externalImageNames = [faceImageName || (!bypass ? comfyName : undefined)].filter(Boolean);
       const externalImageName = externalImageNames[0];
       const parts = videoPromptEnhanceParts(motionPrompt, {
@@ -9853,7 +11158,7 @@ async function handleApi(req, res, url) {
         mode: h3GraphMode,
         hasImage: !!externalImageName,
       });
-      const raw = await runConfiguredExternalPrompt(parts, 384, {
+      const raw = await runConfiguredPromptAi(parts, 384, {
         action: 'enhance',
         imageName: externalImageName,
         imageNames: externalImageNames,
@@ -9983,7 +11288,9 @@ async function handleApi(req, res, url) {
       turboStrength: clampNum(body.h3TurboStrength, 0.8, 1.2, 1),
       turboLowVram: body.h3TurboLowVram === true,
       turboNativeSampler: h3TurboNativeSampler,
-      sageAttention: false,
+      attentionBackend: h3Attention.attentionBackend,
+      sageAttention: h3SageAttention,
+      slaAttention: h3SlaAttention,
       firstImageName: engine === 'h3' && !bypass && h3Mode === 'frames' ? comfyName : null,
       references: h3References,
       refImageSize: body.h3RefImageSize === 'max' ? 'max' : 'match',
@@ -9995,11 +11302,14 @@ async function handleApi(req, res, url) {
     if (h3LongContextTurboVideo && firstH3LongContextSegment) {
       opts.turboReferenceSegment = firstH3LongContextSegment;
     }
+    // Always attach the normalized plan, including the single five-second
+    // segment. This keeps short Reference Turbo requests independent of raw
+    // floating-point duration values and reserves orchestration for 2+ chunks.
     const h3TurboReferenceChunks = engine === 'h3' && h3ReferenceBacked && h3Turbo
-      && !h3LongContext && h3References.videos.length && frames > H3_TURBO_REFERENCE_CHUNK_FRAMES
+      && !h3LongContext && h3References.videos.length
       ? h3TurboReferenceSegments(frames)
       : [];
-    if (h3TurboReferenceChunks.length > 1) {
+    if (h3TurboReferenceChunks.length) {
       opts.turboReferenceSegment = h3TurboReferenceChunks[0];
     }
     const graph = engine === 'h3' ? await buildMiniMaxH3Graph(opts, settings, {
@@ -10156,7 +11466,7 @@ async function handleApi(req, res, url) {
         h3MatchSource: engine === 'h3' && h3Mode === 'frames' ? body.h3MatchSource === true : undefined,
         h3MatchReferenceVideo: engine === 'h3' && h3Mode === 'reference'
           ? body.h3MatchReferenceVideo === true : undefined,
-        attentionBackend: engine === 'h3' ? 'pytorch' : undefined,
+        attentionBackend: engine === 'h3' ? opts.attentionBackend : undefined,
         h3RefImageSize: h3ReferenceBacked ? opts.refImageSize : undefined,
         h3References: h3ReferenceBacked ? h3References : undefined,
         h3ReplaceKind: engine === 'h3' && h3Mode === 'replace' ? h3ReplaceKind : undefined,
@@ -10178,27 +11488,27 @@ async function handleApi(req, res, url) {
         loras: opts.loras,
       },
     });
-      ensureWs();
-      return json(res, 200, {
-        jobId: pid,
-        frames,
-        engine,
-        h3Turbo: engine === 'h3' ? opts.turbo : undefined,
-        h3TurboChunks: h3TurboReferenceChunks.length > 1 ? h3TurboReferenceChunks.length : undefined,
-        h3LongContextClips: h3LongContextPlan.length > 1 ? h3LongContextPlan.length : undefined,
-        sequenceId: wanAnimate2VideoChunkSequence?.id || h3ChunkSequenceId || undefined,
-        attentionBackend: engine === 'h3' ? 'pytorch' : undefined,
-      });
-    } catch (error) {
-      const status = error.statusCode || error.status || (error.code === 'comfy_unreachable' || error.code === 'ECONNREFUSED' ? 503 : (error.code ? 409 : 500));
-      return json(res, status, {
-        error: String(error.message || error),
-        code: error.code || 'animate_failed',
-        component: error.component,
-        missingNodes: error.missingNodes,
-        missingModels: error.missingModels,
-      });
-    }
+    ensureWs();
+    return json(res, 200, {
+      jobId: pid,
+      frames,
+      engine,
+      h3Turbo: engine === 'h3' ? opts.turbo : undefined,
+      h3TurboChunks: h3TurboReferenceChunks.length > 1 ? h3TurboReferenceChunks.length : undefined,
+      h3LongContextClips: h3LongContextPlan.length > 1 ? h3LongContextPlan.length : undefined,
+      sequenceId: wanAnimate2VideoChunkSequence?.id || h3ChunkSequenceId || undefined,
+      attentionBackend: engine === 'h3' ? opts.attentionBackend : undefined,
+    });
+  } catch (error) {
+    const status = error.statusCode || error.status || (error.code === 'comfy_unreachable' || error.code === 'ECONNREFUSED' ? 503 : (error.code ? 409 : 500));
+    return json(res, status, {
+      error: String(error.message || error),
+      code: error.code || 'animate_failed',
+      component: error.component,
+      missingNodes: error.missingNodes,
+      missingModels: error.missingModels,
+    });
+  }
   }
 
   if ((route === '/api/video/upscale' || route === '/api/video/interpolate') && req.method === 'POST') {
@@ -10276,9 +11586,9 @@ async function handleApi(req, res, url) {
 
   if (route === '/api/video/convert-mp4' && req.method === 'POST') {
     const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-    if (!['video/webm', 'video/x-matroska', 'application/octet-stream'].includes(contentType)) {
+    if (!['video/mp4', 'video/webm', 'video/x-matroska', 'application/octet-stream'].includes(contentType)) {
       req.resume();
-      return json(res, 415, { error: 'MP4 conversion accepts WebM video recordings only' });
+      return json(res, 415, { error: 'MP4 finalization accepts MP4 or WebM video recordings only' });
     }
     const contentLength = Number(req.headers['content-length']);
     if (Number.isFinite(contentLength) && contentLength > MAX_DOCUMENTATION_VIDEO_BYTES) {
@@ -10294,14 +11604,19 @@ async function handleApi(req, res, url) {
     let temporaryDirectory = '';
     try {
       temporaryDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'mixstudio-documentation-video-'));
-      const source = path.join(temporaryDirectory, 'recording.webm');
+      const source = path.join(temporaryDirectory, contentType === 'video/mp4' ? 'recording.mp4' : 'recording.webm');
       const output = path.join(temporaryDirectory, 'documentation.mp4');
       const bytes = await receiveInputFile(req, source, MAX_DOCUMENTATION_VIDEO_BYTES);
-      if (!bytes) return json(res, 400, { error: 'No WebM recording received' });
+      if (!bytes) return json(res, 400, { error: 'No video recording received' });
+      const requestedFps = Number(req.headers['x-video-fps']);
+      const fps = Number.isFinite(requestedFps) && requestedFps > 0
+        ? Math.max(1, Math.min(120, requestedFps))
+        : 30;
       await transcodeVideoFileToMp4({
         sourcePath: source,
         outputPath: output,
         ffmpegPath: videoExtensionFfmpeg,
+        fps,
       });
       const stat = await fsp.stat(output);
       res.writeHead(200, {
@@ -10794,17 +12109,25 @@ async function handleApi(req, res, url) {
   }
 
   if (route === '/api/prompt/provider/test' && req.method === 'POST') {
-    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can test the shared external prompt provider' });
+    if (!isAdmin()) return json(res, 403, { error: 'Only the owner profile can test the shared prompt planner' });
     const provider = configuredExternalLlm();
-    const text = await externalLlmRequest({
-      provider: provider.provider,
-      model: provider.model,
-      apiKey: provider.apiKey,
-      baseUrl: provider.baseUrl,
+    const parts = {
       instruction: 'You are checking a prompt-writing connection. Follow the user request exactly.',
       userInput: 'Reply with exactly: Connection ready',
-      maxTokens: 64,
-    });
+    };
+    const text = provider.provider === 'local'
+      ? await queueTextEnhancement(parts, Math.floor(Math.random() * 2 ** 31), '', 64, {
+        profileId: req.profile.id, broadcastStatus: false,
+      })
+      : await externalLlmRequest({
+        provider: provider.provider,
+        model: provider.model,
+        apiKey: provider.apiKey,
+        baseUrl: provider.baseUrl,
+        instruction: parts.instruction,
+        userInput: parts.userInput,
+        maxTokens: 64,
+      });
     return json(res, 200, {
       ok: true,
       provider: provider.provider,
@@ -10921,7 +12244,7 @@ async function handleApi(req, res, url) {
       const q = await (await comfyFetch('/queue')).json();
       // Other profiles' jobs stay visible (shared GPU) but get redacted labels
       const sanitize = (row) => {
-        const job = jobs.get(row.jobId);
+        const job = jobs.get(row.jobId) || externalPromptPreflights.get(row.jobId);
         const owned = !!job && job.profileId === req.profile.id;
         if (job && job.profileId && job.profileId !== req.profile.id) {
           const who = db.profiles.find((p) => p.id === job.profileId);
@@ -10933,6 +12256,7 @@ async function handleApi(req, res, url) {
         }
         return Object.assign({}, row, {
           owned,
+          recoverableGeneration: owned && recoverableGenerationJob(job),
           sequenceId: owned && job.params && job.params.editSequence
             ? job.params.editSequence.id
             : (owned && job.videoChunkSequence ? job.videoChunkSequence.id : undefined),
@@ -10946,6 +12270,35 @@ async function handleApi(req, res, url) {
       };
       const running = (q.queue_running || []).map((entry) => markReorderable(sanitize(describeQueueEntry(entry, true))));
       const pending = (q.queue_pending || []).map((entry) => markReorderable(sanitize(describeQueueEntry(entry, false))));
+      const preparing = [...externalPromptPreflights.values()].map((entry) => markReorderable(sanitize({
+        jobId: entry.jobId,
+        kind: entry.kind,
+        itemId: null,
+        thumbnail: entry.thumbnail,
+        label: entry.label,
+        queuedAt: entry.queuedAt,
+        startedAt: entry.queuedAt,
+        elapsedMs: Math.max(0, queueNow - entry.queuedAt),
+        durationMs: Math.max(0, queueNow - entry.queuedAt),
+        preparing: true,
+        cancellable: false,
+      })));
+      const upcoming = db.smartRuns
+        .filter((run) => run.profileId === req.profile.id && ['ready', 'running', 'queueing', 'review'].includes(run.status))
+        .flatMap((run) => (run.steps || []).filter((step) => step.status === 'pending').map((step) => ({
+          jobId: `smart-${run.id}-${step.id}`,
+          smartRunId: run.id,
+          kind: step.kind === 'video' ? 'video' : 'image',
+          itemId: null,
+          thumbnail: null,
+          label: `${run.plan?.title || 'Smart production'} · ${step.label || 'Upcoming step'}`,
+          queuedAt: run.createdAt || queueNow,
+          upcoming: true,
+          waitingForReview: run.status === 'review',
+          cancellable: run.status === 'review',
+          reorderable: false,
+          owned: true,
+        })));
       const queuedIds = new Set([...running, ...pending].map((row) => row.jobId));
       const now = Date.now();
       const finalizing = [...jobs.entries()]
@@ -10964,8 +12317,10 @@ async function handleApi(req, res, url) {
         })));
       return json(res, 200, {
         ok: true,
+        preparing,
         running,
         pending,
+        upcoming,
         finalizing,
         downloads: activeDownloads,
         health: await queueHealth(running, pending),
@@ -10975,7 +12330,7 @@ async function handleApi(req, res, url) {
         }),
       });
     } catch (e) {
-      return json(res, 200, { ok: false, error: String(e.message || e), running: [], pending: [], finalizing: [], downloads: activeDownloads });
+      return json(res, 200, { ok: false, error: String(e.message || e), preparing: [], running: [], pending: [], upcoming: [], finalizing: [], downloads: activeDownloads });
     }
   }
 
@@ -10986,6 +12341,39 @@ async function handleApi(req, res, url) {
     saveDb();
     broadcast('queueHistoryCleared', { profileId: req.profile.id, cleared });
     return json(res, 200, { ok: true, cleared });
+  }
+
+  if (route === '/api/queue/reviews/clear' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    const requestedRunId = String(body.smartRunId || '');
+    const reviewRuns = db.smartRuns.filter((run) => run.profileId === req.profile.id
+      && run.status === 'review'
+      && (!requestedRunId || run.id === requestedRunId));
+    const clearedItems = reviewRuns.reduce((total, run) => total
+      + (run.steps || []).filter((step) => step.status === 'pending').length, 0);
+    const now = Date.now();
+    for (const run of reviewRuns) {
+      run.status = 'cancelled';
+      run.error = 'Removed from queue';
+      run.updatedAt = now;
+      for (const step of run.steps || []) {
+        if (step.status !== 'pending') continue;
+        step.status = 'cancelled';
+        step.error = 'Removed from queue';
+      }
+    }
+    if (reviewRuns.length) {
+      saveDb();
+      for (const run of reviewRuns) {
+        broadcast('smartRunUpdated', { profileId: run.profileId, run: publicSmartRun(run) });
+      }
+      broadcast('smartReviewQueueCleared', {
+        profileId: req.profile.id,
+        clearedRuns: reviewRuns.length,
+        clearedItems,
+      });
+    }
+    return json(res, 200, { ok: true, clearedRuns: reviewRuns.length, clearedItems });
   }
 
   if (route === '/api/queue/reorder' && req.method === 'POST') {
@@ -11124,12 +12512,14 @@ async function handleApi(req, res, url) {
 
   if (route === '/api/gallery') {
     const unlocked = isPrivateUnlocked(req);
-    const revision = `${SERVER_INSTANCE_ID}.${dbRevision}`;
+    const scenes = splatService.galleryScenes(req);
+    const sceneRevision = scenes.map(scene => scene.id).join(',');
+    const revision = `${SERVER_INSTANCE_ID}.${dbRevision}.${crypto.createHash('sha256').update(sceneRevision).digest('hex').slice(0, 12)}`;
     if (url.searchParams.get('revision') === revision) {
       return json(res, 200, { unchanged: true, revision });
     }
     const view = galleryView(db, unlocked);
-    view.items = view.items.filter((it) => it.profileId === req.profile.id);
+    view.items = view.items.filter((it) => it.profileId === req.profile.id).map(item => ({ ...item, splats: scenes.filter(scene => scene.sourceItemId === item.id).map(({ id, title, count, videoId }) => ({ id, title, count, videoId })) }));
     view.folders = view.folders.filter((f) => f.profileId === req.profile.id);
     const uploadedAssets = db.uploadedAssets
       .filter((asset) => asset.profileId === req.profile.id && !asset.deletedAt)
@@ -11389,6 +12779,7 @@ async function handleApi(req, res, url) {
     const prefs = ownPreferences();
     return json(res, 200, {
       defaults: normalizeGenerationDefaults(prefs && prefs.defaults),
+      assetPicker: normalizeAssetPickerPreferences(prefs && prefs.assetPicker),
       contextOverrides: normalizeContextOverrides(prefs && prefs.contextOverrides),
     });
   }
@@ -11400,9 +12791,16 @@ async function handleApi(req, res, url) {
       db.userPreferences.push(prefs);
     }
     if (body.defaults) prefs.defaults = normalizeGenerationDefaults(body.defaults);
+    if (Object.prototype.hasOwnProperty.call(body, 'assetPicker')) {
+      prefs.assetPicker = normalizeAssetPickerPreferences(body.assetPicker);
+    }
     if (body.contextOverrides) prefs.contextOverrides = normalizeContextOverrides(body.contextOverrides);
     saveDb();
-    return json(res, 200, { defaults: normalizeGenerationDefaults(prefs.defaults), contextOverrides: normalizeContextOverrides(prefs.contextOverrides) });
+    return json(res, 200, {
+      defaults: normalizeGenerationDefaults(prefs.defaults),
+      assetPicker: normalizeAssetPickerPreferences(prefs.assetPicker),
+      contextOverrides: normalizeContextOverrides(prefs.contextOverrides),
+    });
   }
 
   if (route === '/api/context') {
@@ -12170,4 +13568,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('    Note: Node < 22 detected - live progress disabled (polling fallback).');
   }
   console.log('');
+  if (pendingSmartRecoveryIds.size) scheduleSmartRunRecovery(250);
 });
