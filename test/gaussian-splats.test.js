@@ -89,6 +89,8 @@ test('orbit interpolation doubles frame intervals and preserves real-time playba
   assert.equal(graph.video.inputs.fps, 48);
   assert.deepEqual(graph.video.inputs.audio, ['decode_audio', 0]);
   assert.equal(graph.condition.inputs.length, frames);
+  // Orbit path forces turbo; use turbo default steps instead of the non-turbo 20-step default.
+  assert.equal(graph.scheduler.inputs.steps, 6);
   assert.ok(Math.abs(((frames - 1) * 2 + 1) / 48 - frames / 24) < 1 / 24);
   await assert.rejects(buildSplatOrbitGraph(options, {}, { buildMiniMaxH3Graph }), /requires RIFE/);
 });
