@@ -18,7 +18,7 @@
 
 ![Mix Studio Create workspace running a curated Krea 2 workflow](docs/download/mix-studio-create.webp)
 
-Mix Studio is a local web interface that builds and submits ComfyUI API graphs for image generation, regional prompting, image editing, video generation, motion transfer, and upscaling. Curated families include Krea 2, Flux 2 Klein, Qwen Image 2.1, Qwen Image Edit, MiniMax H3, LTX 2.3/2.5, Wan 2.2, 10Eros, SCAIL 2, and Wan Animate 2.
+Mix Studio is a local web interface that builds and submits ComfyUI API graphs for image generation, regional prompting, image editing, video generation, motion transfer, and upscaling. Curated families include Krea 2, Flux 2 Klein, Qwen Image 2.1, Qwen Image Edit, MiniMax H3, LTX 2.3, LTX 2.5, Wan 2.2, 10Eros, and SCAIL 2, plus Wan Animate 2.
 
 > **Intel Arc / XPU fork (`jluna0413/Mix-Studio`)**: experimental Intel Arc (XPU) compatibility (H3/CLIP/UNet, splat-orbit, device-lost handling). Details: **[docs/intel-arc-compatibility.md](docs/intel-arc-compatibility.md)** / **[docs/comfyui-h3-arc-patch.md](docs/comfyui-h3-arc-patch.md)**. Upstream: [BlackMixture/Mix-Studio](https://github.com/BlackMixture/Mix-Studio).
 
@@ -35,7 +35,7 @@ Krea 2 editing includes Identity Edit v1.2 and multi-reference **Krea 2 Remix** 
 2. Open the `.bat` on Windows, run `zsh ~/Downloads/install_MixStudio.command` on macOS, or clone the repository and run `./start-mixstudio.sh` on Linux.
 3. Mix Studio opens in your browser, detects an existing ComfyUI installation, and guides you through the files required by the workflows you choose.
 
-Windows/NVIDIA supports the full curated set. Linux/NVIDIA works with source-based ComfyUI or a configured service. Apple Silicon macOS uses a Metal-compatible subset with BF16 LTX 2.3. Upstream LTX 2.5 and MiniMax H3 rely on NVIDIA-specific INT8 ConvRot/NVFP4/AWQ (unavailable on Metal/AMD ROCm); **this Intel Arc fork adds experimental XPU-oriented H3 compatibility** (see [docs/intel-arc-compatibility.md](docs/intel-arc-compatibility.md)) depending on your XPU stack/models/patches. AMD ROCm is experimental and needs ROCm-enabled ComfyUI/PyTorch; Mix Studio keeps compatible FP8 routes and uses SDPA for SeedVR2. Minimum guided route: 4 GB offloaded edit; 16 GB VRAM practical for images; 24 GB for larger video.
+Windows/NVIDIA supports the full curated set. Linux/NVIDIA works with source-based ComfyUI or a configured service. Apple Silicon macOS uses a Metal-compatible subset with BF16 LTX 2.3. Upstream LTX 2.5 and MiniMax H3 rely on NVIDIA-specific INT8 ConvRot/NVFP4/AWQ (unavailable on Metal/AMD ROCm); **this Intel Arc fork adds experimental XPU-oriented H3 compatibility** (see [docs/intel-arc-compatibility.md](docs/intel-arc-compatibility.md)) depending on your XPU stack/models/patches. AMD ROCm is experimental and needs ROCm-enabled ComfyUI/PyTorch; Mix Studio keeps compatible FP8 routes and uses SDPA for SeedVR2. Minimum guided route: 4 GB offloaded edit workflow; 16 GB VRAM practical for images; 24 GB for larger video.
 
 For manual Git setup, detailed VRAM guidance, shared-model discovery, phone access, troubleshooting, and uninstall behavior, see **[Installation and operations](docs/installation-and-operations.md)**. Do not use GitHub's **Download ZIP** if you want in-app updates.
 
