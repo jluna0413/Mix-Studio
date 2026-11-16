@@ -31,6 +31,7 @@ const { strandedJobVerdict } = require('./lib/stranded-jobs');
 const { probeH3SlaAttention } = require('./lib/h3-sla-attention');
 const { h3AttentionOptions, normalizeH3AttentionBackend, kitchenAttentionCapability } = require('./lib/h3-attention');
 const { h3PerformanceReport } = require('./lib/h3-performance');
+const { explainComfyFailure, historyExecutionError } = require('./lib/memory-diagnostics');
 const {
   krea2ClipCompatibility,
   krea2ClipCompatibilityError,
@@ -2814,8 +2815,8 @@ function handleWsMessage(msg) {
     const exceptionMessage = d.exception_message || 'execution error';
     const refNames = (job && job.refImageNames) || [];
     // [Errno 22] on KSampler = ComfyUI's stderr pipe died (tqdm->wandb capture
-    // chain), NOT a graph problem. Per AGENTS.md §55: fix = kill python on the
-    // ComfyUI port and relaunch. We retry once via the ComfyUI restart path
+    // chain), NOT a graph problem. Per AGENTS.md: fix = kill python on the
+    // ComfyUI port and relaunch. Retry once via the ComfyUI restart path
     // (which handles the worker-child PID kill) before surfacing the error.
     if (/\[Errno\s*22\]/.test(exceptionMessage) || /Invalid argument/.test(exceptionMessage)) {
       if (job.errno22Retries === undefined) {
@@ -2846,10 +2847,11 @@ function handleWsMessage(msg) {
       failJob(pid, gpuDeviceLostUserMessage());
       return;
     }
+    const baseMessage = exceptionMessage + (d.node_type ? ` (${d.node_type})` : '');
     if (refNames.length && (matchesImageInputPattern(exceptionMessage) || matchesImageInputPattern(d.node_type || ''))) {
       failJob(pid, imageInputNotAcceptedMessage(refNames[0]));
     } else {
-      failJob(pid, exceptionMessage + (d.node_type ? ` (${d.node_type})` : ''));
+      failJob(pid, explainComfyFailure(baseMessage));
     }
   } else if (msg.type === 'execution_interrupted' && pid && jobs.has(pid)) {
     const job = jobs.get(pid);
@@ -3913,10 +3915,10 @@ setInterval(async () => {
         const job = jobs.get(pid);
         const refNames = (job && job.refImageNames) || [];
         const histError = JSON.stringify(hist.status.error || hist.status || '');
-        const extractedMsg = extractComfyErrorMessage(hist.status);
-        if (refNames.length && matchesImageInputPattern(histError)) {
+        const detail = historyExecutionError(hist) || extractComfyErrorMessage(hist.status) || 'Execution error (see ComfyUI console)';
+        if (refNames.length && (matchesImageInputPattern(histError) || matchesImageInputPattern(detail))) {
           failJob(pid, imageInputNotAcceptedMessage(refNames[0]));
-        } else if (isGpuDeviceLostError(histError) || isGpuDeviceLostError(extractedMsg)) {
+        } else if (isGpuDeviceLostError(histError) || isGpuDeviceLostError(detail)) {
           if (job && job.gpuDeviceLostRetries === undefined) {
             job.gpuDeviceLostRetries = 1;
             console.warn(`[job:${pid}] GPU device lost detected via polling. Attempting ComfyUI restart (attempt ${job.gpuDeviceLostRetries}).`);
@@ -3926,7 +3928,7 @@ setInterval(async () => {
             failJob(pid, gpuDeviceLostUserMessage());
           }
         } else {
-          failJob(pid, extractedMsg || 'Execution error (see ComfyUI console)');
+          failJob(pid, explainComfyFailure(detail));
         }
       }
     } catch (error) {
@@ -6162,6 +6164,8 @@ async function waitForComfyImage(pid, timeoutMs = 3 * 60 * 1000) {
     } catch { continue; }
     if (!entry) continue;
     if (entry.status && entry.status.status_str === 'error') {
+      const detail = historyExecutionError(entry);
+      if (detail) throw new Error(`ComfyUI failed: ${explainComfyFailure(detail)}`);
       const messages = JSON.stringify(entry.status.messages || []).slice(0, 300);
       throw new Error(`ComfyUI failed: ${messages}`);
     }
