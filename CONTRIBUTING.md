@@ -2,6 +2,10 @@
 
 Bug reports, focused fixes, documentation improvements, and new workflow integrations are welcome.
 
+## Agent-assisted and sandboxed workflow
+
+If you use a coding agent (OpenCode, Codex, etc.) to prepare changes, follow the sandboxed, reviewable workflow in [docs/agent-dev-workflow.md](docs/agent-dev-workflow.md). Use an isolated git worktree/branch, keep changes scoped, run `node --check`/`node --test`, and provide evidence (diff + commit hashes + test results) for human review. For PRs, automated review (e.g. CodeRabbit, if enabled) complements—but does not replace—local validation and maintainer review. For this Intel fork, keep **upstream-aligned fixes** separate from **fork-only** changes (see the handoff/spec docs under `docs/handoffs/`).
+
 ## Before opening a pull request
 
 - Use Node.js 22 or newer.

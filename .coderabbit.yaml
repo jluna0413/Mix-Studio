@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration for Mix Studio (jluna0413/Mix-Studio fork).
+# Automated PR review to complement local agent validation and human review.
+# See: https://docs.coderabbit.ai/guides/configure-coderabbit
+
+language: "en-US"
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: false
+  poem: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_filters:
+    # Ignore generated/vendor/local data and large media/assets not relevant to logic review
+    - "!data/**"
+    - "!**/*.png"
+    - "!**/*.jpg"
+    - "!**/*.jpeg"
+    - "!**/*.webp"
+    - "!**/*.mp4"
+    - "!**/*.gif"
+    - "!**/node_modules/**"
+    - "!**/*.asar"
+
+  path_instructions:
+    - path: "server.js"
+      instructions: >
+        Focus on correctness, security, job/queue lifecycle, error handling, and
+        ComfyUI graph/request safety. Flag behavior changes in generation/edit/video
+        routes, probe-gating (e.g. Sage/SLA/H3), and failure/retry paths. Prefer
+        minimal, reviewable fixes; avoid drive-by refactors.
+    - path: "lib/**"
+      instructions: >
+        Review for logic correctness, edge cases, and compatibility with callers in
+        server.js/public. Keep modules focused; ensure new behavior is covered by
+        tests where practical.
+    - path: "public/**"
+      instructions: >
+        Check UI state/DOM logic, regressions in existing workflows, and consistency
+        with server behavior. Frontend is build-free vanilla JS/CSS/HTML.
+    - path: "test/**"
+      instructions: >
+        Ensure tests assert intended behavior (not just current quirks), remain
+        deterministic, and do not touch real/live data directories.
+    - path: "docs/**"
+      instructions: >
+        Check accuracy and clarity. Distinguish upstream-aligned guidance from
+        Intel-fork-specific notes where relevant.
+
+chat:
+  auto_reply: true
