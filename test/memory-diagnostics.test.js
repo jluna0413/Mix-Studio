@@ -77,8 +77,12 @@ test('history entries recover the real exception instead of a generic message', 
 });
 
 test('both job-failure paths explain memory failures, and the docs say what to do', () => {
-  assert.match(server, /failJob\(pid, explainComfyFailure\(\(d\.exception_message \|\| 'execution error'\)/);
-  assert.match(server, /failJob\(pid, explainComfyFailure\(historyExecutionError\(hist\) \|\| 'Execution error \(see ComfyUI console\)'\)\)/);
+  // WS execution_error path: normalize the raw ComfyUI error, then explain memory failures.
+  assert.match(server, /const baseMessage = exceptionMessage \+ \(d\.node_type \? ` \(\$\{d\.node_type\}\)` : ''\);/);
+  assert.match(server, /failJob\(pid, explainComfyFailure\(baseMessage\)\);/);
+  // Polling/history path: recover the real execution error and explain memory failures.
+  assert.match(server, /const detail = historyExecutionError\(hist\) \|\| extractComfyErrorMessage\(hist\.status\) \|\| 'Execution error \(see ComfyUI console\)';/);
+  assert.match(server, /failJob\(pid, explainComfyFailure\(detail\)\);/);
   assert.match(operations, /### System memory \(RAM\) and Windows crashes/);
   assert.match(operations, /--disable-pinned-memory --disable-async-offload/);
   assert.match(operations, /Mix Studio does not change ComfyUI launch flags for you/);
