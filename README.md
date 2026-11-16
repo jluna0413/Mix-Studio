@@ -20,6 +20,8 @@
 
 Mix Studio is a local web interface that builds and submits ComfyUI API graphs for image generation, regional prompting, image editing, video generation, motion transfer, and upscaling. Its curated model families include Krea 2, Flux 2 Klein, Qwen Image 2.1, Qwen Image Edit, MiniMax H3, LTX 2.3, LTX 2.5, Wan 2.2, 10Eros, and SCAIL 2, plus Wan Animate 2.
 
+> **Intel Arc / XPU fork (`jluna0413/Mix-Studio`)**: this fork carries experimental Intel Arc (XPU) compatibility work on top of upstream Mix Studio — including H3/CLIP/UNet graph fixes, splat-orbit correctness fixes, stranded-job/device-lost handling, and Arc-oriented workflow reliability improvements. Status, setup notes, and known bugs/limitations are documented in **[docs/intel-arc-compatibility.md](docs/intel-arc-compatibility.md)** (and the ComfyUI-side H3 patch in **[docs/comfyui-h3-arc-patch.md](docs/comfyui-h3-arc-patch.md)**). Upstream project: [BlackMixture/Mix-Studio](https://github.com/BlackMixture/Mix-Studio).
+
 Krea 2 editing includes Identity Edit v1.2 and the multi-reference **Krea 2 Remix** workflow, with an advanced Reference boost control for stronger identity and subject guidance.
 
 - **Create from anywhere:** use the same touch-friendly workspace on the generation computer, a phone on the same Wi-Fi, or privately through Tailscale.
@@ -33,7 +35,7 @@ Krea 2 editing includes Identity Edit v1.2 and the multi-reference **Krea 2 Remi
 2. Open the `.bat` on Windows, run `zsh ~/Downloads/install_MixStudio.command` on macOS, or clone the repository and run `./start-mixstudio.sh` on Linux.
 3. Mix Studio opens in your browser, detects an existing ComfyUI installation, and guides you through the files required by the workflows you choose.
 
-Windows with NVIDIA supports the full curated workflow set. Linux with NVIDIA is supported through an existing source-based ComfyUI environment or an explicitly configured user service. Apple Silicon macOS uses a Metal-compatible subset with official BF16 LTX 2.3 weights. The curated LTX 2.5 and MiniMax H3 routes use NVIDIA-specific INT8 ConvRot or NVFP4/AWQ weights, so they are unavailable on Apple Metal and AMD ROCm for now. AMD ROCm on Windows or Linux is experimental and requires a working ROCm-enabled ComfyUI/PyTorch environment; Mix Studio detects AMD telemetry, keeps compatible FP8 routes, and replaces NVIDIA-only SeedVR2 attention modes with SDPA. The lowest discrete-GPU guided route is a 4 GB offloaded edit workflow; 16 GB VRAM is the practical image recommendation and 24 GB is recommended for larger video workflows.
+Windows with NVIDIA supports the full curated workflow set. Linux with NVIDIA is supported through an existing source-based ComfyUI environment or an explicitly configured user service. Apple Silicon macOS uses a Metal-compatible subset with official BF16 LTX 2.3 weights. In upstream, the curated LTX 2.5 and MiniMax H3 routes rely on NVIDIA-specific INT8 ConvRot or NVFP4/AWQ weights/kernels and are unavailable on Apple Metal and AMD ROCm; **this Intel Arc fork adds experimental XPU-oriented H3/graph compatibility** (see [docs/intel-arc-compatibility.md](docs/intel-arc-compatibility.md)) but support depends on your ComfyUI/XPU stack, compatible model variants, and in some cases ComfyUI-side patches — expect limitations and slower/uneven performance vs NVIDIA. AMD ROCm on Windows or Linux is experimental and requires a working ROCm-enabled ComfyUI/PyTorch environment; Mix Studio detects AMD telemetry, keeps compatible FP8 routes, and replaces NVIDIA-only SeedVR2 attention modes with SDPA. The lowest discrete-GPU guided route is a 4 GB offloaded edit workflow; 16 GB VRAM is the practical image recommendation and 24 GB is recommended for larger video workflows.
 
 For manual Git setup, detailed VRAM guidance, shared-model discovery, phone access, troubleshooting, and uninstall behavior, see **[Installation and operations](docs/installation-and-operations.md)**. Do not use GitHub's **Download ZIP** if you want in-app updates.
 
@@ -156,6 +158,8 @@ For update requirements, recovery behavior, and the maintainer release process, 
 ## Documentation
 
 - **[Installation and operations](docs/installation-and-operations.md):** setup, hardware guidance, ComfyUI discovery, updates, phone access, repair, and uninstall.
+- **[Intel Arc / XPU compatibility (this fork)](docs/intel-arc-compatibility.md):** experimental Intel Arc status, setup, fixes, and known bugs/limitations for `jluna0413/Mix-Studio`.
+- **[ComfyUI H3 Arc patch](docs/comfyui-h3-arc-patch.md):** ComfyUI-side quantized CLIP/vision loader patch for H3 on Intel Arc.
 - **[Technical reference](docs/technical-reference.md):** workflow behavior, required ComfyUI components, queue operation, and local data layout.
 - **[Roadmap](ROADMAP.md):** deferred integrations and the conditions for revisiting them.
 - **[Changelog](CHANGELOG.md):** user-facing release notes.

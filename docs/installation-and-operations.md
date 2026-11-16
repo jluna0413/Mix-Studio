@@ -2,6 +2,8 @@
 
 This guide contains the setup, hardware, networking, update, and maintenance detail that is intentionally kept out of the main project page.
 
+> **Intel Arc / XPU fork note (`jluna0413/Mix-Studio`)**: this checkout includes experimental Intel Arc compatibility work and fork-specific status/bugs. Read **[Intel Arc / XPU compatibility](intel-arc-compatibility.md)** and **[ComfyUI H3 Arc patch](comfyui-h3-arc-patch.md)** before relying on H3/3D routes on Arc. Upstream guidance below may describe NVIDIA-specific curated routes that differ from this fork’s XPU-oriented behavior.
+
 ## Supported installation
 
 Mix Studio supports Windows with NVIDIA for the complete curated workflow set, Linux with NVIDIA through a source-based ComfyUI environment, and Apple Silicon macOS for the Metal-compatible workflow set. AMD ROCm integration on Windows and Linux is experimental and requires an already working ROCm-enabled ComfyUI/PyTorch environment. Every platform uses a portable Git checkout rather than a packaged executable. This keeps the installation transparent and lets the owner-only updater fast-forward the checkout without touching user data.

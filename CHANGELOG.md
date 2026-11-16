@@ -1,5 +1,29 @@
 # Changelog
 
+## Intel Arc / XPU fork — `intel-arc-xpu` (unreleased)
+
+Fork: [jluna0413/Mix-Studio](https://github.com/jluna0413/Mix-Studio) (based on upstream [BlackMixture/Mix-Studio](https://github.com/BlackMixture/Mix-Studio), merged with v1.3.0-era upstream work). See [docs/intel-arc-compatibility.md](docs/intel-arc-compatibility.md) for setup, status, and known issues.
+
+### Compatibility and fixes (Intel Arc / XPU focus)
+- **H3 CLIP safety:** prevent the lightweight H3 CLIP fallback from loading a 4B encoder without its required projection/adapter path; when unavailable, fall back to a compatible 32B H3 text encoder to avoid H3 DiT `addmm`/matmul shape mismatches at sampling (e.g. 1002x2560 vs 5120x5376).
+- **Splat/orbit graph correctness:** probe `UNETLoader.weight_dtype` from live `/object_info` for the splat/H3 INT8 path and remove an undefined RTX upscaler dependency from the splat orbit graph.
+- **Stability/recovery:** detect Intel Level Zero GPU device-lost errors (`UR_RESULT_ERROR_DEVICE_LOST` / device lost), surface a clear failure, and reap stranded jobs when ComfyUI crashes/restarts without history so setup/model/dependency operations are not blocked by dead queue entries.
+- **Restored/local Intel-oriented workflow fixes on this line:** XPU/device handling for H3 paths where applicable, SeedVR2 batch sizing fixes for 32 GB Arc cards, SDPA/Triton-oriented attention path with CUDA-only SageAttention gated off where not usable, and related workflow/UI/test updates (see commit history on `intel-arc-xpu`).
+
+### Validation (this tree)
+- `node --check server.js`: clean
+- `node --test`: **1584/1584 passed, 0 failed** (Windows). Tests cover app/server/graph logic; they do not guarantee end-to-end generation quality/performance on every Intel Arc + ComfyUI/XPU stack.
+
+### Known bugs / limitations
+- **Performance:** H3/3D (photo→orbit→splat) generation can be very slow on Intel Arc; multi-hour runs have been observed depending on settings, drivers, and ComfyUI XPU optimizations.
+- **Device loss / instability:** `UR_RESULT_ERROR_DEVICE_LOST` can crash ComfyUI mid-generation; restart/retry may be required (Mix Studio now detects and cleans up stranded jobs).
+- **ComfyUI patch required in affected builds:** H3 on Arc may require the `sd1_clip.py` mixed-precision/quantized CLIP + vision loader fixes described in [docs/comfyui-h3-arc-patch.md](docs/comfyui-h3-arc-patch.md); re-apply after ComfyUI upgrades.
+- **Conditional encoder paths:** lightweight/distilled H3 CLIP paths require matching loader nodes/projection/adapter files; otherwise use a compatible 32B H3 CLIP.
+- **Attention parity:** CUDA-only SageAttention/SLA/Comfy Kitchen acceleration is not universally available on XPU; expect SDPA/native fallbacks and different speed/quality tradeoffs.
+- **3D splats remain experimental:** floaters/background distortion/inconsistent geometry can occur (pipeline limitation).
+- **NVIDIA-specific upstream routes:** some curated quant/kernel routes are NVIDIA-oriented; Intel Arc support here is best-effort and model/node-stack dependent.
+- **Out of scope:** vLLM-Omni XPU serving features (SPARGE_ATTN/USP/tensor parallel) are a different runtime than this ComfyUI workflow integration.
+
 ## 1.3.0 - 2026-09-24
 
 ### Reference-to-asset pipeline
