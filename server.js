@@ -10072,6 +10072,14 @@ async function handleApiRequest(req, res, url) {
     p.qwenLightningStrength = clampNum(p.qwenLightningStrength, 0, 2, 1);
     p.steps = clampInt(p.steps, 1, 100, (p.mode === 'edit' ? p.editEngine : p.imageEngine) === 'qwen21' ? 40 : (p.mode === 't2i' && p.krea2Turbo ? 8 : 12));
     p.cfg = clampNum(p.cfg, 0, 30, (p.mode === 'edit' ? p.editEngine : p.imageEngine) === 'qwen21' ? 2.5 : 1);
+    // Krea 2 Turbo is a distilled one-pass model: it expects ~8 steps at CFG 1.
+    // A stale UI can leave Qwen 2.1's 40/2.5 in the shared inputs after an engine
+    // switch (issue #82), which over-cooks every image. Pin Turbo to its intended
+    // sampling envelope server-side so no client can bypass it.
+    if (p.mode === 't2i' && p.krea2Turbo && p.imageEngine !== 'qwen21') {
+      p.steps = clampInt(p.steps, 8, 16, 8);
+      p.cfg = 1;
+    }
     p.krea2RawTurboLora = p.krea2Turbo || !p.krea2RawTurboLora || typeof p.krea2RawTurboLora !== 'object'
       ? undefined
       : {
