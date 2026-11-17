@@ -6369,11 +6369,14 @@ function renderH3AttentionBackend() {
   const capability = selected === 'sageattention'
     ? lastMeta?.dependencies?.sageAttention
     : (selected === 'sla' ? lastMeta?.dependencies?.slaAttention : selected === 'kitchen' ? lastMeta?.dependencies?.kitchenAttention : { ready: true });
+  const backends = lastMeta?.dependencies?.attentionBackends || {};
   buttons.forEach((button) => {
     const active = button.dataset.h3Attention === selected;
     const backendCapability = button.dataset.h3Attention === 'sageattention'
       ? lastMeta?.dependencies?.sageAttention
-      : (button.dataset.h3Attention === 'sla' ? lastMeta?.dependencies?.slaAttention : button.dataset.h3Attention === 'kitchen' ? lastMeta?.dependencies?.kitchenAttention : { ready: true });
+      : (button.dataset.h3Attention === 'sla' ? lastMeta?.dependencies?.slaAttention
+        : button.dataset.h3Attention === 'kitchen' ? lastMeta?.dependencies?.kitchenAttention
+          : (backends[button.dataset.h3Attention] || { ready: true }));
     button.setAttribute('aria-checked', String(active));
     button.dataset.ready = String(backendCapability?.ready === true);
   });

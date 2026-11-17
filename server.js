@@ -29,7 +29,7 @@ const { sam3InstallStatus } = require('./lib/sam3-installer');
 const { probeSageAttention } = require('./lib/sage-attention');
 const { strandedJobVerdict } = require('./lib/stranded-jobs');
 const { probeH3SlaAttention } = require('./lib/h3-sla-attention');
-const { h3AttentionOptions, normalizeH3AttentionBackend, kitchenAttentionCapability, h3AttentionRuntimeGate } = require('./lib/h3-attention');
+const { h3AttentionOptions, normalizeH3AttentionBackend, kitchenAttentionCapability, standardAttentionCapability, tritonAttentionCapability, h3AttentionRuntimeGate } = require('./lib/h3-attention');
 const { h3PerformanceReport } = require('./lib/h3-performance');
 const { explainComfyFailure, historyExecutionError } = require('./lib/memory-diagnostics');
 const {
@@ -9329,6 +9329,8 @@ async function handleApiRequest(req, res, url) {
       if (slaRuntime.ready === true && !slaAttention.nodeReady) {
         slaAttention.reason = 'The pinned H3 SLA custom node is not loaded in ComfyUI.';
       }
+      const standardAttention = standardAttentionCapability(info);
+      const tritonAttention = tritonAttentionCapability(info);
       const nodeRevisions = await pinnedNodeRevisionStatus(installStatus, url.searchParams.has('refresh'));
       const missingComponents = missingDependencyComponentIds(missing, models, {
         sageAttention,
@@ -9408,6 +9410,10 @@ async function handleApiRequest(req, res, url) {
           sageAttention,
           slaAttention,
           kitchenAttention: kitchenAttentionCapability(info),
+          attentionBackends: {
+            standard: standardAttention,
+            triton: tritonAttention,
+          },
         },
         models,
         krea2: {
@@ -10765,6 +10771,14 @@ async function handleApiRequest(req, res, url) {
       }
       if (h3Attention.attentionBackend === 'kitchen' && !kitchenAttentionCapability(info).ready) {
         return json(res, 409, { error: kitchenAttentionCapability(info).reason, code: 'h3_kitchen_unavailable' });
+      }
+      const standardAttention = standardAttentionCapability(info);
+      const tritonAttention = tritonAttentionCapability(info);
+      if (h3Attention.attentionBackend === 'standard' && standardAttention.ready !== true) {
+        return json(res, 409, { error: standardAttention.reason, code: 'h3_standard_attention_unavailable' });
+      }
+      if (h3Attention.attentionBackend === 'triton' && tritonAttention.ready !== true) {
+        return json(res, 409, { error: tritonAttention.reason, code: 'h3_triton_attention_unavailable' });
       }
       // H3 INT8 ConvRot models must load with weight_dtype int8 or they OOM at BF16.
       // Probe the installed UNETLoader schema so an older ComfyUI falls back to default.
