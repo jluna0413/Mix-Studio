@@ -591,7 +591,6 @@ const DEFAULT_SETTINGS = {
   ltxGemmaLora: 'gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors',
   ltxUpscaler: 'ltx-2.3-spatial-upscaler-x2-1.1.safetensors',
   ltx25Unet: 'LTX25-distilled-DiT-Q5_K_M.gguf',
-  qwenImageModel: 'D:/apps/AI Playground/resources/ComfyUI/models/diffusion_models/Qwen---Qwen-Image-2512',
   // Qwen-Image T2I runs on the GGUF-quantized transformer: the bf16 diffusers
   // pipeline needs 57.70GB resident and does not fit the Arc B70's 33.46GB.
   qwenImageGgufModel: 'qwen-image-2512-Q4_K_M.gguf',
@@ -3073,7 +3072,9 @@ async function restartComfyOnGpuDeviceLost(pid, job) {
 
 async function killLeakedVramHolders() {
   const python = 'python';
-  const gpuprocScript = 'D:/apps/AI Playground/resources/ComfyUI/_h3diag/gpuproc.py';
+  const gpuprocBase = String(RUNTIME?.comfy?.path || '').trim();
+  const gpuprocScript = gpuprocBase ? path.join(gpuprocBase, '_h3diag', 'gpuproc.py') : '';
+  if (!gpuprocScript) return [];
   try {
     const result = await new Promise((resolve, reject) => {
       execFile(python, [gpuprocScript, '--kill'], {
