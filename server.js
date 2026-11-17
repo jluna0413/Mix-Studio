@@ -4115,6 +4115,8 @@ function publicSmartRun(run) {
     references: normalizeSmartReferences(run.references),
     attentionBackend: normalizeH3AttentionBackend(run.attentionBackend, false),
     reviewReference: run.reviewReference === true,
+    turbo: run.turbo !== false,
+    upgradedAt: run.upgradedAt || null,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
     steps: (run.steps || []).map((step) => {
@@ -4134,6 +4136,10 @@ function publicSmartRun(run) {
         error: step.error || '',
         referenceFeedback: step.referenceFeedback || '',
         rerollCount: Math.max(0, Number(step.rerollCount) || 0),
+        quality: step.kind === 'video'
+          ? (step.request?.body?.h3Turbo === true || step.request?.body?.steps <= 8
+            ? 'turbo' : 'full')
+          : 'reference',
         result: items[0] ? {
           itemId: items[0].id,
           thumbnail: `/images/${encodeURIComponent(items[0].file)}`,
@@ -4186,6 +4192,7 @@ async function smartReferencesForStep(run, step) {
 function currentSmartStepRequest(run, step) {
   const compiled = compileSmartSteps(run.plan, {
     attentionBackend: normalizeH3AttentionBackend(run.attentionBackend, false),
+    turbo: run.turbo !== false,
   }, run.references);
   let current = null;
   if (step.kind === 'video') {
@@ -8520,11 +8527,13 @@ async function handleApiRequest(req, res, url) {
     }
     const now = Date.now();
     const attentionBackend = normalizeH3AttentionBackend(body.attentionBackend, body.sageAttention);
-    const steps = compileSmartSteps(plan, { attentionBackend }, references);
+    // Smart defaults to Turbo; the client sends turbo:false to opt out.
+    const turbo = body.turbo !== false;
+    const steps = compileSmartSteps(plan, { attentionBackend, turbo }, references);
     const run = {
       id: uid(), profileId: req.profile.id, clientToken: clientToken || uid(),
       brief: String(body.brief || plan.summary || '').trim().slice(0, 8000),
-      planHash, plan, references, attentionBackend,
+      planHash, plan, references, attentionBackend, turbo,
       reviewReference: steps.some((step) => step.kind === 'reference') && body.reviewReference === true,
       steps, status: 'ready', error: '', createdAt: now, updatedAt: now,
     };
@@ -8611,6 +8620,45 @@ async function handleApiRequest(req, res, url) {
     step.jobId = null;
     step.progress = null;
     step.error = '';
+    run.status = 'running';
+    run.error = '';
+    broadcastSmartRun(run);
+    await advanceSmartRun(run);
+    return json(res, 200, { run: publicSmartRun(run) });
+  }
+
+  const smartUpgrade = route.match(/^\/api\/smart\/runs\/([a-f0-9]+)\/upgrade$/);
+  if (smartUpgrade && req.method === 'POST') {
+    const run = smartRunForProfile(smartUpgrade[1], req.profile.id);
+    if (!run) return json(res, 404, { error: 'Smart production not found' });
+    if (!smartRunFinished(run)) {
+      return json(res, 409, { error: 'Wait for this Smart production to finish before rerunning clips.' });
+    }
+    const body = await readJsonBody(req);
+    const stepId = String(body.stepId || '').slice(0, 64);
+    const targets = (run.steps || []).filter((step) => step.kind === 'video'
+      && (!stepId || step.id === stepId)
+      && ['complete', 'failed', 'attention'].includes(step.status));
+    if (!targets.length) {
+      return json(res, 409, { error: stepId ? 'That clip is not available to rerun in full quality.' : 'This production has no video clips to rerun.' });
+    }
+    // Recompile with turbo off so the request body becomes the 20-step H3 path,
+    // then reset only the selected clips. References are reused unchanged.
+    const compiled = compileSmartSteps(run.plan, {
+      attentionBackend: normalizeH3AttentionBackend(run.attentionBackend, false),
+      turbo: false,
+    }, run.references);
+    for (const step of targets) {
+      const next = compiled.find((candidate) => candidate.kind === 'video'
+        && candidate.sceneIndex === step.sceneIndex);
+      if (next?.request) step.request = next.request;
+      step.status = 'pending';
+      step.jobId = null;
+      step.progress = null;
+      step.error = '';
+    }
+    run.turbo = false;
+    run.upgradedAt = Date.now();
     run.status = 'running';
     run.error = '';
     broadcastSmartRun(run);

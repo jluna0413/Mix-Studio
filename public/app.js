@@ -4808,7 +4808,8 @@ function smartStepDetail(step, plan) {
     const usesReference = scene?.usesSubjectReference === true;
     const labels = scene.referenceStateLabels?.length
       ? scene.referenceStateLabels : smartSceneReferenceStates(plan, scene).map((state) => state.label);
-    return `MiniMax H3 · Individual clip · ${usesReference ? `${labels.join(' + ')} reference${labels.length === 1 ? '' : 's'}` : 'No reference'}`;
+    const turbo = step.request?.body?.h3Turbo === true || step.request?.body?.steps <= 8;
+    return `MiniMax H3 · ${turbo ? 'Turbo' : 'Full · 20 steps'} · Individual clip · ${usesReference ? `${labels.join(' + ')} reference${labels.length === 1 ? '' : 's'}` : 'No reference'}`;
   }
   return 'Krea 2 · final image';
 }
@@ -5103,6 +5104,7 @@ function renderSmartWorkspace() {
       ${plan.output.kind === 'video' ? `<span><b>Runtime</b>${escapeHtml(smartDuration(plan.output.durationSeconds))}</span>` : ''}
       <span><b>Frame</b>${escapeHtml(plan.output.aspectRatio)}</span>
       <span><b>Quality</b>${escapeHtml(plan.output.quality)}</span>
+      ${plan.output.kind === 'video' ? `<span><b>Mode</b>${run && run.turbo === false ? 'Full · 20 steps' : (smartExecutionOption('smartTurbo') ? 'Turbo' : 'Full · 20 steps')}</span>` : ''}
       ${attachedReferences.length ? `<span><b>References</b>${attachedReferences.length} image${attachedReferences.length === 1 ? '' : 's'}</span>` : ''}
       ${smartUsedReferenceStates(plan).length ? `<span><b>States</b>${smartUsedReferenceStates(plan).length} visual state${smartUsedReferenceStates(plan).length === 1 ? '' : 's'}</span>` : ''}
       ${plan.output.kind === 'video' ? `<span><b>Editorial</b>${videoClips} independent clip${videoClips === 1 ? '' : 's'}</span>` : ''}
@@ -5116,6 +5118,9 @@ function renderSmartWorkspace() {
         <span class="smart-step-index">0${index + 1}</span>
         <span><strong>${escapeHtml(step.label)}</strong><small>${escapeHtml(smartStepDetail(step, plan))}${step.progress ? ` · ${step.progress.completed}/${step.progress.total} clips` : ''}</small></span>
         <span class="smart-step-state">${escapeHtml(smartStatusLabel(step.status))}</span>
+        ${step.kind === 'video' && step.status === 'complete' && run && run.status === 'complete'
+          ? `<button class="smart-step-upgrade" type="button" data-smart-action="upgrade-clip" data-smart-step-id="${escapeHtml(step.id)}" title="Rerun this clip in 20-step full quality">Upgrade to 20 steps</button>`
+          : ''}
       </article>`).join('')}</div>
     ${referenceResults.length ? `<div class="smart-reference-results">${referenceResults.map((reference) => {
       const referenceLabel = reference.referenceState?.referenceTarget || reference.referenceState?.label || 'Canonical';
@@ -5137,6 +5142,7 @@ function renderSmartWorkspace() {
     <div class="smart-board-actions">
       ${!run ? '<button class="smart-board-action" type="button" data-smart-action="reset">Start over</button><button class="smart-board-action" type="button" data-smart-action="edit-plan">Modify plan</button>' : ''}
       ${!run ? `<button class="smart-board-action primary" type="button" data-smart-action="queue">Approve &amp; queue${plan.output.kind === 'video' ? ` ${videoClips} clips` : ''}</button>` : ''}
+    ${run && run.status === 'complete' && videoClips ? '<button class="smart-board-action" type="button" data-smart-action="upgrade-clips">Rerun all clips in full quality</button>' : ''}
       ${action ? `<button class="smart-board-action ${action[0] === 'cancel' ? '' : 'primary'}" type="button" data-smart-action="${action[0]}">${escapeHtml(action[1])}</button>` : ''}
     </div>`;
 }
@@ -5525,6 +5531,7 @@ async function queueSmartProduction(options = {}) {
         references: smartReferencePayload(),
         approved: true,
         reviewReference,
+        turbo: smartExecutionOption('smartTurbo'),
         attentionBackend: selectedH3AttentionBackend(),
         sageAttention: selectedH3AttentionBackend() === 'sageattention',
       }),
@@ -5593,6 +5600,27 @@ async function rerollSmartReference(stepId) {
     });
     mergeSmartRun(result.run);
     setSmartStatus('Reference regeneration queued. Smart will pause here again when it is ready.');
+    queueRefreshSoon();
+  } catch (error) {
+    setSmartStatus(error.message, true);
+  } finally {
+    smartBusy = false;
+    renderSmartWorkspace();
+  }
+}
+
+async function upgradeSmartClip(stepId) {
+  if (!smartRun || smartBusy || smartRun.status !== 'complete') return;
+  const body = { stepId: String(stepId || '') };
+  smartBusy = true;
+  setSmartStatus(stepId ? 'Rerunning this clip in 20-step full quality…' : 'Rerunning all clips in 20-step full quality…');
+  renderSmartWorkspace();
+  try {
+    const result = await api(`/api/smart/runs/${encodeURIComponent(smartRun.id)}/upgrade`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    mergeSmartRun(result.run);
+    setSmartStatus('Full-quality clips queued. Turbo previews stay in your Library.');
     queueRefreshSoon();
   } catch (error) {
     setSmartStatus(error.message, true);
@@ -5963,6 +5991,7 @@ $('#smartVoiceFile').addEventListener('change', async (event) => {
 });
 $('#smartConfigureAi').addEventListener('click', openSmartAiSettings);
 $('#smartAddReference').addEventListener('click', openSmartReferencePicker);
+$('#smartTurbo').addEventListener('click', (event) => toggleSmartExecutionOption(event.currentTarget));
 $('#smartAutoApprove').addEventListener('click', (event) => toggleSmartExecutionOption(event.currentTarget));
 $('#smartPauseReferences').addEventListener('click', (event) => toggleSmartExecutionOption(event.currentTarget));
 $('#smartReferenceList').addEventListener('click', (event) => {
@@ -6011,6 +6040,8 @@ $('#smartBoard').addEventListener('click', (event) => {
     mutateSmartReferenceStates(action, Number(control.dataset.smartReferenceStateIndex));
   }
   else if (action === 'reroll-reference') rerollSmartReference(control.dataset.smartStepId);
+  else if (action === 'upgrade-clip') upgradeSmartClip(control.dataset.smartStepId);
+  else if (action === 'upgrade-clips') upgradeSmartClip('');
   else if (action === 'queue') queueSmartProduction();
   else actOnSmartRun(action);
 });

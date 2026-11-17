@@ -133,7 +133,7 @@ test('Smart exposes planner configuration and reusable image references', () => 
   assert.match(server, /prompt\.localInstruction \|\| prompt\.instruction/);
   assert.match(server, /JSON\.stringify\(SMART_LOCAL_PLAN_SCHEMA\)/);
   assert.match(server, /requestSmartPlan\(provider, prompt, references, request\.profileId, progress\)/);
-  assert.match(server, /compileSmartSteps\(plan, \{ attentionBackend \}, references\)/);
+  assert.match(server, /compileSmartSteps\(plan, \{ attentionBackend, turbo \}, references\)/);
   assert.match(app, /attentionBackend: selectedH3AttentionBackend\(\)/);
   assert.match(app, /if \(!\(await ensureGenerationSetup\(\)\)\) return/);
   assert.match(server, /requireVision: references\.length > 0/);
@@ -245,4 +245,15 @@ test('queue can safely remove Smart productions waiting for review', () => {
   assert.match(html, /id="queueClearReviewsBtn"/);
   assert.match(app, /\/api\/queue\/reviews\/clear/);
   assert.match(app, /Completed gallery media will not be deleted/);
+});
+
+test('Smart Turbo is a default-on production toggle with full-quality rerun controls', () => {
+  assert.match(html, /id="smartTurbo"[^>]*role="switch"[^>]*aria-checked="true"/);
+  assert.match(app, /turbo: smartExecutionOption\('smartTurbo'\)/);
+  assert.match(app, /data-smart-action="upgrade-clips"/);
+  assert.match(app, /data-smart-action="upgrade-clip" data-smart-step-id=/);
+  assert.match(app, /\/upgrade`/);
+  assert.match(server, /const turbo = body\.turbo !== false/);
+  assert.match(server, /turbo: run\.turbo !== false/);
+  assert.match(server, /compileSmartSteps\(run\.plan, \{[\s\S]*turbo: false/);
 });

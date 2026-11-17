@@ -13554,6 +13554,8 @@ body[data-ui-mode="smart"] #genDock { display: none !important; }
 .smart-step strong { display: block; font-size: 11px; }
 .smart-step small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
 .smart-step-state { color: var(--muted-2); font-size: 8.5px; font-weight: 900; line-height: 1; text-transform: uppercase; }
+.smart-step-upgrade { margin-top: 6px; align-self: start; border: 1px solid rgba(169,102,255,.4); border-radius: 8px; padding: 4px 8px; background: rgba(169,102,255,.08); color: #c7a6fa; font-size: 8px; font-weight: 850; letter-spacing: .02em; text-transform: uppercase; cursor: pointer; }
+.smart-step-upgrade:hover { background: rgba(169,102,255,.16); color: white; }
 .smart-step.running .smart-step-state,
 .smart-step.queueing .smart-step-state { color: #7ddcff; }
 .smart-step.complete .smart-step-state { color: #7de59a; }

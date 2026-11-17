@@ -536,3 +536,16 @@ test('raw Smart plan audit detects partial local plans before normalization hide
     complete: true, issues: [], expectedClipCount: 12, sceneCount: 12,
   });
 });
+
+test('Smart clips default to Turbo and can be compiled for full 20-step quality', () => {
+  const plan = normalizeSmartPlan(lionPlan());
+  const turboSteps = compileSmartSteps(plan, { imageId: 'ref', videoIds: ['v1'] });
+  const turboClip = turboSteps.find((step) => step.kind === 'video');
+  assert.equal(turboClip.request.body.h3Turbo, true);
+  assert.equal(turboClip.request.body.steps, 8);
+
+  const fullSteps = compileSmartSteps(plan, { imageId: 'ref', videoIds: ['v1'], turbo: false });
+  const fullClip = fullSteps.find((step) => step.kind === 'video');
+  assert.equal(fullClip.request.body.h3Turbo, false);
+  assert.equal(fullClip.request.body.steps, 20);
+});
