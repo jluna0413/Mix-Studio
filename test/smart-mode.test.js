@@ -549,3 +549,14 @@ test('Smart clips default to Turbo and can be compiled for full 20-step quality'
   assert.equal(fullClip.request.body.h3Turbo, false);
   assert.equal(fullClip.request.body.steps, 20);
 });
+
+test('Attached references are sent directly into H3 instead of regenerating a reference sheet', () => {
+  const plan = normalizeSmartPlan(lionPlan());
+  plan.subject.referenceMode = 'attached';
+  const steps = compileSmartSteps(plan, { videoIds: ['v1', 'v2'] }, [{ name: 'Lion.png', label: 'My lion photo' }]);
+  assert.equal(steps.filter((step) => step.kind === 'reference').length, 0);
+  const clip = steps.find((step) => step.kind === 'video');
+  assert.equal(clip.clip.referenceSource, 'attached');
+  assert.deepEqual(clip.request.body.h3References.images, [{ name: 'Lion.png' }]);
+  assert.match(clip.request.body.prompt, /creator-supplied Reference 1/);
+});

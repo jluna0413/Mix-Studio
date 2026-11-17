@@ -10,6 +10,7 @@ const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'public', 'app.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'style.css'), 'utf8');
 const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const lib = fs.readFileSync(path.join(root, 'lib', 'smart-mode.js'), 'utf8');
 const smartCss = css.slice(
   css.indexOf('/* ---------------- Smart production (experimental) ---------------- */'),
   css.indexOf('/* ---------------- desktop studio workspace ---------------- */'),
@@ -254,6 +255,12 @@ test('Smart Turbo is a default-on production toggle with full-quality rerun cont
   assert.match(app, /data-smart-action="upgrade-clip" data-smart-step-id=/);
   assert.match(app, /\/upgrade`/);
   assert.match(server, /const turbo = body\.turbo !== false/);
+  assert.match(html, /id="smartAttachedReferences"[^>]*aria-checked="true"/);
+  assert.match(app, /referenceMode: smartExecutionOption\('smartAttachedReferences'\) \? 'attached' : 'synthesize'/);
+  assert.match(app, /data-smart-reference-mode="attached"/);
+  assert.match(app, /directReference = smartUsesAttachedReferences\(plan\)/);
+  assert.match(lib, /plan\.subject\.referenceMode === 'attached' && references\.length/);
+  assert.match(lib, /h3References = \{[\s\S]*images: directReferences\.map/);
   assert.match(server, /turbo: run\.turbo !== false/);
   assert.match(server, /compileSmartSteps\(run\.plan, \{[\s\S]*turbo: false/);
 });

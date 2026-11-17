@@ -4739,7 +4739,8 @@ function smartPlanSteps(plan) {
   const steps = [];
   if (plan?.output?.kind === 'image') steps.push({ kind: 'image', label: 'Create final image' });
   else {
-    smartUsedReferenceStates(plan).forEach((state) => steps.push({
+    const directReference = smartUsesAttachedReferences(plan);
+    if (!directReference) smartUsedReferenceStates(plan).forEach((state) => steps.push({
       kind: 'reference', referenceState: state, label: `Create ${state.label} reference`,
     }));
     (plan?.scenes || []).forEach((scene, index) => steps.push({
@@ -4796,6 +4797,10 @@ function smartSceneUsesReference(plan, scene) {
 function smartPlanUsesReference(plan) {
   return plan?.output?.kind === 'video'
     && (plan?.scenes || []).some((scene) => smartSceneUsesReference(plan, scene));
+}
+
+function smartUsesAttachedReferences(plan) {
+  return plan?.subject?.referenceMode === 'attached' && (smartReferences || []).length > 0;
 }
 
 function smartStepDetail(step, plan) {
@@ -5040,6 +5045,10 @@ function smartPlanEditorMarkup(plan) {
         <div class="smart-editor-grid">
           <label>Reference target<input data-smart-subject-field="referenceTarget" maxlength="100" value="${escapeHtml(plan.subject.referenceTarget || '')}" /><small>Repeat this exact name in clips where the target is visible.</small></label>
           <label>Reference template${smartSelectMarkup('smart-reference-template', plan.subject.referenceType, referenceTypeOptions, 'data-smart-subject-field="referenceType"', 'Reference template')}</label>
+          ${attachedReferences.length ? `<div class="smart-reference-mode">
+            <button type="button" data-smart-reference-mode="attached" aria-pressed="${String(plan.subject?.referenceMode === 'attached')}">Use my images directly</button>
+            <button type="button" data-smart-reference-mode="synthesize" aria-pressed="${String(plan.subject?.referenceMode !== 'attached')}">Generate a reference sheet</button>
+          </div>` : ''}
         </div>
         <label>Reference subject<textarea data-smart-subject-field="description" rows="2" maxlength="1200">${escapeHtml(plan.subject.description || '')}</textarea></label>
         ${plan.subject.needsReference ? `
@@ -5087,12 +5096,15 @@ function renderSmartWorkspace() {
   }
   const videoClips = steps.filter((step) => step.kind === 'video').length;
   const referenceClipCount = (plan.scenes || []).filter((scene) => smartSceneUsesReference(plan, scene)).length;
+  const attachedDirect = smartUsesAttachedReferences(plan);
   const referenceRoute = plan.output.kind === 'video' && attachedReferences.length ? `
     <div class="smart-reference-route ${referenceClipCount ? '' : 'warning'}">
       <span>Reference pipeline</span>
-      <p><strong>${escapeHtml(attachedReferences.map((reference, index) => reference.label || `Reference ${index + 1}`).join(' + '))}</strong> ${referenceClipCount
-        ? `guide the canonical ${escapeHtml(plan.subject.referenceTarget || 'subject')} reference. That generated reference is attached to ${referenceClipCount} of ${plan.scenes.length} H3 clip${plan.scenes.length === 1 ? '' : 's'}; clips where the target is absent remain reference-free.`
-        : `were inspected by the planner, but no clip currently contains the canonical ${escapeHtml(plan.subject.referenceTarget || 'subject')} target. Modify the plan if that target should appear on screen.`}</p>
+      <p><strong>${escapeHtml(attachedReferences.map((reference, index) => reference.label || `Reference ${index + 1}`).join(' + '))}</strong> ${attachedDirect && referenceClipCount
+        ? `are sent directly into ${referenceClipCount} of ${plan.scenes.length} H3 clip${plan.scenes.length === 1 ? '' : 's'} as identity references; no lower-resolution reference sheet is regenerated.`
+        : (referenceClipCount
+          ? `guide the canonical ${escapeHtml(plan.subject.referenceTarget || 'subject')} reference. That generated reference is attached to ${referenceClipCount} of ${plan.scenes.length} H3 clip${plan.scenes.length === 1 ? '' : 's'}; clips where the target is absent remain reference-free.`
+          : `were inspected by the planner, but no clip currently contains the canonical ${escapeHtml(plan.subject.referenceTarget || 'subject')} target. Modify the plan if that target should appear on screen.`)}</p>
     </div>` : '';
   board.innerHTML = `
     <div class="smart-plan-head">
@@ -5532,6 +5544,11 @@ async function queueSmartProduction(options = {}) {
         approved: true,
         reviewReference,
         turbo: smartExecutionOption('smartTurbo'),
+        plan: Object.assign({}, smartPlan, {
+          subject: Object.assign({}, smartPlan.subject, {
+            referenceMode: smartExecutionOption('smartAttachedReferences') ? 'attached' : 'synthesize',
+          }),
+        }),
         attentionBackend: selectedH3AttentionBackend(),
         sageAttention: selectedH3AttentionBackend() === 'sageattention',
       }),
@@ -5991,6 +6008,7 @@ $('#smartVoiceFile').addEventListener('change', async (event) => {
 });
 $('#smartConfigureAi').addEventListener('click', openSmartAiSettings);
 $('#smartAddReference').addEventListener('click', openSmartReferencePicker);
+$('#smartAttachedReferences').addEventListener('click', (event) => toggleSmartExecutionOption(event.currentTarget));
 $('#smartTurbo').addEventListener('click', (event) => toggleSmartExecutionOption(event.currentTarget));
 $('#smartAutoApprove').addEventListener('click', (event) => toggleSmartExecutionOption(event.currentTarget));
 $('#smartPauseReferences').addEventListener('click', (event) => toggleSmartExecutionOption(event.currentTarget));
@@ -6038,6 +6056,13 @@ $('#smartBoard').addEventListener('click', (event) => {
   }
   else if (['add-reference-state', 'delete-reference-state'].includes(action)) {
     mutateSmartReferenceStates(action, Number(control.dataset.smartReferenceStateIndex));
+  }
+  else if (control.dataset.smartReferenceMode) {
+    const value = String(control.dataset.smartReferenceMode);
+    smartPlan = Object.assign({}, smartPlan, {
+      subject: Object.assign({}, smartPlan.subject, { referenceMode: value }),
+    });
+    renderSmartWorkspace();
   }
   else if (action === 'reroll-reference') rerollSmartReference(control.dataset.smartStepId);
   else if (action === 'upgrade-clip') upgradeSmartClip(control.dataset.smartStepId);
