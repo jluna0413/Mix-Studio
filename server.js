@@ -6032,7 +6032,9 @@ async function buildUpscale(imageName, opts) {
   }
 
   const graph = {};
-  const gpuVendor = setupHardwareProfile(await getSetupHardwareInfo()).gpuVendor;
+  const hardwareProfile = setupHardwareProfile(await getSetupHardwareInfo());
+  const gpuVendor = hardwareProfile.gpuVendor;
+  const vramGb = hardwareProfile.vramGb || 0;
   const installedDitModels = installedSeedVr2Models(seedVr2ModelDirs());
   const profile = seedVr2Profile(settings, opts.profile || 'sharp', installedDitModels, opts.noise || 'low');
   opts.profile = profile.key;
@@ -6053,6 +6055,7 @@ async function buildUpscale(imageName, opts) {
     settings,
     availableModels: installedDitModels,
     gpuVendor,
+    vramGb,
     resolvedProfile: profile,
     resolution: opts.resolution || 2160,
     batchSize: 1,
@@ -7468,6 +7471,7 @@ async function buildExistingVideoUpscale(videoName, opts) {
       settings,
       availableModels,
       gpuVendor,
+      vramGb,
       profile: opts.profile || 'sharp',
       noise: opts.noise || 'low',
       resolution,

@@ -238,3 +238,25 @@ test('builds an Ultimate SD Upscale graph with simple prompt-guided defaults', (
   assert.equal(graph.ultimate.inputs.tile_width, 768);
   assert.equal(graph.pos.inputs.text, 'a detailed faithful portrait prompt');
 });
+
+test('caps the longest edge at the requested SeedVR2 target', () => {
+  const result = seedVr2UpscaleNodes(['load', 0], {
+    settings: { seedvr2Dit: DEFAULT_SEEDVR2_DIT, seedvr2Vae: 'ema_vae_fp16.safetensors', seedvr2Attention: 'sdpa' },
+    availableModels: [DEFAULT_SEEDVR2_DIT],
+    gpuVendor: 'intel',
+    vramGb: 32,
+    resolution: 3840,
+    batchSize: 1,
+  });
+  assert.equal(result.nodes.upscale.inputs.resolution, 3840);
+  assert.equal(result.nodes.upscale.inputs.max_resolution, 3840);
+});
+
+test('SeedVR2 keeps half the 7B blocks resident on large-VRAM GPUs only', () => {
+  const roomy = seedVr2DitInputs({ seedvr2Dit: DEFAULT_SEEDVR2_DIT, gpuVendor: 'intel', vramGb: 32 });
+  assert.equal(roomy.blocks_to_swap, 16);
+  const small = seedVr2DitInputs({ seedvr2Dit: DEFAULT_SEEDVR2_DIT, gpuVendor: 'intel', vramGb: 16 });
+  assert.equal(small.blocks_to_swap, 32);
+  const unknown = seedVr2DitInputs({ seedvr2Dit: DEFAULT_SEEDVR2_DIT, gpuVendor: 'intel' });
+  assert.equal(unknown.blocks_to_swap, 32);
+});
