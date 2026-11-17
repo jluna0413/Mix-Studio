@@ -156,7 +156,7 @@ test('Smart compiles identity video into a Krea reference followed by individual
   assert.equal(steps[1].request.body.attentionBackend, 'standard');
   assert.equal(steps[1].request.body.sageAttention, false);
   assert.equal(steps[1].request.body.seconds, 10);
-  assert.equal(steps[1].request.body.h3ResolutionSize, 1);
+  assert.equal(steps[1].request.body.h3ResolutionSize, 1.75);
   assert.match(steps[1].request.body.prompt, /^subject_definitions:/);
   assert.match(steps[1].request.body.prompt, /summary:\nThe lion enters an empty city at dawn/);
   assert.doesNotMatch(steps[1].request.body.prompt, /\[reference generation\]/i);
