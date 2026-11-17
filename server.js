@@ -176,6 +176,7 @@ const {
 const {
   interruptedSmartJobIds,
   markSmartRunsInterruptedForRecovery,
+  markStalledSmartRuns,
   prepareSmartRunResume,
 } = require('./lib/smart-run-recovery');
 const {
@@ -4248,6 +4249,7 @@ async function advanceSmartRun(run) {
     if (!jobId) throw new Error('Mix Studio did not return a queued job');
     step.jobId = jobId;
     step.status = 'running';
+    step.startedAt = Date.now();
     run.status = 'running';
     const tracked = jobs.get(jobId);
     if (tracked) {
@@ -4318,6 +4320,18 @@ async function recoverInterruptedSmartRuns() {
   }
 }
 
+// Smart steps can hang inside ComfyUI without any terminal event (GPU device
+// lost, wedged sampler). Mark them interrupted so the normal recovery path
+// checks ComfyUI, clears the old prompt, and resubmits the step once.
+setInterval(() => {
+  const stalled = markStalledSmartRuns(db.smartRuns);
+  if (!stalled.length) return;
+  for (const id of stalled) pendingSmartRecoveryIds.add(id);
+  console.warn(`[smart] stalled step detected for runs: ${stalled.join(', ')}`);
+  broadcastSmartRun(db.smartRuns.find((run) => run.id === stalled[0]));
+  scheduleSmartRunRecovery();
+}, 60_000).unref();
+
 function kickStrandedSmartRuns(profileId) {
   const runs = db.smartRuns.filter((run) => run.profileId === profileId
     && ['ready', 'running', 'queueing'].includes(run.status));
@@ -4344,6 +4358,7 @@ function completeSmartJob(job, items) {
   step.status = 'complete';
   step.jobId = null;
   step.progress = null;
+  step.startedAt = null;
   step.error = '';
   step.resultItemIds = resultItems.map((item) => item.id);
   const moreReferencesPending = (run.steps || []).some((candidate) => candidate.kind === 'reference'
@@ -4385,6 +4400,7 @@ function failSmartJob(job, message, cancelled = false) {
   if (!step) return;
   step.jobId = null;
   step.status = cancelled ? 'cancelled' : 'failed';
+  step.startedAt = null;
   step.error = String(message || (cancelled ? 'Cancelled' : 'Generation failed')).slice(0, 1000);
   run.status = cancelled ? 'cancelled' : 'failed';
   run.error = step.error;
