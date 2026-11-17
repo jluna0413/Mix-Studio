@@ -263,4 +263,6 @@ test('Smart Turbo is a default-on production toggle with full-quality rerun cont
   assert.match(lib, /h3References = \{[\s\S]*images: directReferences\.map/);
   assert.match(server, /turbo: run\.turbo !== false/);
   assert.match(server, /compileSmartSteps\(run\.plan, \{[\s\S]*turbo: false/);
+  assert.match(server, /findStalledJobs\(jobs\)/);
+  assert.match(server, /stalledJobMessage\(entry\.idleMs\)/);
 });

@@ -363,6 +363,7 @@ const {
   matchesImageInputPattern,
 } = require('./lib/edit-image-input');
 const { isGpuDeviceLostError, extractComfyErrorMessage, gpuDeviceLostUserMessage } = require('./lib/gpu-device-lost');
+const { findStalledJobs, stalledJobMessage } = require('./lib/job-stall-watchdog');
 const { isWidgetSpec } = require('./lib/comfy-widget-spec');
 const { browseGenerationFolder } = require('./lib/folder-picker');
 const {
@@ -2983,6 +2984,18 @@ function failJob(pid, message) {
     outputsToDelete,
   });
 }
+
+// Fail jobs whose ComfyUI prompt has gone silent. Recovery (interrupt/restart)
+// is intentionally left to the existing VRAM-stuck and GPU-device-lost paths;
+// this watchdog prevents an eternal 0% queue entry after a wedged prompt.
+setInterval(() => {
+  if (!jobs.size || comfyRestartRunning) return;
+  const stalled = findStalledJobs(jobs);
+  for (const entry of stalled) {
+    console.warn(`[job:${entry.id}] no progress for ${Math.round(entry.idleMs / 60000)} min — marking failed`);
+    failJob(entry.id, stalledJobMessage(entry.idleMs));
+  }
+}, 60_000).unref();
 
 async function restartComfyOnErrno22(pid, job) {
   if (comfyRestartRunning) {
