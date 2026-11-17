@@ -29,7 +29,7 @@ const { sam3InstallStatus } = require('./lib/sam3-installer');
 const { probeSageAttention } = require('./lib/sage-attention');
 const { strandedJobVerdict } = require('./lib/stranded-jobs');
 const { probeH3SlaAttention } = require('./lib/h3-sla-attention');
-const { h3AttentionOptions, normalizeH3AttentionBackend, kitchenAttentionCapability } = require('./lib/h3-attention');
+const { h3AttentionOptions, normalizeH3AttentionBackend, kitchenAttentionCapability, h3AttentionRuntimeGate } = require('./lib/h3-attention');
 const { h3PerformanceReport } = require('./lib/h3-performance');
 const { explainComfyFailure, historyExecutionError } = require('./lib/memory-diagnostics');
 const {
@@ -10932,7 +10932,8 @@ async function handleApiRequest(req, res, url) {
       if (h3SageAttention) {
         const sageRuntime = await probeSageAttention(RUNTIME, { status: sam3InstallStatus(RUNTIME) });
         const nodeReady = !!info.PathchSageAttentionKJ;
-        if (!nodeReady || (sageRuntime.inspected !== false && sageRuntime.ready !== true)) {
+        const gate = h3AttentionRuntimeGate(sageRuntime, nodeReady);
+        if (gate.blocked) {
           return json(res, 409, {
             error: !nodeReady
               ? 'MiniMax H3 SageAttention needs the KJNodes patch node. Install the H3 SageAttention workflow, restart ComfyUI, and try again.'
@@ -10950,7 +10951,8 @@ async function handleApiRequest(req, res, url) {
       if (h3SlaAttention) {
         const slaRuntime = await probeH3SlaAttention(RUNTIME, { status: sam3InstallStatus(RUNTIME) });
         const nodeReady = !!info.H3SLAAttention;
-        if (!nodeReady || (slaRuntime.inspected !== false && slaRuntime.ready !== true)) {
+        const gate = h3AttentionRuntimeGate(slaRuntime, nodeReady);
+        if (gate.blocked) {
           return json(res, 409, {
             error: !nodeReady
               ? 'MiniMax H3 SLA needs the pinned sparse-attention node. Install the H3 SLA workflow, restart ComfyUI, and try again.'
