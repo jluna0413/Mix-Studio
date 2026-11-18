@@ -105,3 +105,16 @@ test('further training preserves the starting step and rejects unbounded request
   assert.throws(() => refinementOptions(record, 999999), /5,000 or 10,000/);
   assert.throws(() => refinementOptions({ trainingSteps: 45000 }, 10000), /50,000/);
 });
+
+test('the library splat viewer keeps the source image beside the 3D scene', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.join(__dirname, '..');
+  const js = fs.readFileSync(path.join(root, 'public', 'splat-workspace.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'public', 'style.css'), 'utf8');
+  assert.match(js, /\$\('#lbImg'\)\.hidden = false;/);
+  assert.match(js, /classList\.add\('splat-compare'\)/);
+  assert.match(js, /classList\.remove\('splat-compare'\)/);
+  assert.match(css, /\.lightbox-img-wrap\.splat-compare/);
+  assert.match(css, /\.lightbox-img-wrap\.splat-compare #splatLibraryViewerFrame/);
+});

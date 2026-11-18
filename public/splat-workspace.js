@@ -141,6 +141,8 @@ renderSplatWorkspace();
 let splatViewerSceneId = null;
 let splatViewerRefinementId = null;
 function resetLibrarySplat() {
+  const wrap = $('#splatLibraryViewerFrame')?.parentElement;
+  if (wrap) wrap.classList.remove('splat-compare');
   $('#splatLibraryViewerFrame').hidden = true;
   $('#splatLibraryViewerFrame').removeAttribute('src');
   splatViewerSceneId = null;
@@ -157,7 +159,12 @@ function mountLibrarySplat(scene, item) {
   $('#lbVideo').pause();
   $('#lbVideo').hidden = true;
   $('#lbVideo').removeAttribute('src');
-  $('#lbImg').hidden = true;
+  // Keep the source photo beside the interactive 3D scene so the splat can be
+  // read against the image it was reconstructed from.
+  $('#lbImg').hidden = false;
+  const mediaWrap = $('#lbImg').parentElement;
+  if (item?.file) $('#lbImg').src = '/images/' + item.file;
+  mediaWrap.classList.add('splat-compare');
   $('#lbCompareBtn').hidden = true;
   splatViewerSceneId = scene.id;
   const frame = $('#splatLibraryViewerFrame');
